@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import type { Device, Overview, Role } from "../types";
 import { api } from "../api";
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Typed client to the BFF. Same-origin in production (nginx) and via Vite proxy in
 // dev, so the session cookie is sent automatically with credentials: "include".
 import type { Overview, Role } from "./types";

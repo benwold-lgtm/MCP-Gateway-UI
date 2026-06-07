@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Mirrors the gateway's response shapes. Generate these from the gateway's
 // /openapi.json (e.g. openapi-typescript) to keep them in lockstep over time.
 

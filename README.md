@@ -77,4 +77,12 @@ npx openapi-typescript http://localhost:8000/openapi.json -o web/src/gateway.d.t
 
 ## License
 
-Elastic License 2.0 — see [LICENSE](LICENSE).
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free for any **noncommercial**
+purpose (evaluation, research, personal and nonprofit/government use). Commercial use is
+not granted by this license.
+
+**Commercial licensing:** a separate commercial license is available — contact
+benwold@gmail.com.
+
+**Contributions:** by submitting a contribution you agree it is licensed under the same
+terms and that the maintainer may also license it commercially.
