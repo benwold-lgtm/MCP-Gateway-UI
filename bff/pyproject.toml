@@ -1,0 +1,28 @@
+[project]
+name = "device-mcp-gateway-bff"
+version = "0.1.0"
+description = "Backend-for-frontend for the Device MCP Gateway UI — holds the gateway credential, runs sessions, proxies to the gateway/Prometheus/Loki."
+requires-python = ">=3.12"
+license = { text = "Elastic-2.0" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "itsdangerous>=2.1",   # Starlette SessionMiddleware (signed cookies)
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "black>=24.0",
+    "flake8>=7.0",
+]
+
+[tool.black]
+line-length = 120
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

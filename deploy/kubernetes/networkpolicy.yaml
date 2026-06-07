@@ -1,0 +1,72 @@
+---
+# BFF: accepts traffic only from the web tier; egresses to the gateway API, DNS,
+# and (phase 2) Prometheus/Loki. No coupling to the gateway chart beyond reachability.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: device-mcp-ui-bff
+  namespace: mcp-gateway-ui
+spec:
+  podSelector:
+    matchLabels:
+      app: device-mcp-ui-bff
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: device-mcp-ui-web
+      ports:
+        - port: 8090
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Gateway API (cross-namespace). Tighten the namespaceSelector label to match
+    # how your mcp-gateway namespace is labelled.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8000
+          protocol: TCP
+    # Phase 2: Prometheus query API (9090) + Loki (3100). Restrict to your
+    # monitoring namespace in production.
+    - ports:
+        - port: 9090
+          protocol: TCP
+        - port: 3100
+          protocol: TCP
+---
+# Web (nginx): accepts ingress-controller traffic; egresses only to the BFF + DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: device-mcp-ui-web
+  namespace: mcp-gateway-ui
+spec:
+  podSelector:
+    matchLabels:
+      app: device-mcp-ui-web
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: device-mcp-ui-bff
+      ports:
+        - port: 8090
+          protocol: TCP

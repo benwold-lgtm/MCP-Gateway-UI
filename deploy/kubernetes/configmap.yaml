@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ui-bff-config
+  namespace: mcp-gateway-ui
+data:
+  # The gateway lives in its own namespace; reach it by its Service DNS name.
+  GATEWAY_URL: "http://device-mcp-gateway.mcp-gateway.svc.cluster.local:8000"
+  # Phase 2 monitoring sources (leave empty until wired).
+  PROMETHEUS_URL: ""
+  LOKI_URL: ""
+  # Comma-separated browser origins; empty disables CORS (same-origin via nginx).
+  CORS_ORIGINS: ""
+  # Set true behind TLS so the session cookie is marked Secure.
+  COOKIE_SECURE: "true"

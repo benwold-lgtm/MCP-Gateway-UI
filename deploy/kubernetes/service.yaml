@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-mcp-ui-bff
+  namespace: mcp-gateway-ui
+  labels:
+    app.kubernetes.io/name: device-mcp-ui-bff
+spec:
+  type: ClusterIP
+  selector:
+    app: device-mcp-ui-bff
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-mcp-ui-web
+  namespace: mcp-gateway-ui
+  labels:
+    app.kubernetes.io/name: device-mcp-ui-web
+spec:
+  type: ClusterIP
+  selector:
+    app: device-mcp-ui-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

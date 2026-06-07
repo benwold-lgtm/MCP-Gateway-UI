@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-mcp-ui-bff
+  namespace: mcp-gateway-ui
+  labels:
+    app.kubernetes.io/name: device-mcp-ui-bff
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: device-mcp-ui-bff
+  template:
+    metadata:
+      labels:
+        app: device-mcp-ui-bff
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: bff
+          # Pin to an immutable digest/tag in production — never ship :latest.
+          image: device-mcp-ui-bff:latest
+          ports:
+            - name: http
+              containerPort: 8090
+          envFrom:
+            - configMapRef:
+                name: ui-bff-config
+            - secretRef:
+                name: ui-bff-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 3
+            periodSeconds: 5
