@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Login } from "../components/Login";
 
-const login = vi.fn();
+// vi.mock is hoisted above the module, so the mock fn must come from vi.hoisted
+// (a plain outer const would be in the temporal dead zone when the factory runs).
+const { login } = vi.hoisted(() => ({ login: vi.fn() }));
 
 vi.mock("../api", () => ({
-  api: { login: (pw: string) => login(pw) },
+  api: { login },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,

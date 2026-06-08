@@ -18,7 +18,10 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -28,7 +31,6 @@ export const api = {
   logout: () => req<{ status: string }>("POST", "/auth/logout"),
   me: () => req<{ role: Role }>("GET", "/auth/me"),
   overview: () => req<Overview>("GET", "/api/overview"),
-  registerDevice: (d: { hostname: string; base_url: string }) =>
-    req<unknown>("POST", "/api/devices", d),
+  registerDevice: (d: { hostname: string; base_url: string }) => req<unknown>("POST", "/api/devices", d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),
 };

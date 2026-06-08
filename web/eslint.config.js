@@ -20,6 +20,9 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // TypeScript already resolves identifiers/globals (document, fetch, ...); the core
+      // rule would false-positive on browser globals without a globals config.
+      "no-undef": "off",
     },
   },
   prettier,
