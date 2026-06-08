@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+/// <reference types="vitest/config" />
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // In dev, proxy the BFF so the browser talks to a single origin (cookies just work).
@@ -13,4 +14,9 @@ export default defineConfig({
     },
   },
   build: { outDir: "dist" },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./vitest.setup.ts"],
+    css: false,
+  },
 });

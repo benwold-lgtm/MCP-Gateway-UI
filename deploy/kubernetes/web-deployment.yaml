@@ -15,9 +15,18 @@ spec:
       labels:
         app: device-mcp-ui-web
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101          # nginx-unprivileged
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: web
           image: device-mcp-ui-web:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8080

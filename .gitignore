@@ -10,6 +10,9 @@ node_modules/
 web/dist/
 *.local
 
+# Generated from gateway.openapi.json by `npm run gen:types`
+web/src/gateway.d.ts
+
 # Secrets / env
 .env
 deploy/kubernetes/secret.yaml

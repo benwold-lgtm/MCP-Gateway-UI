@@ -65,14 +65,37 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 2. **Monitoring** — Prometheus panels (embed Grafana or render from the query API) + logs via Loki/Splunk, both proxied through the BFF.
 3. **Live + RBAC-aware** — SSE/WS device status, per-role views, device detail + tool explorer.
 
-## Keep the contract typed
+## Keep the contract typed (no manual drift)
 
-The SPA types in `web/src/types.ts` and the BFF mirror the gateway's responses. Generate
-them from the gateway's OpenAPI to avoid drift:
+The SPA's `Device`/`Overview` types are **derived from the gateway's OpenAPI**, not
+hand-maintained:
+
+- `web/gateway.openapi.json` is a committed snapshot of the gateway contract.
+- `npm run gen:types` runs `openapi-typescript` to produce `web/src/gateway.d.ts`
+  (gitignored), and `web/src/types.ts` re-exports its `DeviceSummary`/`OverviewResponse`.
+- `typecheck`, `build`, `test`, and CI all run `gen:types` first, so a contract change
+  that breaks the SPA fails the type-check **loudly** instead of drifting silently.
+
+Refresh the snapshot when the gateway's API changes:
 
 ```bash
-# TS types for the SPA
-npx openapi-typescript http://localhost:8000/openapi.json -o web/src/gateway.d.ts
+# from a running gateway:
+curl -s http://localhost:8000/openapi.json -o web/gateway.openapi.json
+cd web && npm run gen:types   # regenerate types; tsc will flag any incompatibility
+```
+
+The gateway gives these endpoints real response models (`OverviewResponse`,
+`DeviceSummary`, …), so the generated types are meaningful rather than `unknown`.
+
+### Frontend tooling
+
+```bash
+cd web
+npm install
+npm run lint          # eslint (flat config) + prettier via format:check
+npm run format        # prettier --write
+npm run typecheck     # gen:types + tsc --noEmit
+npm test              # vitest (component smoke tests)
 ```
 
 ## License

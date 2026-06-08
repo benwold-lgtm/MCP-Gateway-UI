@@ -1,0 +1,5 @@
+dist
+node_modules
+src/gateway.d.ts
+gateway.openapi.json
+package-lock.json
