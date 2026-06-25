@@ -88,3 +88,26 @@ def test_logout_clears_session(app_client):
     c.post("/auth/login", json={"password": "admin-pw"})
     c.post("/auth/logout")
     assert c.get("/auth/me").status_code == 401
+
+
+def test_gateway_calls_are_v1_prefixed():
+    """Regression guard: the gateway mounts its management API under /v1, so every
+    upstream call the BFF makes must carry that prefix (the bug that left the BFF
+    hitting unversioned paths and 404ing on a live gateway)."""
+    from app.config import load_settings
+    from app.gateway_client import GatewayClient
+
+    client = GatewayClient(load_settings())
+    assert client._with_prefix("/admin/overview") == "/v1/admin/overview"
+    assert client._with_prefix("devices") == "/v1/devices"
+    assert client._with_prefix("/devices/my-host") == "/v1/devices/my-host"
+
+
+def test_gateway_prefix_is_configurable(monkeypatch):
+    """A future gateway version (e.g. /v2) is a one-env-var change, no code edits."""
+    from app.config import load_settings
+    from app.gateway_client import GatewayClient
+
+    monkeypatch.setenv("GATEWAY_API_PREFIX", "/v2")
+    client = GatewayClient(load_settings())
+    assert client._with_prefix("/devices") == "/v2/devices"

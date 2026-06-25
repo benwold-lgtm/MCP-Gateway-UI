@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class Settings:
     gateway_url: str
+    gateway_api_prefix: str
     gateway_token: str
     ui_admin_password: str
     ui_viewer_password: str
@@ -34,6 +35,10 @@ def _split(csv: str) -> list[str]:
 def load_settings() -> Settings:
     return Settings(
         gateway_url=os.getenv("GATEWAY_URL", "http://localhost:8000"),
+        # The gateway versions its management API under a prefix (e.g. /v1/devices).
+        # Override only when the gateway introduces a new version (e.g. /v2). The
+        # unversioned probes (/health, /readyz) are not proxied by the BFF.
+        gateway_api_prefix=os.getenv("GATEWAY_API_PREFIX", "/v1"),
         # Admin bearer token for the gateway API (server-side only).
         gateway_token=os.getenv("GATEWAY_API_TOKEN", ""),
         # UI login passwords → role. Leave a role's password empty to disable it.

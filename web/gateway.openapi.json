@@ -2,13 +2,30 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Device MCP Gateway",
-    "version": "0.1.0"
+    "version": "0.1.2"
   },
   "paths": {
     "/health": {
       "get": {
         "summary": "Health Check",
         "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "summary": "Liveness Check",
+        "description": "Lightweight liveness probe \u2014 proves the event loop is turning (F-17).\n\nUnlike /health (which does Redis/registry work and is really a readiness\nsignal), this does no I/O: it only checks that the background heartbeat tick\nis fresh. A wedged event loop can't advance the tick (and can't run this\nhandler either), so the probe fails \u2014 catching a \"wedged-but-serving\"\ngateway that /health, answering from cache, would miss. K8s livenessProbe\ntarget.",
+        "operationId": "liveness_check_livez_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -38,10 +55,10 @@
         }
       }
     },
-    "/devices": {
+    "/v1/devices": {
       "get": {
         "summary": "List Devices",
-        "operationId": "list_devices_devices_get",
+        "operationId": "list_devices_v1_devices_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -62,13 +79,15 @@
       },
       "post": {
         "summary": "Register Device",
-        "operationId": "register_device_devices_post",
+        "operationId": "register_device_v1_devices_post",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceMutationResult"
+                }
               }
             }
           }
@@ -80,10 +99,94 @@
         ]
       }
     },
-    "/devices/{hostname}": {
+    "/v1/devices/{hostname}": {
       "put": {
         "summary": "Update Device",
-        "operationId": "update_device_devices__hostname__put",
+        "operationId": "update_device_v1_devices__hostname__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceMutationResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Get Device",
+        "operationId": "get_device_v1_devices__hostname__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unregister Device",
+        "operationId": "unregister_device_v1_devices__hostname__delete",
         "security": [
           {
             "HTTPBearer": []
@@ -120,10 +223,12 @@
             }
           }
         }
-      },
+      }
+    },
+    "/v1/devices/{hostname}/tools": {
       "get": {
-        "summary": "Get Device",
-        "operationId": "get_device_devices__hostname__get",
+        "summary": "Get Device Tools",
+        "operationId": "get_device_tools_v1_devices__hostname__tools_get",
         "security": [
           {
             "HTTPBearer": []
@@ -137,6 +242,106 @@
             "schema": {
               "type": "string",
               "title": "Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{hostname}/diagnostics": {
+      "get": {
+        "summary": "Device Diagnostics",
+        "description": "Self-service \"why is my device down?\" diagnostics (F-52): registry\nstatus, last check + age, spec/manifest state, spawn error, and the\ncircuit breaker (in-process pods only).",
+        "operationId": "device_diagnostics_v1_devices__hostname__diagnostics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDiagnostics"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{hostname}/deadletter": {
+      "get": {
+        "summary": "List Dead Letters",
+        "description": "Inspect a device's dead-lettered tool calls (newest first) \u2014 F-10.",
+        "operationId": "list_dead_letters_v1_devices__hostname__deadletter_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hostname"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
             }
           }
         ],
@@ -162,8 +367,9 @@
         }
       },
       "delete": {
-        "summary": "Unregister Device",
-        "operationId": "unregister_device_devices__hostname__delete",
+        "summary": "Purge Dead Letters",
+        "description": "Drain a device's DLQ. Optional JSON body ``{\"ids\": [...]}`` deletes\nspecific entries; otherwise the whole queue is dropped (F-10).",
+        "operationId": "purge_dead_letters_v1_devices__hostname__deadletter_delete",
         "security": [
           {
             "HTTPBearer": []
@@ -202,10 +408,11 @@
         }
       }
     },
-    "/devices/{hostname}/tools": {
-      "get": {
-        "summary": "Get Device Tools",
-        "operationId": "get_device_tools_devices__hostname__tools_get",
+    "/v1/devices/{hostname}/deadletter/replay": {
+      "post": {
+        "summary": "Replay Dead Letters",
+        "description": "Re-publish dead-lettered calls onto the device's call stream and remove\nthem from the DLQ. Optional JSON body ``{\"ids\": [...]}`` replays specific\nentries; otherwise up to ``limit`` oldest are replayed (F-10).",
+        "operationId": "replay_dead_letters_v1_devices__hostname__deadletter_replay_post",
         "security": [
           {
             "HTTPBearer": []
@@ -219,6 +426,18 @@
             "schema": {
               "type": "string",
               "title": "Hostname"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
             }
           }
         ],
@@ -244,10 +463,10 @@
         }
       }
     },
-    "/devices/{hostname}/sse": {
+    "/v1/devices/{hostname}/sse": {
       "get": {
         "summary": "Device Sse Stream",
-        "operationId": "device_sse_stream_devices__hostname__sse_get",
+        "operationId": "device_sse_stream_v1_devices__hostname__sse_get",
         "security": [
           {
             "HTTPBearer": []
@@ -318,10 +537,10 @@
         }
       }
     },
-    "/devices/{hostname}/messages": {
+    "/v1/devices/{hostname}/messages": {
       "post": {
         "summary": "Device Sse Message",
-        "operationId": "device_sse_message_devices__hostname__messages_post",
+        "operationId": "device_sse_message_v1_devices__hostname__messages_post",
         "security": [
           {
             "HTTPBearer": []
@@ -392,10 +611,10 @@
         }
       }
     },
-    "/metrics/summary": {
+    "/v1/metrics/summary": {
       "get": {
         "summary": "Get Metrics Summary",
-        "operationId": "get_metrics_summary_metrics_summary_get",
+        "operationId": "get_metrics_summary_v1_metrics_summary_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -413,10 +632,10 @@
         ]
       }
     },
-    "/admin/overview": {
+    "/v1/admin/overview": {
       "get": {
         "summary": "Admin Overview",
-        "operationId": "admin_overview_admin_overview_get",
+        "operationId": "admin_overview_v1_admin_overview_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -439,6 +658,315 @@
   },
   "components": {
     "schemas": {
+      "BreakerState": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "fail_counter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fail Counter"
+          },
+          "fail_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fail Max"
+          },
+          "reset_timeout": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reset Timeout"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available"
+        ],
+        "title": "BreakerState",
+        "description": "Per-pod circuit-breaker state. Only readable when the pod is in-process\n(embedded mode); in distributed mode the pod runs on a worker, so the gateway\nreports ``available: false`` with a note."
+      },
+      "DeviceDetail": {
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "title": "Hostname"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "reachable": {
+            "type": "boolean",
+            "title": "Reachable"
+          },
+          "pod_active": {
+            "type": "boolean",
+            "title": "Pod Active"
+          },
+          "last_check": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check"
+          },
+          "rate_limit_rps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Limit Rps"
+          },
+          "spec_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Url"
+          },
+          "spec_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Hash"
+          },
+          "auth_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Type"
+          },
+          "spawn_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spawn Error"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          },
+          "tools_revision": {
+            "type": "integer",
+            "title": "Tools Revision",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "hostname",
+          "base_url",
+          "transport",
+          "reachable",
+          "pod_active"
+        ],
+        "title": "DeviceDetail",
+        "description": "Full device projection for the single-device read \u2014 a superset of\n:class:`DeviceSummary` adding the fields a detail/diagnostic view needs."
+      },
+      "DeviceDiagnostics": {
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "title": "Hostname"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "spec_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Url"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "reachable": {
+            "type": "boolean",
+            "title": "Reachable"
+          },
+          "pod_active": {
+            "type": "boolean",
+            "title": "Pod Active"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          },
+          "last_check": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check"
+          },
+          "last_check_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Age Seconds"
+          },
+          "spec_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Hash"
+          },
+          "has_manifest": {
+            "type": "boolean",
+            "title": "Has Manifest"
+          },
+          "tool_count": {
+            "type": "integer",
+            "title": "Tool Count"
+          },
+          "tools_revision": {
+            "type": "integer",
+            "title": "Tools Revision",
+            "default": 0
+          },
+          "spawn_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spawn Error"
+          },
+          "breaker": {
+            "$ref": "#/components/schemas/BreakerState"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hostname",
+          "mode",
+          "base_url",
+          "transport",
+          "reachable",
+          "pod_active",
+          "has_manifest",
+          "tool_count",
+          "breaker"
+        ],
+        "title": "DeviceDiagnostics",
+        "description": "\"Why is my device down?\" \u2014 a single read combining registry status, the\nlast check, spec/manifest state, the spawn error, and the circuit breaker\n(F-52)."
+      },
       "DeviceListResponse": {
         "properties": {
           "devices": {
@@ -454,6 +982,29 @@
           "devices"
         ],
         "title": "DeviceListResponse"
+      },
+      "DeviceMutationResult": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "provisioning": {
+            "type": "boolean",
+            "title": "Provisioning"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "provisioning",
+          "device"
+        ],
+        "title": "DeviceMutationResult",
+        "description": "Response for a register/update write: the write-time envelope plus the full\nresulting device, so a client gets the resource back without a follow-up GET."
       },
       "DeviceSummary": {
         "properties": {
@@ -508,7 +1059,8 @@
           "reachable",
           "pod_active"
         ],
-        "title": "DeviceSummary"
+        "title": "DeviceSummary",
+        "description": "Lean device projection for list/overview screens."
       },
       "HTTPValidationError": {
         "properties": {

@@ -19,6 +19,7 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run gen:types        # generate src/gateway.d.ts from the committed snapshot
+      - run: npm run check:spec        # contract drift guard (skips unless GATEWAY_OPENAPI_URL/FILE is set)
       - run: npm run lint
       - run: npm run format:check
       - run: npm run typecheck
