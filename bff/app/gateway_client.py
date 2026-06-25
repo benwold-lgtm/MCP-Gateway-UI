@@ -22,17 +22,24 @@ class GatewayClient:
         headers = {}
         if settings.gateway_token:
             headers["Authorization"] = f"Bearer {settings.gateway_token}"
+        # The gateway mounts its management API under a version prefix (default /v1).
+        # Prepend it here, in one place, so routers stay version-agnostic and an
+        # absolute httpx path can't accidentally bypass it.
+        self._prefix = "/" + settings.gateway_api_prefix.strip("/") if settings.gateway_api_prefix.strip("/") else ""
         self._client = httpx.AsyncClient(
             base_url=settings.gateway_url,
             headers=headers,
             timeout=httpx.Timeout(10.0, read=30.0),
         )
 
+    def _with_prefix(self, path: str) -> str:
+        return f"{self._prefix}/{path.lstrip('/')}"
+
     async def request(self, method: str, path: str, *, json: Optional[Any] = None) -> httpx.Response:
-        return await self._client.request(method, path, json=json)
+        return await self._client.request(method, self._with_prefix(path), json=json)
 
     async def get(self, path: str) -> httpx.Response:
-        return await self._client.get(path)
+        return await self._client.get(self._with_prefix(path))
 
     async def aclose(self) -> None:
         await self._client.aclose()

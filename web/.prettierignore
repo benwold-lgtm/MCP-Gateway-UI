@@ -3,3 +3,5 @@ node_modules
 src/gateway.d.ts
 gateway.openapi.json
 package-lock.json
+# Node-run maintenance scripts — linted by eslint, not prettier-gated.
+scripts

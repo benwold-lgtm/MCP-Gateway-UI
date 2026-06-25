@@ -52,6 +52,7 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 | Var | Purpose |
 |-----|---------|
 | `GATEWAY_URL` | Gateway API base URL |
+| `GATEWAY_API_PREFIX` | Gateway management-API version prefix (default `/v1`; change only for a future `/v2`) |
 | `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only) |
 | `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Login password → role (empty disables) |
 | `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`) |
@@ -86,6 +87,17 @@ cd web && npm run gen:types   # regenerate types; tsc will flag any incompatibil
 
 The gateway gives these endpoints real response models (`OverviewResponse`,
 `DeviceSummary`, …), so the generated types are meaningful rather than `unknown`.
+
+`gen:types` only catches a contract change that breaks a type the SPA *consumes* — it
+won't notice a renamed/moved path the BFF proxies (the bug that left the BFF calling
+unversioned, pre-`/v1` paths). `npm run check:spec` closes that gap: point it at a live
+gateway and it diffs the committed snapshot's path/version surface, failing on drift.
+
+```bash
+# enforce against a running gateway (CI skips this step when neither var is set):
+GATEWAY_OPENAPI_URL=http://localhost:8000/openapi.json npm run check:spec
+# or against a file:  GATEWAY_OPENAPI_FILE=../path/to/openapi.json npm run check:spec
+```
 
 ### Frontend tooling
 

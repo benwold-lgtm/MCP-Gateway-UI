@@ -25,5 +25,18 @@ export default tseslint.config(
       "no-undef": "off",
     },
   },
+  {
+    // Node-run build/maintenance scripts (e.g. the spec drift checker) — declare the
+    // Node globals they use so js.configs.recommended's no-undef doesn't fire.
+    files: ["scripts/**/*.{js,mjs}"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+        URL: "readonly",
+      },
+    },
+  },
   prettier,
 );
