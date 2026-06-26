@@ -157,6 +157,44 @@ def test_viewer_cannot_update(app_client):
     assert c.put("/api/devices/x", json={"base_url": "http://new"}).status_code == 403
 
 
+def test_deadletter_list_proxies_gateway(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.get = _capture_get(seen, {"hostname": "dev", "count": 0, "entries": []})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    resp = c.get("/api/devices/dev/deadletter")
+    assert resp.status_code == 200
+    assert seen == ["/devices/dev/deadletter"]
+
+
+def test_deadletter_replay_admin_only(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.request = _capture_request(seen, {"hostname": "dev", "replayed": 2})
+    # viewer is refused before any upstream call
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.post("/api/devices/dev/deadletter/replay", json={"ids": ["1-0"]}).status_code == 403
+    assert seen == []
+    # admin replays specific ids — body passed through
+    c.post("/auth/login", json={"password": "admin-pw"})
+    resp = c.post("/api/devices/dev/deadletter/replay", json={"ids": ["1-0"]})
+    assert resp.json()["replayed"] == 2
+    assert seen == [("POST", "/devices/dev/deadletter/replay", {"ids": ["1-0"]})]
+
+
+def test_deadletter_drain_admin_only(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.request = _capture_request(seen, {"hostname": "dev", "removed": 5})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.delete("/api/devices/dev/deadletter").status_code == 403
+    c.post("/auth/login", json={"password": "admin-pw"})
+    resp = c.delete("/api/devices/dev/deadletter")
+    assert resp.json()["removed"] == 5
+    # No body → drain the whole queue (json=None forwarded).
+    assert seen == [("DELETE", "/devices/dev/deadletter", None)]
+
+
 def test_monitoring_meta_reports_unconfigured_by_default(app_client):
     c, _ = app_client
     c.post("/auth/login", json={"password": "viewer-pw"})

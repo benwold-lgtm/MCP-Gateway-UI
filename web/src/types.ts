@@ -59,3 +59,16 @@ export type PromResult = { metric: Record<string, string>; value: [number, strin
 export type PromQueryResponse = { status: string; data: { resultType: string; result: PromResult[] } };
 export type LokiStream = { stream: Record<string, string>; values: [string, string][] };
 export type LokiResponse = { status: string; data: { resultType: string; result: LokiStream[] } };
+
+// Dead-letter queue (gateway F-10, distributed mode). The DLQ response has no named
+// gateway OpenAPI schema, so the entry shape is declared here.
+export type DeadLetterEntry = {
+  id: string;
+  reason: string;
+  ts: string;
+  method: string | null;
+  rid: string;
+  request_id: string;
+  session_id: string;
+};
+export type DeadLetterList = { hostname: string; count: number; entries: DeadLetterEntry[] };

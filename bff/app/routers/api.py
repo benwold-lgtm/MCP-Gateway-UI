@@ -90,6 +90,41 @@ async def delete_device(hostname: str, request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.request("DELETE", f"/devices/{hostname}"))
 
 
+# --- Dead-letter queue (gateway F-10; distributed mode only) ------------------
+#
+# Inspect is a read; replay/drain mutate, so they require an admin session. The
+# gateway returns 400 in embedded mode (no in-process DLQ), passed through here.
+
+
+async def _optional_body(request: Request) -> Any:
+    """The optional ``{"ids": [...]}`` selector body, or None when absent."""
+    try:
+        return await request.json()
+    except Exception:
+        return None
+
+
+@router.get("/devices/{hostname}/deadletter", dependencies=[_any])
+async def deadletter_list(hostname: str, request: Request) -> JSONResponse:
+    return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}/deadletter"))
+
+
+@router.post("/devices/{hostname}/deadletter/replay", dependencies=[_admin])
+async def deadletter_replay(hostname: str, request: Request) -> JSONResponse:
+    # Optional {"ids": [...]} replays specific entries; no body replays the oldest batch.
+    body = await _optional_body(request)
+    return _passthrough(
+        await request.app.state.gateway.request("POST", f"/devices/{hostname}/deadletter/replay", json=body)
+    )
+
+
+@router.delete("/devices/{hostname}/deadletter", dependencies=[_admin])
+async def deadletter_drain(hostname: str, request: Request) -> JSONResponse:
+    # Optional {"ids": [...]} drains specific entries; no body drains the whole queue.
+    body = await _optional_body(request)
+    return _passthrough(await request.app.state.gateway.request("DELETE", f"/devices/{hostname}/deadletter", json=body))
+
+
 # --- Monitoring (Prometheus / Loki) -----------------------------------------
 #
 # The UI shows only a few critical at-a-glance metrics and recent logs; full
