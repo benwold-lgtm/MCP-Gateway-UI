@@ -1,13 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { Diagnostics, Tool, ToolsDiff } from "../types";
+import type { Diagnostics, Role, Tool, ToolsDiff } from "../types";
+import { DeadLetterPanel } from "./DeadLetterPanel";
 
 // Per-device detail: the gateway's diagnostics ("why is my device down?") plus a
 // tool explorer (the generated MCP tools and their input schemas). Diagnostics is
 // the source of truth for health; the tool list is best-effort (the gateway returns
 // 409 when there is no active pod), so a down device still shows its diagnostics.
-export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose: () => void }) {
+export function DeviceDetail({
+  hostname,
+  role,
+  onClose,
+}: {
+  hostname: string;
+  role: Role;
+  onClose: () => void;
+}) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [tools, setTools] = useState<Tool[] | null>(null);
   const [diff, setDiff] = useState<ToolsDiff | null>(null);
@@ -144,6 +153,8 @@ export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose:
           )}
         </>
       )}
+
+      <DeadLetterPanel hostname={hostname} role={role} />
     </section>
   );
 }

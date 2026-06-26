@@ -92,7 +92,7 @@ export function App() {
               <button onClick={() => setForm({ mode: "create" })}>Register device</button>
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}
-          {selected && <DeviceDetail hostname={selected} onClose={() => setSelected(null)} />}
+          {selected && <DeviceDetail hostname={selected} role={role} onClose={() => setSelected(null)} />}
           {overview ? (
             <DeviceList
               overview={overview}

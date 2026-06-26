@@ -10,7 +10,7 @@ import type {
   ToolsDiff,
   ToolsResponse,
 } from "./types";
-import type { LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
+import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
@@ -47,6 +47,17 @@ export const api = {
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),
+  // Dead-letter queue (gateway F-10, distributed mode). `ids` selects specific
+  // entries; omit to act on the whole batch.
+  deadLetters: (hostname: string) => req<DeadLetterList>("GET", `/api/devices/${hostname}/deadletter`),
+  replayDeadLetters: (hostname: string, ids?: string[]) =>
+    req<{ replayed: number }>(
+      "POST",
+      `/api/devices/${hostname}/deadletter/replay`,
+      ids ? { ids } : undefined,
+    ),
+  drainDeadLetters: (hostname: string, ids?: string[]) =>
+    req<{ removed: number }>("DELETE", `/api/devices/${hostname}/deadletter`, ids ? { ids } : undefined),
   // Monitoring (BFF-proxied Prometheus/Loki).
   monitoringMeta: () => req<MonitoringMeta>("GET", "/api/monitoring/meta"),
   prometheusQuery: (query: string) =>
