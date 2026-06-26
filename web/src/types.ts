@@ -10,6 +10,7 @@ export type Device = Schemas["DeviceSummary"];
 export type DeviceFull = Schemas["DeviceDetail"];
 export type Overview = Schemas["OverviewResponse"];
 export type Diagnostics = Schemas["DeviceDiagnostics"];
+export type ToolsDiff = Schemas["ToolsDiffResponse"];
 
 // Register/update request body. The gateway's POST/PUT body has no named OpenAPI
 // schema, so it's declared here. PUT preserves any field that is omitted (including

@@ -63,6 +63,13 @@ async def device_tools(hostname: str, request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}/tools"))
 
 
+@router.get("/devices/{hostname}/tools/diff", dependencies=[_any])
+async def device_tools_diff(hostname: str, request: Request) -> JSONResponse:
+    # The device's most recent tool-set change (added/removed/changed + breaking),
+    # for the "recent changes" panel (gateway F-41).
+    return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}/tools/diff"))
+
+
 @router.post("/devices", dependencies=[_admin])
 async def register_device(request: Request) -> JSONResponse:
     body = await request.json()

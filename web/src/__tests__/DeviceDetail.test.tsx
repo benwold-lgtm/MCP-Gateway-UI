@@ -4,10 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Hoisted mocks so the api module factory can reference them.
-const { diagnostics, tools } = vi.hoisted(() => ({ diagnostics: vi.fn(), tools: vi.fn() }));
+const { diagnostics, tools, toolsDiff } = vi.hoisted(() => ({
+  diagnostics: vi.fn(),
+  tools: vi.fn(),
+  toolsDiff: vi.fn(),
+}));
 
 vi.mock("../api", () => ({
-  api: { diagnostics, tools },
+  api: { diagnostics, tools, toolsDiff },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -57,6 +61,9 @@ describe("DeviceDetail", () => {
   beforeEach(() => {
     diagnostics.mockReset();
     tools.mockReset();
+    toolsDiff.mockReset();
+    // Default: no recorded tool-set change (panel hidden). Individual tests override.
+    toolsDiff.mockResolvedValue({ hostname: "sensor-1", tools_revision: 3, last_change: null });
   });
 
   it("renders diagnostics and the tool explorer", async () => {
@@ -82,5 +89,38 @@ describe("DeviceDetail", () => {
 
     expect(await screen.findByRole("heading", { name: "sensor-1" })).toBeInTheDocument();
     expect(screen.getByText(/No tools to show/)).toBeInTheDocument();
+  });
+
+  it("shows the recent tool-set change panel, flagging a breaking change", async () => {
+    diagnostics.mockResolvedValue(DIAG);
+    tools.mockResolvedValue(TOOLS);
+    toolsDiff.mockResolvedValue({
+      hostname: "sensor-1",
+      tools_revision: 4,
+      last_change: {
+        tools_revision: 4,
+        at: 1717500000.0,
+        added: ["new_tool"],
+        removed: ["gone_tool"],
+        changed: [],
+        breaking: true,
+        breaking_reasons: ["tool(s) removed: ['gone_tool']"],
+      },
+    });
+    render(<DeviceDetail hostname="sensor-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/Recent tool-set change/)).toBeInTheDocument();
+    expect(screen.getByText(/breaking/)).toBeInTheDocument();
+    expect(screen.getByText("new_tool")).toBeInTheDocument();
+    expect(screen.getByText("gone_tool")).toBeInTheDocument();
+    expect(screen.getByText(/tool\(s\) removed/)).toBeInTheDocument();
+  });
+
+  it("notes when there have been no tool-set changes", async () => {
+    diagnostics.mockResolvedValue(DIAG);
+    tools.mockResolvedValue(TOOLS);
+    render(<DeviceDetail hostname="sensor-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/No tool-set changes since registration/)).toBeInTheDocument();
   });
 });
