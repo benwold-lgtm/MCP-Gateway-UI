@@ -10,6 +10,7 @@ import type {
   ToolsDiff,
   ToolsResponse,
 } from "./types";
+import type { LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
@@ -46,4 +47,9 @@ export const api = {
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),
+  // Monitoring (BFF-proxied Prometheus/Loki).
+  monitoringMeta: () => req<MonitoringMeta>("GET", "/api/monitoring/meta"),
+  prometheusQuery: (query: string) =>
+    req<PromQueryResponse>("GET", `/api/prometheus/query?query=${encodeURIComponent(query)}`),
+  logs: (limit = 100) => req<LokiResponse>("GET", `/api/logs?limit=${limit}`),
 };

@@ -24,6 +24,7 @@ class Settings:
     session_secret: str
     prometheus_url: str
     loki_url: str
+    grafana_url: str = ""
     cors_origins: list[str] = field(default_factory=list)
     cookie_secure: bool = False
 
@@ -48,6 +49,9 @@ def load_settings() -> Settings:
         session_secret=os.getenv("SESSION_SECRET", "dev-insecure-change-me"),
         prometheus_url=os.getenv("PROMETHEUS_URL", ""),
         loki_url=os.getenv("LOKI_URL", ""),
+        # Optional link to central Grafana — surfaced in the UI's monitoring view so
+        # operators jump to full dashboards rather than rebuilding them here.
+        grafana_url=os.getenv("GRAFANA_URL", ""),
         cors_origins=_split(os.getenv("CORS_ORIGINS", "")),
         cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes"),
     )
