@@ -26,8 +26,8 @@ server-side, exposes only an opaque signed-cookie session, maps that session to 
 
 | Path | What |
 |------|------|
-| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, device CRUD incl. `PUT`, per-device diagnostics + tools, metrics summary; Prometheus/Loki stubs), session + role gating. Tests included. |
-| `web/` | React + Vite + TypeScript SPA — login, device list + counts, a **full register/edit form** (auth `api_key`/`oauth2`, `spec_url`, rate limit; create via `POST`, edit via `PUT`), remove, and a **device-detail panel** (diagnostics + tool explorer). Typed client (`src/api.ts`) over the BFF. |
+| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, device CRUD incl. `PUT`, per-device diagnostics + tools, metrics summary, Prometheus/Loki + monitoring meta), session + role gating. Tests included. |
+| `web/` | React + Vite + TypeScript SPA — login, device list + counts, a **full register/edit form** (auth `api_key`/`oauth2`, `spec_url`, rate limit; create via `POST`, edit via `PUT`), remove, a **device-detail panel** (diagnostics + tool explorer), and a **Monitoring view** (critical-metric tiles + central-monitoring pointers + recent logs). Typed client (`src/api.ts`) over the BFF. |
 | `deploy/kubernetes/` | Own namespace, BFF + web Deployments/Services, Ingress, NetworkPolicies (BFF egress to gateway/Prometheus/Loki; web egress to BFF only), kustomization. Secrets via `secret.example.yaml`. |
 | `docker-compose.yml` | Local build/preview of BFF + web. |
 
@@ -57,7 +57,8 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 | `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Login password → role (empty disables) |
 | `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`) |
 | `COOKIE_SECURE` | `true` behind TLS |
-| `PROMETHEUS_URL` / `LOKI_URL` | Phase-2 monitoring sources |
+| `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
+| `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
 
 ## Roadmap (phasing)
@@ -65,7 +66,7 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 1. **Device management** (this scaffold) — list/remove over the gateway REST API, status from `/admin/overview`.
 2. **Device detail** ✅ — per-device diagnostics ("why is my device down?"), a tool explorer (the generated MCP tools + their input schemas), and a **recent tool-set change** panel (added/removed/changed + breaking flag), from `/devices/{h}/diagnostics`, `/devices/{h}/tools`, and `/devices/{h}/tools/diff`.
 3. **Register / edit** ✅ — a full create + edit form (auth `api_key`/`oauth2`, `spec_url`, rate limit), `POST` to register and `PUT` to edit; edit pre-fills from the gateway and omits `auth` by default so stored credentials are preserved.
-4. **Monitoring** — Prometheus panels (embed Grafana or render from the query API) + logs via Loki/Splunk, both proxied through the BFF.
+4. **Monitoring** ✅ (metrics + logs) — a lightweight native view: critical at-a-glance metric tiles (Prometheus instant queries) + a recent-logs panel (Loki LogQL), both proxied through the BFF, plus first-class pointers to **central monitoring** (the gateway's `:9100/metrics` scrape endpoint and an optional Grafana link). Intentionally not a full monitoring app. **DLQ inspect/replay/drain is the remaining piece of this phase.**
 5. **Live + RBAC-aware** — SSE/WS device status, per-role views, login throttling + per-user identity.
 
 ## Keep the contract typed (no manual drift)

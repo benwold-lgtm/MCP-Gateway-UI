@@ -46,3 +46,16 @@ export type ToolsResponse = { hostname: string; tools: Tool[]; count: number };
 
 // UI-local — the role comes from the BFF session, not the gateway response contract.
 export type Role = "admin" | "viewer";
+
+// Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
+// No gateway OpenAPI schema backs these (they describe external systems), so they
+// are declared here.
+export type MonitoringMeta = {
+  prometheus_enabled: boolean;
+  loki_enabled: boolean;
+  grafana_url: string | null;
+};
+export type PromResult = { metric: Record<string, string>; value: [number, string] };
+export type PromQueryResponse = { status: string; data: { resultType: string; result: PromResult[] } };
+export type LokiStream = { stream: Record<string, string>; values: [string, string][] };
+export type LokiResponse = { status: string; data: { resultType: string; result: LokiStream[] } };

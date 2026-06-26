@@ -10,6 +10,7 @@ attaches it server-side.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -89,7 +90,25 @@ async def delete_device(hostname: str, request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.request("DELETE", f"/devices/{hostname}"))
 
 
-# --- Monitoring (Prometheus / Loki) — wired as stubs to fill in -------------
+# --- Monitoring (Prometheus / Loki) -----------------------------------------
+#
+# The UI shows only a few critical at-a-glance metrics and recent logs; full
+# dashboards belong in central monitoring (most customers already run one). The
+# BFF proxies a configured Prometheus / Loki so the browser never talks to them
+# directly, and `monitoring/meta` tells the UI what is wired up + the central
+# Grafana link.
+
+
+@router.get("/monitoring/meta", dependencies=[_any])
+async def monitoring_meta(request: Request) -> JSONResponse:
+    s = request.app.state.settings
+    return JSONResponse(
+        {
+            "prometheus_enabled": bool(s.prometheus_url),
+            "loki_enabled": bool(s.loki_url),
+            "grafana_url": s.grafana_url or None,
+        }
+    )
 
 
 @router.get("/metrics/summary", dependencies=[_any])
@@ -99,8 +118,8 @@ async def metrics_summary(request: Request) -> JSONResponse:
 
 @router.get("/prometheus/query", dependencies=[_any])
 async def prometheus_query(query: str, request: Request) -> JSONResponse:
-    # TODO(phase 2): proxy to PROMETHEUS_URL/api/v1/query?query=... and render in
-    # Grafana-style panels. Returns 501 until PROMETHEUS_URL is configured.
+    # Proxy a Prometheus instant query for the critical-metric tiles. 501 until
+    # PROMETHEUS_URL is configured (the UI then points operators at central monitoring).
     settings = request.app.state.settings
     if not settings.prometheus_url:
         return JSONResponse(status_code=501, content={"detail": "PROMETHEUS_URL not configured"})
@@ -109,10 +128,16 @@ async def prometheus_query(query: str, request: Request) -> JSONResponse:
 
 
 @router.get("/logs", dependencies=[_any])
-async def logs(request: Request) -> JSONResponse:
-    # TODO(phase 2): proxy a LogQL/Splunk query to LOKI_URL. The UI reads logs from
-    # the log store directly via the BFF — the gateway is never in the log path.
+async def logs(
+    request: Request, query: str = '{job="mcp-gateway"}', limit: int = 100, minutes: int = 60
+) -> JSONResponse:
+    # Proxy a LogQL range query to LOKI_URL for the recent-logs panel. The gateway
+    # is never in the log path — the UI reads logs from the store via the BFF.
     settings = request.app.state.settings
     if not settings.loki_url:
-        return JSONResponse(status_code=501, content={"detail": "LOKI_URL not configured"})
-    return JSONResponse(status_code=501, content={"detail": "log query not implemented in the starter scaffold"})
+        return JSONResponse(status_code=501, content={"detail": "LOKI_URL not configured — use your central logging"})
+    end_ns = int(time.time() * 1_000_000_000)
+    start_ns = end_ns - int(minutes) * 60 * 1_000_000_000
+    params = {"query": query, "limit": limit, "start": start_ns, "end": end_ns, "direction": "backward"}
+    async with httpx.AsyncClient(base_url=settings.loki_url, timeout=10.0) as client:
+        return _passthrough(await client.get("/loki/api/v1/query_range", params=params))

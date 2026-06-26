@@ -157,6 +157,26 @@ def test_viewer_cannot_update(app_client):
     assert c.put("/api/devices/x", json={"base_url": "http://new"}).status_code == 403
 
 
+def test_monitoring_meta_reports_unconfigured_by_default(app_client):
+    c, _ = app_client
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    body = c.get("/api/monitoring/meta").json()
+    # Default test env sets no PROMETHEUS_URL / LOKI_URL / GRAFANA_URL.
+    assert body == {"prometheus_enabled": False, "loki_enabled": False, "grafana_url": None}
+
+
+def test_monitoring_meta_requires_session(app_client):
+    c, _ = app_client
+    assert c.get("/api/monitoring/meta").status_code == 401
+
+
+def test_prometheus_and_logs_501_when_unconfigured(app_client):
+    c, _ = app_client
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.get("/api/prometheus/query", params={"query": "up"}).status_code == 501
+    assert c.get("/api/logs").status_code == 501
+
+
 def test_logout_clears_session(app_client):
     c, _ = app_client
     c.post("/auth/login", json={"password": "admin-pw"})
