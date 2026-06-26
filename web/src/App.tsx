@@ -4,11 +4,13 @@ import { api, ApiError } from "./api";
 import type { Overview, Role } from "./types";
 import { Login } from "./components/Login";
 import { DeviceList } from "./components/DeviceList";
+import { DeviceDetail } from "./components/DeviceDetail";
 import { RegisterDevice } from "./components/RegisterDevice";
 
 export function App() {
   const [role, setRole] = useState<Role | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,8 +60,9 @@ export function App() {
 
       {role === "admin" && <RegisterDevice onCreated={refresh} />}
       {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {selected && <DeviceDetail hostname={selected} onClose={() => setSelected(null)} />}
       {overview ? (
-        <DeviceList overview={overview} role={role} onChanged={refresh} onSelect={() => {}} />
+        <DeviceList overview={overview} role={role} onChanged={refresh} onSelect={setSelected} />
       ) : (
         <p>Loading devices…</p>
       )}

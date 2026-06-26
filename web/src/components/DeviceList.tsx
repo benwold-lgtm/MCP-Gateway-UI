@@ -40,7 +40,13 @@ export function DeviceList({
           {overview.devices.map((d: Device) => (
             <tr key={d.hostname} style={{ borderTop: "1px solid #ddd" }}>
               <td>
-                <a href="#" onClick={() => onSelect(d.hostname)}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onSelect(d.hostname);
+                  }}
+                >
                   {d.hostname}
                 </a>
               </td>
