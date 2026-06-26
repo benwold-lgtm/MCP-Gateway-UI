@@ -27,6 +27,17 @@ class Settings:
     grafana_url: str = ""
     cors_origins: list[str] = field(default_factory=list)
     cookie_secure: bool = False
+    # Federated identity (OIDC, ADR-0007). When enabled, the BFF runs an Authorization
+    # Code + PKCE login against the IdP and relays the user's access token upstream
+    # (Mode A token passthrough), so the gateway authorizes the real user. Local
+    # password login stays available as break-glass/bootstrap.
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_post_login_redirect: str = "/"
 
 
 def _split(csv: str) -> list[str]:
@@ -54,4 +65,15 @@ def load_settings() -> Settings:
         grafana_url=os.getenv("GRAFANA_URL", ""),
         cors_origins=_split(os.getenv("CORS_ORIGINS", "")),
         cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes"),
+        # OIDC (federated identity). Disabled unless OIDC_ENABLED is truthy AND an
+        # issuer + client id are configured (validated in OIDCClient).
+        oidc_enabled=os.getenv("OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),
+        oidc_issuer=os.getenv("OIDC_ISSUER", ""),
+        oidc_client_id=os.getenv("OIDC_CLIENT_ID", ""),
+        oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
+        # Must exactly match a redirect URI registered with the IdP, e.g.
+        # https://ui.example.com/auth/oidc/callback
+        oidc_redirect_url=os.getenv("OIDC_REDIRECT_URL", ""),
+        oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email"),
+        oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
     )

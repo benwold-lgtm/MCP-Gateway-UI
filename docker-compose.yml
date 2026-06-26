@@ -5,12 +5,22 @@ services:
     build: ./bff
     environment:
       GATEWAY_URL: ${GATEWAY_URL:-http://host.docker.internal:8000}
+      GATEWAY_API_PREFIX: ${GATEWAY_API_PREFIX:-/v1}
       GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN:-}
       UI_ADMIN_PASSWORD: ${UI_ADMIN_PASSWORD:-admin}
       UI_VIEWER_PASSWORD: ${UI_VIEWER_PASSWORD:-viewer}
       SESSION_SECRET: ${SESSION_SECRET:-dev-insecure-change-me}
       PROMETHEUS_URL: ${PROMETHEUS_URL:-}
       LOKI_URL: ${LOKI_URL:-}
+      GRAFANA_URL: ${GRAFANA_URL:-}
+      # Federated identity (OIDC SSO, ADR-0007). Off unless OIDC_ENABLED=true.
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email}
+      OIDC_POST_LOGIN_REDIRECT: ${OIDC_POST_LOGIN_REDIRECT:-/}
     ports:
       - "8090:8090"
 

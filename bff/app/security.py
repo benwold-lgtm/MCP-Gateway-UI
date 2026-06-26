@@ -1,23 +1,42 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""Session roles and authorization for the BFF.
+"""Session model and authorization for the BFF.
 
-Mirrors the gateway's role model (admin / viewer) at the UI tier. The session holds
-only an opaque role string in a signed cookie — never the gateway token. Mutations
-require an admin session; reads allow any authenticated session.
+Two kinds of session (ADR-0007):
+
+* **password** — local break-glass/bootstrap login. The BFF proxies upstream with the
+  single **admin** gateway token, so the BFF's role check is *load-bearing*: a `viewer`
+  password must not be able to mutate via the all-powerful admin token. Role gating here
+  stays exactly as before.
+* **oidc** — federated login. The BFF relays the **user's own** access token upstream
+  (Mode A token passthrough), so the **gateway** authorizes on the user's real scopes.
+  The BFF therefore does **not** re-authorize (no BFF-side authz is load-bearing for OIDC,
+  per the threat model) — it only requires that a session exists.
+
+The session cookie never holds the gateway admin token; for OIDC it holds the user's
+access token, which is forwarded only server-side.
 """
 
 from __future__ import annotations
 
 import hmac
+from typing import Optional, TypedDict
 
 from fastapi import HTTPException, Request
 
 ROLES = ("admin", "viewer")
 
 
-def resolve_role(settings, password: str) -> str | None:
+class SessionInfo(TypedDict, total=False):
+    kind: str  # "password" | "oidc"
+    role: str  # password sessions
+    sub: str  # oidc sessions — IdP subject
+    name: str  # oidc sessions — display name
+    access_token: str  # oidc sessions — relayed upstream
+
+
+def resolve_role(settings, password: str) -> Optional[str]:
     """Map a login password to a role using constant-time comparison."""
     if settings.ui_admin_password and hmac.compare_digest(password, settings.ui_admin_password):
         return "admin"
@@ -26,19 +45,54 @@ def resolve_role(settings, password: str) -> str | None:
     return None
 
 
-def current_role(request: Request) -> str | None:
-    return request.session.get("role")
+def current_session(request: Request) -> Optional[SessionInfo]:
+    """The authenticated session, normalised across the two kinds, or None.
+
+    OIDC sessions are stored under ``auth``; password sessions keep the legacy
+    top-level ``role`` key so existing cookies/tests are unaffected.
+    """
+    auth = request.session.get("auth")
+    if isinstance(auth, dict) and auth.get("kind") == "oidc":
+        return auth  # type: ignore[return-value]
+    role = request.session.get("role")
+    if role:
+        return {"kind": "password", "role": role}
+    return None
+
+
+def current_role(request: Request) -> Optional[str]:
+    """The legacy role accessor — only meaningful for password sessions."""
+    sess = current_session(request)
+    if sess and sess.get("kind") == "password":
+        return sess.get("role")
+    return None
+
+
+def upstream_bearer(request: Request) -> Optional[str]:
+    """The token the BFF should present to the gateway for this request.
+
+    OIDC session → the user's access token (per-user identity, F-30). Password session
+    → None, so the GatewayClient falls back to its configured admin token.
+    """
+    sess = current_session(request)
+    if sess and sess.get("kind") == "oidc":
+        return sess.get("access_token")
+    return None
 
 
 def require_role(*allowed: str):
-    """Dependency factory: 401 if no session, 403 if the role isn't permitted."""
+    """Dependency factory: 401 if no session; for password sessions, 403 unless the role
+    is permitted. OIDC sessions pass through — the gateway is the authorization point."""
 
-    async def _dep(request: Request) -> str:
-        role = current_role(request)
-        if not role:
+    async def _dep(request: Request) -> SessionInfo:
+        sess = current_session(request)
+        if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
-        if allowed and role not in allowed:
+        if sess.get("kind") == "oidc":
+            # Authorization is delegated to the gateway (it sees the user's real scopes).
+            return sess
+        if allowed and sess.get("role") not in allowed:
             raise HTTPException(status_code=403, detail="Forbidden")
-        return role
+        return sess
 
     return _dep

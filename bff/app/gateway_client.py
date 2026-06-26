@@ -35,11 +35,20 @@ class GatewayClient:
     def _with_prefix(self, path: str) -> str:
         return f"{self._prefix}/{path.lstrip('/')}"
 
-    async def request(self, method: str, path: str, *, json: Optional[Any] = None) -> httpx.Response:
-        return await self._client.request(method, self._with_prefix(path), json=json)
+    @staticmethod
+    def _auth(bearer: Optional[str]) -> Optional[dict]:
+        # A per-request bearer (an OIDC user's access token) overrides the client's
+        # default admin Authorization for that call only — the relay path (ADR-0007
+        # Mode A). When None, httpx uses the client-level admin header.
+        return {"Authorization": f"Bearer {bearer}"} if bearer else None
 
-    async def get(self, path: str) -> httpx.Response:
-        return await self._client.get(self._with_prefix(path))
+    async def request(
+        self, method: str, path: str, *, json: Optional[Any] = None, bearer: Optional[str] = None
+    ) -> httpx.Response:
+        return await self._client.request(method, self._with_prefix(path), json=json, headers=self._auth(bearer))
+
+    async def get(self, path: str, *, bearer: Optional[str] = None) -> httpx.Response:
+        return await self._client.get(self._with_prefix(path), headers=self._auth(bearer))
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -1,14 +1,24 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""Login / logout / whoami — establishes a signed-cookie session with a role."""
+"""Login / logout / whoami.
+
+Two ways in (ADR-0007):
+  * **password** — local break-glass/bootstrap login (admin / viewer), unchanged.
+  * **oidc** — federated SSO via Authorization Code + PKCE; the BFF holds the user's
+    tokens server-side and relays the access token upstream.
+"""
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from ..security import current_role, resolve_role
+from ..oidc import OIDCError, make_pkce_pair
+from ..security import current_session, resolve_role
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -17,11 +27,22 @@ class LoginBody(BaseModel):
     password: str
 
 
+@router.get("/config")
+async def auth_config(request: Request) -> dict:
+    """What login methods this BFF offers — lets the SPA show SSO and/or password."""
+    s = request.app.state.settings
+    return {
+        "oidc_enabled": request.app.state.oidc is not None,
+        "password_login": bool(s.ui_admin_password or s.ui_viewer_password),
+    }
+
+
 @router.post("/login")
 async def login(request: Request, body: LoginBody) -> dict:
     role = resolve_role(request.app.state.settings, body.password)
     if role is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    request.session.clear()
     request.session["role"] = role
     return {"role": role}
 
@@ -34,7 +55,68 @@ async def logout(request: Request) -> dict:
 
 @router.get("/me")
 async def me(request: Request) -> dict:
-    role = current_role(request)
-    if not role:
+    sess = current_session(request)
+    if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"role": role}
+    if sess.get("kind") == "password":
+        # Unchanged shape for the existing SPA.
+        return {"role": sess.get("role")}
+    # OIDC session. The gateway is the source of truth for scopes; until the UI consumes
+    # gateway whoami, expose identity only (role omitted/None).
+    return {"kind": "oidc", "sub": sess.get("sub"), "name": sess.get("name"), "role": None}
+
+
+# --- OIDC (Authorization Code + PKCE) ----------------------------------------
+
+
+@router.get("/oidc/login")
+async def oidc_login(request: Request) -> RedirectResponse:
+    oidc = request.app.state.oidc
+    if oidc is None:
+        raise HTTPException(status_code=404, detail="OIDC is not enabled")
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    verifier, challenge = make_pkce_pair()
+    # The transaction secrets live in the (signed, HttpOnly) session — never the URL —
+    # and are single-use: the callback pops them. Defeats login-CSRF (TM-I-01).
+    request.session["oidc_tx"] = {"state": state, "nonce": nonce, "verifier": verifier}
+    url = await oidc.authorization_url(state=state, nonce=nonce, challenge=challenge)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    oidc = request.app.state.oidc
+    if oidc is None:
+        raise HTTPException(status_code=404, detail="OIDC is not enabled")
+
+    tx = request.session.pop("oidc_tx", None)
+    if error:
+        raise HTTPException(status_code=400, detail=f"IdP returned an error: {error}")
+    if not code or not state or not isinstance(tx, dict):
+        raise HTTPException(status_code=400, detail="Invalid OIDC callback")
+    if not secrets.compare_digest(state, tx.get("state", "")):
+        # state mismatch → possible CSRF/forged callback. Refuse.
+        raise HTTPException(status_code=400, detail="OIDC state mismatch")
+
+    try:
+        tokens = await oidc.exchange_code(code=code, verifier=tx["verifier"])
+        claims = await oidc.validate_id_token(id_token=tokens["id_token"], nonce=tx["nonce"])
+    except OIDCError as exc:
+        raise HTTPException(status_code=401, detail=f"OIDC login failed: {exc}")
+
+    # Establish the session. Rotate it (clear first) so the pre-login session id can't be
+    # fixated, and store the access token server-side for the upstream relay.
+    request.session.clear()
+    request.session["auth"] = {
+        "kind": "oidc",
+        "sub": claims.get("sub"),
+        "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
+        "access_token": tokens.get("access_token"),
+    }
+    return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)
