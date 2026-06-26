@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Typed client to the BFF. Same-origin in production (nginx) and via Vite proxy in
 // dev, so the session cookie is sent automatically with credentials: "include".
-import type { DeviceFull, DevicePayload, Diagnostics, Overview, Role, ToolsResponse } from "./types";
+import type {
+  DeviceFull,
+  DevicePayload,
+  Diagnostics,
+  Overview,
+  Role,
+  ToolsDiff,
+  ToolsResponse,
+} from "./types";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
@@ -34,6 +42,7 @@ export const api = {
   getDevice: (hostname: string) => req<DeviceFull>("GET", `/api/devices/${hostname}`),
   diagnostics: (hostname: string) => req<Diagnostics>("GET", `/api/devices/${hostname}/diagnostics`),
   tools: (hostname: string) => req<ToolsResponse>("GET", `/api/devices/${hostname}/tools`),
+  toolsDiff: (hostname: string) => req<ToolsDiff>("GET", `/api/devices/${hostname}/tools/diff`),
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),

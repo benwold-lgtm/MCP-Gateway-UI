@@ -267,6 +267,51 @@
         }
       }
     },
+    "/v1/devices/{hostname}/tools/diff": {
+      "get": {
+        "summary": "Get Device Tools Diff",
+        "description": "Tool-set change governance (F-41): what was added/removed/changed when\nthe device's tools last moved, and whether it was breaking. ``last_change``\nis ``null`` when no change has been observed since registration. Unlike\n``/tools`` this does not require an active pod \u2014 a UI can show \"the tools\nchanged (and how)\" even for a device that is currently down.",
+        "operationId": "get_device_tools_diff_v1_devices__hostname__tools_diff_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolsDiffResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/devices/{hostname}/diagnostics": {
       "get": {
         "summary": "Device Diagnostics",
@@ -1127,6 +1172,91 @@
           "devices"
         ],
         "title": "OverviewResponse"
+      },
+      "ToolChangeRecord": {
+        "properties": {
+          "tools_revision": {
+            "type": "integer",
+            "title": "Tools Revision"
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Added",
+            "default": []
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Removed",
+            "default": []
+          },
+          "changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed",
+            "default": []
+          },
+          "breaking": {
+            "type": "boolean",
+            "title": "Breaking",
+            "default": false
+          },
+          "breaking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breaking Reasons",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "tools_revision",
+          "at"
+        ],
+        "title": "ToolChangeRecord",
+        "description": "The most recent tool-set change for a device \u2014 what was added/removed/\nchanged when its upstream OpenAPI spec last mutated, and whether that was\nbackwards-breaking for clients calling the old shape (F-41)."
+      },
+      "ToolsDiffResponse": {
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "title": "Hostname"
+          },
+          "tools_revision": {
+            "type": "integer",
+            "title": "Tools Revision"
+          },
+          "last_change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolChangeRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "hostname",
+          "tools_revision"
+        ],
+        "title": "ToolsDiffResponse",
+        "description": "Tool-set change governance for a device. ``last_change`` is ``null`` when no\nchange has been observed since registration (the tool set is as first\ngenerated). ``tools_revision`` is the device's current monotonic revision \u2014\npoll it to detect a change, then read ``last_change`` to see what moved."
       },
       "ValidationError": {
         "properties": {

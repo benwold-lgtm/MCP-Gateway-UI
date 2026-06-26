@@ -63,7 +63,7 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 ## Roadmap (phasing)
 
 1. **Device management** (this scaffold) — list/remove over the gateway REST API, status from `/admin/overview`.
-2. **Device detail** ✅ — per-device diagnostics ("why is my device down?") and a tool explorer (the generated MCP tools + their input schemas), from `/devices/{h}/diagnostics` and `/devices/{h}/tools`. (When the gateway's `/tools/diff` lands, a "recent tool-set changes" panel slots in here.)
+2. **Device detail** ✅ — per-device diagnostics ("why is my device down?"), a tool explorer (the generated MCP tools + their input schemas), and a **recent tool-set change** panel (added/removed/changed + breaking flag), from `/devices/{h}/diagnostics`, `/devices/{h}/tools`, and `/devices/{h}/tools/diff`.
 3. **Register / edit** ✅ — a full create + edit form (auth `api_key`/`oauth2`, `spec_url`, rate limit), `POST` to register and `PUT` to edit; edit pre-fills from the gateway and omits `auth` by default so stored credentials are preserved.
 4. **Monitoring** — Prometheus panels (embed Grafana or render from the query API) + logs via Loki/Splunk, both proxied through the BFF.
 5. **Live + RBAC-aware** — SSE/WS device status, per-role views, login throttling + per-user identity.

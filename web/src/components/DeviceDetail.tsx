@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { Diagnostics, Tool } from "../types";
+import type { Diagnostics, Tool, ToolsDiff } from "../types";
 
 // Per-device detail: the gateway's diagnostics ("why is my device down?") plus a
 // tool explorer (the generated MCP tools and their input schemas). Diagnostics is
@@ -10,6 +10,7 @@ import type { Diagnostics, Tool } from "../types";
 export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose: () => void }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [tools, setTools] = useState<Tool[] | null>(null);
+  const [diff, setDiff] = useState<ToolsDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openTool, setOpenTool] = useState<string | null>(null);
 
@@ -17,6 +18,7 @@ export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose:
     let active = true;
     setDiag(null);
     setTools(null);
+    setDiff(null);
     setError(null);
     setOpenTool(null);
     Promise.all([
@@ -26,11 +28,17 @@ export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose:
         (t) => t.tools,
         () => [],
       ),
+      // Governance — also best-effort; absence just hides the changes panel.
+      api.toolsDiff(hostname).then(
+        (x) => x,
+        () => null,
+      ),
     ])
-      .then(([d, t]) => {
+      .then(([d, t, df]) => {
         if (!active) return;
         setDiag(d);
         setTools(t);
+        setDiff(df);
       })
       .catch((err) => {
         if (active) setError(err instanceof ApiError ? err.message : "Failed to load device");
@@ -82,6 +90,13 @@ export function DeviceDetail({ hostname, onClose }: { hostname: string; onClose:
               <Row label="Circuit breaker" value={breakerText(diag.breaker)} />
             </tbody>
           </table>
+
+          {diff?.last_change && <ToolChanges change={diff.last_change} />}
+          {diff && !diff.last_change && (
+            <p style={{ color: "#888", marginTop: 12, fontSize: 13 }}>
+              No tool-set changes since registration.
+            </p>
+          )}
 
           <h3 style={{ marginTop: 16 }}>Tools {tools ? `(${tools.length})` : ""}</h3>
           {tools && tools.length === 0 && (
@@ -150,4 +165,43 @@ function breakerText(b: Diagnostics["breaker"]): string {
   if (!b.available) return b.note ?? "not readable here";
   const state = b.state ?? "unknown";
   return b.fail_max != null ? `${state} (${b.fail_counter ?? 0}/${b.fail_max} failures)` : state;
+}
+
+// The device's most recent tool-set change (gateway F-41). Array fields are optional
+// in the generated schema, so coalesce before use.
+function ToolChanges({ change }: { change: NonNullable<ToolsDiff["last_change"]> }) {
+  const reasons = change.breaking_reasons ?? [];
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ marginBottom: 2 }}>
+        Recent tool-set change{" "}
+        <span style={{ fontSize: 13, color: change.breaking ? "crimson" : "#2a7" }}>
+          · {change.breaking ? "breaking" : "compatible"}
+        </span>
+      </h3>
+      <p style={{ color: "#666", fontSize: 13, margin: "2px 0" }}>
+        revision {change.tools_revision} · {new Date(change.at * 1000).toLocaleString()}
+      </p>
+      <ChangeLine label="Added" names={change.added} />
+      <ChangeLine label="Removed" names={change.removed} />
+      <ChangeLine label="Changed" names={change.changed} />
+      {change.breaking && reasons.length > 0 && (
+        <ul style={{ color: "crimson", fontSize: 13, margin: "4px 0" }}>
+          {reasons.map((r) => (
+            <li key={r}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ChangeLine({ label, names }: { label: string; names?: string[] }) {
+  const list = names ?? [];
+  if (list.length === 0) return null;
+  return (
+    <div style={{ fontSize: 13 }}>
+      <b>{label}:</b> <code>{list.join(", ")}</code>
+    </div>
+  );
 }

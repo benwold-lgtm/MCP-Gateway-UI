@@ -97,10 +97,22 @@ def test_tools_proxies_gateway(app_client):
     assert seen == ["/devices/dev/tools"]
 
 
+def test_tools_diff_proxies_gateway(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.get = _capture_get(seen, {"hostname": "dev", "tools_revision": 2, "last_change": None})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    resp = c.get("/api/devices/dev/tools/diff")
+    assert resp.status_code == 200
+    assert resp.json()["tools_revision"] == 2
+    assert seen == ["/devices/dev/tools/diff"]
+
+
 def test_device_reads_require_session(app_client):
     c, _ = app_client
     assert c.get("/api/devices/dev/diagnostics").status_code == 401
     assert c.get("/api/devices/dev/tools").status_code == 401
+    assert c.get("/api/devices/dev/tools/diff").status_code == 401
 
 
 def test_viewer_cannot_mutate(app_client):
