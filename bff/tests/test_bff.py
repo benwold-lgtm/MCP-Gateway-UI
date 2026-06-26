@@ -119,6 +119,32 @@ def test_admin_can_register(app_client):
     assert resp.json()["status"] == "registered"
 
 
+def _capture_request(seen, payload, status=200):
+    async def _r(method, path, json=None):
+        seen.append((method, path, json))
+        return httpx.Response(status, json=payload)
+
+    return _r
+
+
+def test_admin_can_update(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.request = _capture_request(seen, {"status": "registered", "hostname": "x"})
+    c.post("/auth/login", json={"password": "admin-pw"})
+    resp = c.put("/api/devices/x", json={"base_url": "http://new"})
+    assert resp.status_code == 200
+    # The router proxies a PUT to the gateway's device path, body passed through.
+    assert seen == [("PUT", "/devices/x", {"base_url": "http://new"})]
+
+
+def test_viewer_cannot_update(app_client):
+    c, app = app_client
+    app.state.gateway.request = _fake_request({"status": "ok"})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.put("/api/devices/x", json={"base_url": "http://new"}).status_code == 403
+
+
 def test_logout_clears_session(app_client):
     c, _ = app_client
     c.post("/auth/login", json={"password": "admin-pw"})

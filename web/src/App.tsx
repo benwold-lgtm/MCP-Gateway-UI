@@ -5,12 +5,15 @@ import type { Overview, Role } from "./types";
 import { Login } from "./components/Login";
 import { DeviceList } from "./components/DeviceList";
 import { DeviceDetail } from "./components/DeviceDetail";
-import { RegisterDevice } from "./components/RegisterDevice";
+import { DeviceForm } from "./components/DeviceForm";
+
+type FormState = { mode: "create" } | { mode: "edit"; hostname: string };
 
 export function App() {
   const [role, setRole] = useState<Role | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState | null>(null);
   const [booting, setBooting] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,11 +61,30 @@ export function App() {
         </span>
       </header>
 
-      {role === "admin" && <RegisterDevice onCreated={refresh} />}
+      {role === "admin" &&
+        (form ? (
+          <DeviceForm
+            mode={form.mode}
+            hostname={form.mode === "edit" ? form.hostname : undefined}
+            onDone={() => {
+              setForm(null);
+              void refresh();
+            }}
+            onCancel={() => setForm(null)}
+          />
+        ) : (
+          <button onClick={() => setForm({ mode: "create" })}>Register device</button>
+        ))}
       {error && <p style={{ color: "crimson" }}>{error}</p>}
       {selected && <DeviceDetail hostname={selected} onClose={() => setSelected(null)} />}
       {overview ? (
-        <DeviceList overview={overview} role={role} onChanged={refresh} onSelect={setSelected} />
+        <DeviceList
+          overview={overview}
+          role={role}
+          onChanged={refresh}
+          onSelect={setSelected}
+          onEdit={(hostname) => setForm({ mode: "edit", hostname })}
+        />
       ) : (
         <p>Loading devices…</p>
       )}

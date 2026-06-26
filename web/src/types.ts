@@ -7,8 +7,29 @@ import type { components } from "./gateway";
 type Schemas = components["schemas"];
 
 export type Device = Schemas["DeviceSummary"];
+export type DeviceFull = Schemas["DeviceDetail"];
 export type Overview = Schemas["OverviewResponse"];
 export type Diagnostics = Schemas["DeviceDiagnostics"];
+
+// Register/update request body. The gateway's POST/PUT body has no named OpenAPI
+// schema, so it's declared here. PUT preserves any field that is omitted (including
+// `auth`, which keeps the stored credentials).
+export type ApiKeyAuth = { api_key: string; location?: string; name?: string; value_prefix?: string };
+export type OAuth2Auth = {
+  token_endpoint: string;
+  client_id: string;
+  client_secret: string;
+  scopes?: string[];
+};
+export type DevicePayload = {
+  hostname?: string;
+  base_url?: string;
+  spec_url?: string;
+  transport?: string;
+  rate_limit_rps?: number;
+  auth_type?: "none" | "api_key" | "oauth2";
+  auth?: ApiKeyAuth | OAuth2Auth;
+};
 
 // The gateway's GET /devices/{h}/tools has no response model (it returns a plain
 // dict), so this shape is declared here rather than derived from the OpenAPI. Keep
