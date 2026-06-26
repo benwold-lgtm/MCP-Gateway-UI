@@ -2,11 +2,13 @@
 // Typed client to the BFF. Same-origin in production (nginx) and via Vite proxy in
 // dev, so the session cookie is sent automatically with credentials: "include".
 import type {
+  AuthConfig,
   DeviceFull,
   DevicePayload,
   Diagnostics,
   Overview,
   Role,
+  Session,
   ToolsDiff,
   ToolsResponse,
 } from "./types";
@@ -38,7 +40,8 @@ export class ApiError extends Error {
 export const api = {
   login: (password: string) => req<{ role: Role }>("POST", "/auth/login", { password }),
   logout: () => req<{ status: string }>("POST", "/auth/logout"),
-  me: () => req<{ role: Role }>("GET", "/auth/me"),
+  me: () => req<Session>("GET", "/auth/me"),
+  authConfig: () => req<AuthConfig>("GET", "/auth/config"),
   overview: () => req<Overview>("GET", "/api/overview"),
   getDevice: (hostname: string) => req<DeviceFull>("GET", `/api/devices/${hostname}`),
   diagnostics: (hostname: string) => req<Diagnostics>("GET", `/api/devices/${hostname}/diagnostics`),

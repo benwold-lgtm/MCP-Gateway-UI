@@ -89,8 +89,10 @@ There are **two kinds of session**:
   with the single admin `GATEWAY_API_TOKEN`, so the BFF still enforces the admin/viewer role.
   Keep at least the admin password even with SSO on (an IdP outage must not lock you out).
 
-> This slice ships the **server-side** flow and relay. The SPA "Sign in with SSO" button and
-> scope-driven view gating (reading the gateway's `/auth/me` scopes) are the next slice.
+The SPA shows a **"Sign in with SSO"** button when OIDC is enabled (alongside or instead of
+the password form, per `/auth/config`) and **gates every write affordance on the gateway's
+scopes** — it reads `/auth/me`, whose scopes come from the gateway's own whoami for OIDC
+sessions, so the UI and gateway authorization can't drift.
 
 ## Roadmap (phasing)
 
@@ -98,10 +100,11 @@ There are **two kinds of session**:
 2. **Device detail** ✅ — per-device diagnostics ("why is my device down?"), a tool explorer (the generated MCP tools + their input schemas), and a **recent tool-set change** panel (added/removed/changed + breaking flag), from `/devices/{h}/diagnostics`, `/devices/{h}/tools`, and `/devices/{h}/tools/diff`.
 3. **Register / edit** ✅ — a full create + edit form (auth `api_key`/`oauth2`, `spec_url`, rate limit), `POST` to register and `PUT` to edit; edit pre-fills from the gateway and omits `auth` by default so stored credentials are preserved.
 4. **Monitoring + DLQ** ✅ — a lightweight native monitoring view: critical at-a-glance metric tiles (Prometheus instant queries) + a recent-logs panel (Loki LogQL), both proxied through the BFF, plus first-class pointers to **central monitoring** (the gateway's `:9100/metrics` scrape endpoint and an optional Grafana link); intentionally not a full monitoring app. Plus a per-device **dead-letter queue** panel in device detail (inspect any session; replay/drain admin-only; distributed mode).
-5. **Federated identity** 🚧 — OIDC SSO at the BFF (Authorization Code + PKCE) with per-user
-   token passthrough to the gateway, local passwords kept as break-glass (ADR-0007). Done
-   server-side; next: SPA SSO button + scope-driven view gating off the gateway's `/auth/me`.
-6. **Live + RBAC-aware** — SSE/WS device status, per-role views, login throttling.
+5. **Federated identity** ✅ — OIDC SSO at the BFF (Authorization Code + PKCE) with per-user
+   token passthrough to the gateway and local passwords kept as break-glass (ADR-0007). The
+   SPA offers a "Sign in with SSO" button and **gates write affordances on the gateway's
+   scopes** (`/auth/me`), so UI and gateway authorization stay in lockstep.
+6. **Live** — SSE/WS device status, login throttling, finer per-scope views.
 
 ## Keep the contract typed (no manual drift)
 

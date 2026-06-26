@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { Diagnostics, Role, Tool, ToolsDiff } from "../types";
+import type { Diagnostics, Tool, ToolsDiff } from "../types";
 import { DeadLetterPanel } from "./DeadLetterPanel";
 
 // Per-device detail: the gateway's diagnostics ("why is my device down?") plus a
@@ -10,11 +10,11 @@ import { DeadLetterPanel } from "./DeadLetterPanel";
 // 409 when there is no active pod), so a down device still shows its diagnostics.
 export function DeviceDetail({
   hostname,
-  role,
+  canWrite,
   onClose,
 }: {
   hostname: string;
-  role: Role;
+  canWrite: boolean;
   onClose: () => void;
 }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
@@ -154,7 +154,7 @@ export function DeviceDetail({
         </>
       )}
 
-      <DeadLetterPanel hostname={hostname} role={role} />
+      <DeadLetterPanel hostname={hostname} canWrite={canWrite} />
     </section>
   );
 }

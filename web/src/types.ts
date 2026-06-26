@@ -47,6 +47,22 @@ export type ToolsResponse = { hostname: string; tools: Tool[]; count: number };
 // UI-local — the role comes from the BFF session, not the gateway response contract.
 export type Role = "admin" | "viewer";
 
+// Gateway scope strings (ADR-0007). The UI gates affordances on scopes, not roles, so it
+// tracks the gateway's authorization for both password and OIDC sessions.
+export type Scope = "devices:read" | "devices:write" | "tools:call" | "metrics:read";
+
+// The signed-in session as reported by the BFF /auth/me.
+export type Session = {
+  kind: "password" | "oidc";
+  subject: string;
+  role: Role | null;
+  scopes: Scope[];
+  name?: string | null;
+};
+
+// What login methods the BFF offers (GET /auth/config).
+export type AuthConfig = { oidc_enabled: boolean; password_login: boolean };
+
 // Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
 // No gateway OpenAPI schema backs these (they describe external systems), so they
 // are declared here.

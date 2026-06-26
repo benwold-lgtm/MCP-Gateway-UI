@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import type { Device, Overview, Role } from "../types";
+import type { Device, Overview } from "../types";
 import { api } from "../api";
 
 export function DeviceList({
   overview,
-  role,
+  canWrite,
   onChanged,
   onSelect,
   onEdit,
 }: {
   overview: Overview;
-  role: Role;
+  canWrite: boolean;
   onChanged: () => void;
   onSelect: (hostname: string) => void;
   onEdit?: (hostname: string) => void;
@@ -35,7 +35,7 @@ export function DeviceList({
             <th align="left">Base URL</th>
             <th>Reachable</th>
             <th>Pod</th>
-            {role === "admin" && <th></th>}
+            {canWrite && <th></th>}
           </tr>
         </thead>
         <tbody>
@@ -55,7 +55,7 @@ export function DeviceList({
               <td>{d.base_url}</td>
               <td align="center">{d.reachable ? "✅" : "❌"}</td>
               <td align="center">{d.pod_active ? "🟢" : "⚪"}</td>
-              {role === "admin" && (
+              {canWrite && (
                 <td align="center">
                   {onEdit && <button onClick={() => onEdit(d.hostname)}>Edit</button>}{" "}
                   <button onClick={() => remove(d.hostname)}>Remove</button>

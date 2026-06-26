@@ -27,6 +27,16 @@ from fastapi import HTTPException, Request
 
 ROLES = ("admin", "viewer")
 
+# Scope bundles for the local **break-glass** password roles, mirroring the gateway's
+# admin/viewer bundles. These exist only so the UI can gate the same way for both session
+# kinds; password sessions proxy with the admin token, and the BFF's role gate (not these
+# scopes) is what actually enforces them. OIDC sessions get their scopes from the gateway's
+# /auth/me instead (the real per-user grant), so there is no duplicated mapping for them.
+PASSWORD_ROLE_SCOPES: dict[str, list[str]] = {
+    "admin": ["devices:read", "devices:write", "metrics:read", "tools:call"],
+    "viewer": ["devices:read", "metrics:read"],
+}
+
 
 class SessionInfo(TypedDict, total=False):
     kind: str  # "password" | "oidc"
