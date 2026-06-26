@@ -7,11 +7,13 @@ export function DeviceList({
   role,
   onChanged,
   onSelect,
+  onEdit,
 }: {
   overview: Overview;
   role: Role;
   onChanged: () => void;
   onSelect: (hostname: string) => void;
+  onEdit?: (hostname: string) => void;
 }) {
   async function remove(hostname: string) {
     if (!confirm(`Unregister ${hostname}?`)) return;
@@ -55,6 +57,7 @@ export function DeviceList({
               <td align="center">{d.pod_active ? "🟢" : "⚪"}</td>
               {role === "admin" && (
                 <td align="center">
+                  {onEdit && <button onClick={() => onEdit(d.hostname)}>Edit</button>}{" "}
                   <button onClick={() => remove(d.hostname)}>Remove</button>
                 </td>
               )}

@@ -69,6 +69,14 @@ async def register_device(request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.request("POST", "/devices", json=body))
 
 
+@router.put("/devices/{hostname}", dependencies=[_admin])
+async def update_device(hostname: str, request: Request) -> JSONResponse:
+    # PUT replaces a device's config; the gateway preserves any field the body omits
+    # (including stored credentials when `auth` is omitted).
+    body = await request.json()
+    return _passthrough(await request.app.state.gateway.request("PUT", f"/devices/{hostname}", json=body))
+
+
 @router.delete("/devices/{hostname}", dependencies=[_admin])
 async def delete_device(hostname: str, request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.request("DELETE", f"/devices/{hostname}"))
