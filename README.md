@@ -53,13 +53,44 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 |-----|---------|
 | `GATEWAY_URL` | Gateway API base URL |
 | `GATEWAY_API_PREFIX` | Gateway management-API version prefix (default `/v1`; change only for a future `/v2`) |
-| `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only) |
-| `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Login password → role (empty disables) |
+| `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only); used for local password sessions and as break-glass |
+| `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Local break-glass login password → role (empty disables) |
 | `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`) |
 | `COOKIE_SECURE` | `true` behind TLS |
+| `OIDC_ENABLED` | Turn on federated SSO (Authorization Code + PKCE). See **Federated identity** below |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | IdP issuer URL + client credentials (omit the secret for a public/PKCE-only client) |
+| `OIDC_REDIRECT_URL` | This BFF's callback, registered with the IdP (`…/auth/oidc/callback`) |
+| `OIDC_SCOPES` / `OIDC_POST_LOGIN_REDIRECT` | Requested scopes (include one yielding a gateway-audience access token) / where to land after login |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
+
+## Federated identity (OIDC SSO)
+
+Set `OIDC_ENABLED=true` (plus the `OIDC_*` vars) to let users sign in through your IdP
+(on-prem AD via ADFS/Keycloak, or a cloud IdP — Entra/Okta/Auth0/Google). The flow:
+
+```
+Browser ──/auth/oidc/login──> BFF ──Auth Code + PKCE──> IdP
+        <─────302 callback──── BFF <──code→tokens──────┘
+BFF validates the ID token (JWKS sig, iss/aud/exp, nonce), stores the user's tokens
+server-side, then the browser carries only a signed session cookie.
+```
+
+There are **two kinds of session**:
+
+- **OIDC** — the BFF relays the **user's own access token** to the gateway (token
+  passthrough), so the **gateway** authorizes on that user's real scopes and the audit
+  shows the real user. The BFF does not re-authorize. For this to work the IdP must mint an
+  access token whose audience the gateway accepts — set the matching `gateway.oidc` config
+  on the gateway (issuer, audience, `group_roles`) per its
+  [ADR-0007](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0007-federated-identity-oidc-and-gateway-rbac.md).
+- **password** — the existing local **break-glass / bootstrap** login. It proxies upstream
+  with the single admin `GATEWAY_API_TOKEN`, so the BFF still enforces the admin/viewer role.
+  Keep at least the admin password even with SSO on (an IdP outage must not lock you out).
+
+> This slice ships the **server-side** flow and relay. The SPA "Sign in with SSO" button and
+> scope-driven view gating (reading the gateway's `/auth/me` scopes) are the next slice.
 
 ## Roadmap (phasing)
 
@@ -67,7 +98,10 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 2. **Device detail** ✅ — per-device diagnostics ("why is my device down?"), a tool explorer (the generated MCP tools + their input schemas), and a **recent tool-set change** panel (added/removed/changed + breaking flag), from `/devices/{h}/diagnostics`, `/devices/{h}/tools`, and `/devices/{h}/tools/diff`.
 3. **Register / edit** ✅ — a full create + edit form (auth `api_key`/`oauth2`, `spec_url`, rate limit), `POST` to register and `PUT` to edit; edit pre-fills from the gateway and omits `auth` by default so stored credentials are preserved.
 4. **Monitoring + DLQ** ✅ — a lightweight native monitoring view: critical at-a-glance metric tiles (Prometheus instant queries) + a recent-logs panel (Loki LogQL), both proxied through the BFF, plus first-class pointers to **central monitoring** (the gateway's `:9100/metrics` scrape endpoint and an optional Grafana link); intentionally not a full monitoring app. Plus a per-device **dead-letter queue** panel in device detail (inspect any session; replay/drain admin-only; distributed mode).
-5. **Live + RBAC-aware** — SSE/WS device status, per-role views, login throttling + per-user identity.
+5. **Federated identity** 🚧 — OIDC SSO at the BFF (Authorization Code + PKCE) with per-user
+   token passthrough to the gateway, local passwords kept as break-glass (ADR-0007). Done
+   server-side; next: SPA SSO button + scope-driven view gating off the gateway's `/auth/me`.
+6. **Live + RBAC-aware** — SSE/WS device status, per-role views, login throttling.
 
 ## Keep the contract typed (no manual drift)
 

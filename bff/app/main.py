@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .config import load_settings
 from .gateway_client import GatewayClient
+from .oidc import OIDCClient
 from .routers import api, auth
 
 
@@ -35,6 +36,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Device MCP Gateway UI — BFF", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.gateway = GatewayClient(settings)
+    # OIDC Relying Party (ADR-0007). None unless OIDC_ENABLED and the issuer/client are
+    # configured — a misconfiguration fails fast here rather than on the first login.
+    app.state.oidc = OIDCClient(settings) if settings.oidc_enabled else None
 
     # Signed-cookie session. same_site=lax + httponly; set COOKIE_SECURE=true behind TLS.
     app.add_middleware(

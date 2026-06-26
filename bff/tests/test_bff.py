@@ -24,14 +24,14 @@ def app_client():
 
 
 def _fake_get(payload, status=200):
-    async def _g(path):
+    async def _g(path, bearer=None):
         return httpx.Response(status, json=payload)
 
     return _g
 
 
 def _fake_request(payload, status=200):
-    async def _r(method, path, json=None):
+    async def _r(method, path, json=None, bearer=None):
         return httpx.Response(status, json=payload)
 
     return _r
@@ -68,7 +68,7 @@ def test_overview_proxies_gateway(app_client):
 
 
 def _capture_get(seen, payload, status=200):
-    async def _g(path):
+    async def _g(path, bearer=None):
         seen.append(path)
         return httpx.Response(status, json=payload)
 
@@ -132,7 +132,7 @@ def test_admin_can_register(app_client):
 
 
 def _capture_request(seen, payload, status=200):
-    async def _r(method, path, json=None):
+    async def _r(method, path, json=None, bearer=None):
         seen.append((method, path, json))
         return httpx.Response(status, json=payload)
 
@@ -243,3 +243,140 @@ def test_gateway_prefix_is_configurable(monkeypatch):
     monkeypatch.setenv("GATEWAY_API_PREFIX", "/v2")
     client = GatewayClient(load_settings())
     assert client._with_prefix("/devices") == "/v2/devices"
+
+
+# --- OIDC login (Authorization Code + PKCE) + per-user relay (ADR-0007) -------
+#
+# A stub Relying Party stands in for the IdP so the suite stays offline. It echoes the
+# real state/nonce so the test can drive the callback, and returns a fixed access token
+# whose presence on the upstream call proves the token-passthrough relay.
+
+
+from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+
+class _FakeOIDC:
+    USER_TOKEN = "user-access-token"
+
+    def __init__(self):
+        self.last = {}
+
+    async def authorization_url(self, *, state, nonce, challenge):
+        self.last = {"state": state, "nonce": nonce, "challenge": challenge}
+        return f"https://idp.example/authorize?{urlencode_min(state=state, nonce=nonce)}"
+
+    async def exchange_code(self, *, code, verifier):
+        self.last["code"] = code
+        self.last["verifier"] = verifier
+        return {"id_token": "id.tok.sig", "access_token": self.USER_TOKEN}
+
+    async def validate_id_token(self, *, id_token, nonce):
+        return {"sub": "alice", "name": "Alice", "nonce": nonce}
+
+
+def urlencode_min(**kw):
+    return "&".join(f"{k}={v}" for k, v in kw.items())
+
+
+@pytest.fixture
+def oidc_client():
+    app = create_app()
+    app.state.oidc = _FakeOIDC()
+    with TestClient(app) as c:
+        yield c, app
+
+
+def _do_oidc_login(c):
+    """Drive the redirect → callback handshake; returns the established TestClient."""
+    r = c.get("/auth/oidc/login", follow_redirects=False)
+    assert r.status_code == 302
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    cb = c.get(f"/auth/oidc/callback?code=abc&state={state}", follow_redirects=False)
+    assert cb.status_code == 302
+    return cb
+
+
+def test_auth_config_reports_methods(app_client):
+    c, _ = app_client
+    body = c.get("/auth/config").json()
+    assert body == {"oidc_enabled": False, "password_login": True}
+
+
+def test_oidc_config_enabled_when_rp_present(oidc_client):
+    c, _ = oidc_client
+    assert c.get("/auth/config").json()["oidc_enabled"] is True
+
+
+def test_oidc_login_redirects_with_state_and_pkce(oidc_client):
+    c, app = oidc_client
+    r = c.get("/auth/oidc/login", follow_redirects=False)
+    assert r.status_code == 302
+    # The RP received a state, nonce, and S256 challenge.
+    assert app.state.oidc.last["state"] and app.state.oidc.last["nonce"] and app.state.oidc.last["challenge"]
+
+
+def test_oidc_callback_state_mismatch_rejected(oidc_client):
+    c, _ = oidc_client
+    c.get("/auth/oidc/login", follow_redirects=False)  # seeds oidc_tx
+    bad = c.get("/auth/oidc/callback?code=abc&state=forged", follow_redirects=False)
+    assert bad.status_code == 400
+
+
+def test_oidc_callback_without_tx_rejected(oidc_client):
+    c, _ = oidc_client  # no prior /login → no oidc_tx in session
+    r = c.get("/auth/oidc/callback?code=abc&state=whatever", follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_oidc_login_establishes_session(oidc_client):
+    c, _ = oidc_client
+    _do_oidc_login(c)
+    me = c.get("/auth/me").json()
+    assert me["kind"] == "oidc" and me["sub"] == "alice" and me["role"] is None
+
+
+def test_oidc_session_relays_user_token_upstream(oidc_client):
+    c, app = oidc_client
+    seen = []
+
+    async def _g(path, bearer=None):
+        seen.append((path, bearer))
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    assert c.get("/api/devices").status_code == 200
+    # The relay forwarded the user's access token, not the admin token (None here).
+    assert seen == [("/devices", _FakeOIDC.USER_TOKEN)]
+
+
+def test_oidc_session_authz_delegated_to_gateway(oidc_client):
+    """An OIDC session is not re-authorized at the BFF — a mutation passes the BFF role
+    gate (the gateway decides on the user's real scopes)."""
+    c, app = oidc_client
+    seen = []
+
+    async def _r(method, path, json=None, bearer=None):
+        seen.append((method, path, bearer))
+        return httpx.Response(200, json={"status": "registered"})
+
+    app.state.gateway.request = _r
+    _do_oidc_login(c)
+    resp = c.post("/api/devices", json={"hostname": "x", "base_url": "http://x"})
+    assert resp.status_code == 200
+    assert seen == [("POST", "/devices", _FakeOIDC.USER_TOKEN)]
+
+
+def test_password_session_does_not_relay_user_token(app_client):
+    """A local password session uses the admin token (bearer=None at the call site)."""
+    c, app = app_client
+    seen = []
+
+    async def _g(path, bearer=None):
+        seen.append((path, bearer))
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _g
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.get("/api/devices").status_code == 200
+    assert seen == [("/devices", None)]
