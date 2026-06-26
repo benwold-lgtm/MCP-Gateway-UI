@@ -73,7 +73,7 @@ describe("DeviceDetail", () => {
   it("renders diagnostics and the tool explorer", async () => {
     diagnostics.mockResolvedValue(DIAG);
     tools.mockResolvedValue(TOOLS);
-    render(<DeviceDetail hostname="sensor-1" role="admin" onClose={vi.fn()} />);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
 
     expect(await screen.findByRole("heading", { name: "sensor-1" })).toBeInTheDocument();
     // Diagnostics + breaker.
@@ -89,7 +89,7 @@ describe("DeviceDetail", () => {
   it("still shows diagnostics when the tools call fails (no active pod)", async () => {
     diagnostics.mockResolvedValue({ ...DIAG, pod_active: false, reachable: false });
     tools.mockRejectedValue(new Error("409"));
-    render(<DeviceDetail hostname="sensor-1" role="admin" onClose={vi.fn()} />);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
 
     expect(await screen.findByRole("heading", { name: "sensor-1" })).toBeInTheDocument();
     expect(screen.getByText(/No tools to show/)).toBeInTheDocument();
@@ -111,7 +111,7 @@ describe("DeviceDetail", () => {
         breaking_reasons: ["tool(s) removed: ['gone_tool']"],
       },
     });
-    render(<DeviceDetail hostname="sensor-1" role="admin" onClose={vi.fn()} />);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
 
     expect(await screen.findByText(/Recent tool-set change/)).toBeInTheDocument();
     expect(screen.getByText(/breaking/)).toBeInTheDocument();
@@ -123,7 +123,7 @@ describe("DeviceDetail", () => {
   it("notes when there have been no tool-set changes", async () => {
     diagnostics.mockResolvedValue(DIAG);
     tools.mockResolvedValue(TOOLS);
-    render(<DeviceDetail hostname="sensor-1" role="admin" onClose={vi.fn()} />);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
 
     expect(await screen.findByText(/No tool-set changes since registration/)).toBeInTheDocument();
   });

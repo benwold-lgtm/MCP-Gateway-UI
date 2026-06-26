@@ -47,7 +47,7 @@ describe("DeadLetterPanel", () => {
       .mockResolvedValueOnce({ hostname: "dev", count: 0, entries: [] });
     replayDeadLetters.mockResolvedValue({ replayed: 1 });
 
-    render(<DeadLetterPanel hostname="dev" role="admin" />);
+    render(<DeadLetterPanel hostname="dev" canWrite={true} />);
 
     expect(await screen.findByText("tools/call")).toBeInTheDocument();
     expect(screen.getByText("execution_failed")).toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("DeadLetterPanel", () => {
 
   it("hides mutating actions from viewers", async () => {
     deadLetters.mockResolvedValue({ hostname: "dev", count: 1, entries: [ENTRY] });
-    render(<DeadLetterPanel hostname="dev" role="viewer" />);
+    render(<DeadLetterPanel hostname="dev" canWrite={false} />);
 
     expect(await screen.findByText("tools/call")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Replay" })).not.toBeInTheDocument();
@@ -72,7 +72,7 @@ describe("DeadLetterPanel", () => {
     deadLetters.mockRejectedValue(
       new ApiError(400, "Dead-letter queue is only available in distributed mode"),
     );
-    render(<DeadLetterPanel hostname="dev" role="admin" />);
+    render(<DeadLetterPanel hostname="dev" canWrite={true} />);
 
     expect(await screen.findByText(/Available in distributed mode only/)).toBeInTheDocument();
   });

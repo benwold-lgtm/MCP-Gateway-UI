@@ -50,7 +50,18 @@ def test_login_rejects_bad_password(app_client):
 def test_login_sets_role_and_me(app_client):
     c, _ = app_client
     assert c.post("/auth/login", json={"password": "admin-pw"}).json() == {"role": "admin"}
-    assert c.get("/auth/me").json() == {"role": "admin"}
+    me = c.get("/auth/me").json()
+    assert me["kind"] == "password" and me["role"] == "admin"
+    # Admin's break-glass bundle gates the UI; devices:write enables the write affordances.
+    assert "devices:write" in me["scopes"]
+
+
+def test_me_scopes_for_viewer_are_read_only(app_client):
+    c, _ = app_client
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    me = c.get("/auth/me").json()
+    assert me["role"] == "viewer"
+    assert "devices:write" not in me["scopes"] and "devices:read" in me["scopes"]
 
 
 def test_api_requires_session(app_client):
@@ -329,10 +340,32 @@ def test_oidc_callback_without_tx_rejected(oidc_client):
 
 
 def test_oidc_login_establishes_session(oidc_client):
-    c, _ = oidc_client
+    c, app = oidc_client
+
+    async def _g(path, bearer=None):
+        # The BFF relays the user token to the gateway whoami for scopes.
+        assert path == "/auth/me" and bearer == _FakeOIDC.USER_TOKEN
+        return httpx.Response(200, json={"subject": "oidc:alice", "scopes": ["devices:read"], "auth_method": "oidc"})
+
+    app.state.gateway.get = _g
     _do_oidc_login(c)
     me = c.get("/auth/me").json()
-    assert me["kind"] == "oidc" and me["sub"] == "alice" and me["role"] is None
+    assert me["kind"] == "oidc" and me["subject"] == "oidc:alice" and me["role"] is None
+    # Scopes come straight from the gateway — the UI gates on the gateway's grant.
+    assert me["scopes"] == ["devices:read"]
+
+
+def test_oidc_me_clears_session_when_gateway_401s(oidc_client):
+    c, app = oidc_client
+
+    async def _g(path, bearer=None):
+        return httpx.Response(401, json={"detail": "Unauthorized"})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    # Gateway rejects the relayed token → the BFF ends the session.
+    assert c.get("/auth/me").status_code == 401
+    assert c.get("/auth/me").status_code == 401  # session is gone
 
 
 def test_oidc_session_relays_user_token_upstream(oidc_client):

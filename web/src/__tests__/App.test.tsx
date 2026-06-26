@@ -9,6 +9,7 @@ vi.mock("../api", () => ({
     overview: vi.fn(),
     logout: vi.fn(),
     login: vi.fn(),
+    authConfig: vi.fn().mockResolvedValue({ oidc_enabled: false, password_login: true }),
   },
   ApiError: class ApiError extends Error {
     constructor(

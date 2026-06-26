@@ -18,7 +18,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from ..oidc import OIDCError, make_pkce_pair
-from ..security import current_session, resolve_role
+from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -55,15 +55,42 @@ async def logout(request: Request) -> dict:
 
 @router.get("/me")
 async def me(request: Request) -> dict:
+    """The signed-in identity + **effective scopes**, so the SPA gates views the same way
+    for both session kinds. Password roles use the local break-glass bundle; OIDC sessions
+    get their real per-user scopes from the gateway's whoami (relayed with the user token),
+    so the UI and gateway can't drift (ADR-0007)."""
     sess = current_session(request)
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
     if sess.get("kind") == "password":
-        # Unchanged shape for the existing SPA.
-        return {"role": sess.get("role")}
-    # OIDC session. The gateway is the source of truth for scopes; until the UI consumes
-    # gateway whoami, expose identity only (role omitted/None).
-    return {"kind": "oidc", "sub": sess.get("sub"), "name": sess.get("name"), "role": None}
+        role = sess.get("role") or "viewer"
+        return {
+            "kind": "password",
+            "subject": f"local:{role}",
+            "role": role,
+            "scopes": PASSWORD_ROLE_SCOPES.get(role, []),
+        }
+
+    # OIDC: ask the gateway who this user is (it owns group→scope). Relay the user's token.
+    scopes: list[str] = []
+    subject = sess.get("sub") or "unknown"
+    try:
+        resp = await request.app.state.gateway.get("/auth/me", bearer=sess.get("access_token"))
+    except Exception:
+        resp = None
+    if resp is not None and resp.status_code == 401:
+        # The user's token was rejected (expired/revoked). End the session.
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Session expired")
+    if resp is not None and resp.status_code == 200:
+        data = resp.json()
+        scopes = data.get("scopes", [])
+        subject = data.get("subject", subject)
+    # On any other upstream condition (e.g. an older gateway without /auth/me) we fall back
+    # to no scopes: the SPA shows a read-only affordance while the gateway still authorizes
+    # each actual call on the relayed token.
+    return {"kind": "oidc", "subject": subject, "name": sess.get("name"), "role": None, "scopes": scopes}
 
 
 # --- OIDC (Authorization Code + PKCE) ----------------------------------------

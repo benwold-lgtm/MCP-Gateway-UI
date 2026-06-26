@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { DeadLetterList, Role } from "../types";
+import type { DeadLetterList } from "../types";
 
 // Per-device dead-letter queue (gateway F-10). Inspect is a read (any session);
-// replay/drain mutate and are admin-only. The gateway returns 400 in embedded mode
+// replay/drain mutate and need devices:write. The gateway returns 400 in embedded mode
 // (no in-process DLQ), which we render as "distributed mode only".
-export function DeadLetterPanel({ hostname, role }: { hostname: string; role: Role }) {
+export function DeadLetterPanel({ hostname, canWrite }: { hostname: string; canWrite: boolean }) {
   const [list, setList] = useState<DeadLetterList | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const isAdmin = role === "admin";
+  const isAdmin = canWrite;
 
   const load = useCallback(async () => {
     setError(null);
