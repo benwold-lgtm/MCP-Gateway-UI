@@ -51,6 +51,18 @@ async def get_device(hostname: str, request: Request) -> JSONResponse:
     return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}"))
 
 
+@router.get("/devices/{hostname}/diagnostics", dependencies=[_any])
+async def device_diagnostics(hostname: str, request: Request) -> JSONResponse:
+    # "Why is my device down?" — registry status, last-check age, spec/manifest
+    # state, spawn error, and circuit breaker (gateway F-52).
+    return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}/diagnostics"))
+
+
+@router.get("/devices/{hostname}/tools", dependencies=[_any])
+async def device_tools(hostname: str, request: Request) -> JSONResponse:
+    return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}/tools"))
+
+
 @router.post("/devices", dependencies=[_admin])
 async def register_device(request: Request) -> JSONResponse:
     body = await request.json()

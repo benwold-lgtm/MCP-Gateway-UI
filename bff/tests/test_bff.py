@@ -67,6 +67,42 @@ def test_overview_proxies_gateway(app_client):
     assert resp.json()["mode"] == "embedded"
 
 
+def _capture_get(seen, payload, status=200):
+    async def _g(path):
+        seen.append(path)
+        return httpx.Response(status, json=payload)
+
+    return _g
+
+
+def test_diagnostics_proxies_gateway(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.get = _capture_get(seen, {"hostname": "dev", "reachable": True, "breaker": {"available": False}})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    resp = c.get("/api/devices/dev/diagnostics")
+    assert resp.status_code == 200
+    assert resp.json()["hostname"] == "dev"
+    # The router must hit the gateway's per-device diagnostics path.
+    assert seen == ["/devices/dev/diagnostics"]
+
+
+def test_tools_proxies_gateway(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.get = _capture_get(seen, {"hostname": "dev", "tools": [{"name": "t"}], "count": 1})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    resp = c.get("/api/devices/dev/tools")
+    assert resp.json()["count"] == 1
+    assert seen == ["/devices/dev/tools"]
+
+
+def test_device_reads_require_session(app_client):
+    c, _ = app_client
+    assert c.get("/api/devices/dev/diagnostics").status_code == 401
+    assert c.get("/api/devices/dev/tools").status_code == 401
+
+
 def test_viewer_cannot_mutate(app_client):
     c, app = app_client
     app.state.gateway.request = _fake_request({"status": "registered"})

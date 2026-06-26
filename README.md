@@ -26,8 +26,8 @@ server-side, exposes only an opaque signed-cookie session, maps that session to 
 
 | Path | What |
 |------|------|
-| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, devices, metrics summary; Prometheus/Loki stubs), session + role gating. Tests included. |
-| `web/` | React + Vite + TypeScript SPA — login, device list + counts, admin register/remove. Typed client (`src/api.ts`) over the BFF. |
+| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, devices, per-device diagnostics + tools, metrics summary; Prometheus/Loki stubs), session + role gating. Tests included. |
+| `web/` | React + Vite + TypeScript SPA — login, device list + counts, admin register/remove, and a **device-detail panel** (diagnostics + tool explorer). Typed client (`src/api.ts`) over the BFF. |
 | `deploy/kubernetes/` | Own namespace, BFF + web Deployments/Services, Ingress, NetworkPolicies (BFF egress to gateway/Prometheus/Loki; web egress to BFF only), kustomization. Secrets via `secret.example.yaml`. |
 | `docker-compose.yml` | Local build/preview of BFF + web. |
 
@@ -63,8 +63,9 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 ## Roadmap (phasing)
 
 1. **Device management** (this scaffold) — list/register/remove over the gateway REST API, status from `/admin/overview`.
-2. **Monitoring** — Prometheus panels (embed Grafana or render from the query API) + logs via Loki/Splunk, both proxied through the BFF.
-3. **Live + RBAC-aware** — SSE/WS device status, per-role views, device detail + tool explorer.
+2. **Device detail** ✅ — per-device diagnostics ("why is my device down?") and a tool explorer (the generated MCP tools + their input schemas), from `/devices/{h}/diagnostics` and `/devices/{h}/tools`. (When the gateway's `/tools/diff` lands, a "recent tool-set changes" panel slots in here.)
+3. **Monitoring** — Prometheus panels (embed Grafana or render from the query API) + logs via Loki/Splunk, both proxied through the BFF.
+4. **Live + RBAC-aware** — SSE/WS device status, per-role views, fuller register/edit form.
 
 ## Keep the contract typed (no manual drift)
 

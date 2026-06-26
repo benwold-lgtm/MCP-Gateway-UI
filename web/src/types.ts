@@ -8,6 +8,19 @@ type Schemas = components["schemas"];
 
 export type Device = Schemas["DeviceSummary"];
 export type Overview = Schemas["OverviewResponse"];
+export type Diagnostics = Schemas["DeviceDiagnostics"];
+
+// The gateway's GET /devices/{h}/tools has no response model (it returns a plain
+// dict), so this shape is declared here rather than derived from the OpenAPI. Keep
+// it in sync with the gateway's tool dict in main.py's get_device_tools.
+export type Tool = {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+  method: string;
+  path: string;
+};
+export type ToolsResponse = { hostname: string; tools: Tool[]; count: number };
 
 // UI-local — the role comes from the BFF session, not the gateway response contract.
 export type Role = "admin" | "viewer";
