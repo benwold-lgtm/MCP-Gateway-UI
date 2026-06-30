@@ -42,7 +42,7 @@ class Settings:
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
     oidc_redirect_url: str = ""
-    oidc_scopes: str = "openid profile email"
+    oidc_scopes: str = "openid profile email offline_access"
     oidc_post_login_redirect: str = "/"
     # Where the IdP sends the browser after RP-initiated (single) logout. Must be
     # registered with the IdP as a post_logout_redirect_uri. Empty → omit the param.
@@ -84,7 +84,7 @@ def load_settings() -> Settings:
         # Must exactly match a redirect URI registered with the IdP, e.g.
         # https://ui.example.com/auth/oidc/callback
         oidc_redirect_url=os.getenv("OIDC_REDIRECT_URL", ""),
-        oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email"),
+        oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email offline_access"),
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
     )

@@ -268,9 +268,13 @@ from urllib.parse import parse_qs, urlparse  # noqa: E402
 
 class _FakeOIDC:
     USER_TOKEN = "user-access-token"
+    REFRESH_TOKEN = "refresh-tok-1"
+    REFRESHED_TOKEN = "refreshed-access-token"
+    ROTATED_REFRESH = "refresh-tok-2"
 
     def __init__(self):
         self.last = {}
+        self.refreshes = 0
 
     async def authorization_url(self, *, state, nonce, challenge):
         self.last = {"state": state, "nonce": nonce, "challenge": challenge}
@@ -279,7 +283,12 @@ class _FakeOIDC:
     async def exchange_code(self, *, code, verifier):
         self.last["code"] = code
         self.last["verifier"] = verifier
-        return {"id_token": "id.tok.sig", "access_token": self.USER_TOKEN}
+        return {"id_token": "id.tok.sig", "access_token": self.USER_TOKEN, "refresh_token": self.REFRESH_TOKEN}
+
+    async def refresh_tokens(self, *, refresh_token):
+        self.refreshes += 1
+        self.last["refresh_used"] = refresh_token
+        return {"access_token": self.REFRESHED_TOKEN, "refresh_token": self.ROTATED_REFRESH}
 
     async def validate_id_token(self, *, id_token, nonce, access_token=None):
         self.last["validated_access_token"] = access_token
@@ -517,3 +526,76 @@ def test_at_hash_matches_known_vector():
     assert _at_hash_matches("RS256", token, "tampered") is False
     # Wrong hash size for the alg → mismatch (RS512 would use SHA-512's left half).
     assert _at_hash_matches("RS512", token, expected) is False
+
+
+# --- Silent OIDC access-token refresh (review #4) ----------------------------
+
+
+def test_oidc_proxy_refreshes_on_401_and_retries(oidc_client):
+    """A proxied call whose relayed token has expired triggers a silent refresh and a
+    single retry with the new token — the SPA never sees the 401."""
+    c, app = oidc_client
+    seen = []
+
+    async def _g(path, bearer=None):
+        seen.append((path, bearer))
+        # The expired user token is rejected; the refreshed token is accepted.
+        if bearer == _FakeOIDC.USER_TOKEN:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    resp = c.get("/api/devices")
+    assert resp.status_code == 200
+    # First attempt used the (expired) user token, the retry used the refreshed one.
+    assert seen == [("/devices", _FakeOIDC.USER_TOKEN), ("/devices", _FakeOIDC.REFRESHED_TOKEN)]
+    assert app.state.oidc.refreshes == 1
+    assert app.state.oidc.last["refresh_used"] == _FakeOIDC.REFRESH_TOKEN
+
+
+def test_oidc_refresh_persists_new_tokens_for_next_call(oidc_client):
+    """After a refresh, the rotated tokens are stored, so the *next* call uses the new
+    access token directly (no second 401/refresh)."""
+    c, app = oidc_client
+    seen = []
+
+    async def _g(path, bearer=None):
+        seen.append(bearer)
+        return httpx.Response(401 if bearer == _FakeOIDC.USER_TOKEN else 200, json={"devices": []})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    c.get("/api/devices")  # 401 → refresh → retry
+    seen.clear()
+    assert c.get("/api/devices").status_code == 200
+    # Session now carries the refreshed token; no expired-token attempt, no extra refresh.
+    assert seen == [_FakeOIDC.REFRESHED_TOKEN]
+    assert app.state.oidc.refreshes == 1
+
+
+def test_oidc_me_refreshes_before_dropping_session(oidc_client):
+    """/auth/me silently refreshes rather than ending the session on a recoverable 401."""
+    c, app = oidc_client
+
+    async def _g(path, bearer=None):
+        if bearer == _FakeOIDC.USER_TOKEN:
+            return httpx.Response(401, json={"detail": "expired"})
+        return httpx.Response(200, json={"subject": "oidc:alice", "scopes": ["devices:read"]})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    me = c.get("/auth/me").json()
+    assert me["kind"] == "oidc" and me["scopes"] == ["devices:read"]
+
+
+def test_password_session_401_is_not_refreshed(app_client):
+    """A password session has no refresh token — its 401 passes straight through."""
+    c, app = app_client
+
+    async def _g(path, bearer=None):
+        return httpx.Response(401, json={"detail": "nope"})
+
+    app.state.gateway.get = _g
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.get("/api/devices").status_code == 401

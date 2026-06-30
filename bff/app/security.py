@@ -44,6 +44,8 @@ class SessionInfo(TypedDict, total=False):
     sub: str  # oidc sessions — IdP subject
     name: str  # oidc sessions — display name
     access_token: str  # oidc sessions — relayed upstream
+    refresh_token: str  # oidc sessions — server-side only, used for silent refresh
+    id_token: str  # oidc sessions — id_token_hint for RP-initiated logout
 
 
 def resolve_role(settings, password: str) -> Optional[str]:
