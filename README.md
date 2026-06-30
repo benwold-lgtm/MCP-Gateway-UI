@@ -55,12 +55,13 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 | `GATEWAY_API_PREFIX` | Gateway management-API version prefix (default `/v1`; change only for a future `/v2`) |
 | `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only); used for local password sessions and as break-glass |
 | `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Local break-glass login password → role (empty disables) |
-| `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`) |
+| `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`). The BFF **refuses to start** with the default value when `COOKIE_SECURE=true` |
 | `COOKIE_SECURE` | `true` behind TLS |
 | `OIDC_ENABLED` | Turn on federated SSO (Authorization Code + PKCE). See **Federated identity** below |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | IdP issuer URL + client credentials (omit the secret for a public/PKCE-only client) |
 | `OIDC_REDIRECT_URL` | This BFF's callback, registered with the IdP (`…/auth/oidc/callback`) |
 | `OIDC_SCOPES` / `OIDC_POST_LOGIN_REDIRECT` | Requested scopes (include one yielding a gateway-audience access token) / where to land after login |
+| `OIDC_POST_LOGOUT_REDIRECT` | Where the IdP returns the browser after RP-initiated (single) logout; must be registered with the IdP. Empty = omit. Used only if the IdP exposes an `end_session_endpoint` |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |

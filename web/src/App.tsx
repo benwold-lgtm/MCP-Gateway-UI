@@ -58,7 +58,13 @@ export function App() {
           <span title={`${session.kind} session`}>{session.name || session.subject}</span>{" "}
           <button
             onClick={async () => {
-              await api.logout();
+              const res = await api.logout();
+              // For an OIDC session the IdP may hand back a single-logout URL — navigate
+              // there so the IdP session ends too (otherwise SSO logs straight back in).
+              if (res?.end_session_url) {
+                window.location.assign(res.end_session_url);
+                return;
+              }
               setSession(null);
               setOverview(null);
             }}

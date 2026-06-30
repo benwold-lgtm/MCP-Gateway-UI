@@ -13,6 +13,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+# The session cookie is the whole trust boundary: it carries the password role and, for
+# OIDC, the relayed access token. A known default secret means anyone can forge a cookie
+# (an admin session, or an arbitrary relayed token). Booting with it under TLS is refused
+# in main.create_app().
+DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -38,6 +44,9 @@ class Settings:
     oidc_redirect_url: str = ""
     oidc_scopes: str = "openid profile email"
     oidc_post_login_redirect: str = "/"
+    # Where the IdP sends the browser after RP-initiated (single) logout. Must be
+    # registered with the IdP as a post_logout_redirect_uri. Empty → omit the param.
+    oidc_post_logout_redirect: str = ""
 
 
 def _split(csv: str) -> list[str]:
@@ -56,8 +65,9 @@ def load_settings() -> Settings:
         # UI login passwords → role. Leave a role's password empty to disable it.
         ui_admin_password=os.getenv("UI_ADMIN_PASSWORD", ""),
         ui_viewer_password=os.getenv("UI_VIEWER_PASSWORD", ""),
-        # MUST be overridden in production; signs the session cookie.
-        session_secret=os.getenv("SESSION_SECRET", "dev-insecure-change-me"),
+        # MUST be overridden in production; signs the session cookie. Booting with this
+        # default while COOKIE_SECURE is on is refused in create_app().
+        session_secret=os.getenv("SESSION_SECRET", DEFAULT_SESSION_SECRET),
         prometheus_url=os.getenv("PROMETHEUS_URL", ""),
         loki_url=os.getenv("LOKI_URL", ""),
         # Optional link to central Grafana — surfaced in the UI's monitoring view so
@@ -76,4 +86,5 @@ def load_settings() -> Settings:
         oidc_redirect_url=os.getenv("OIDC_REDIRECT_URL", ""),
         oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email"),
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
+        oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
     )

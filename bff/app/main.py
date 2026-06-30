@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from .config import load_settings
+from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
 from .routers import api, auth
@@ -25,6 +25,17 @@ from .routers import api, auth
 
 def create_app() -> FastAPI:
     settings = load_settings()
+
+    # Fail closed on an insecure session secret in production. COOKIE_SECURE=true is the
+    # "behind TLS / production" signal; refusing to boot here prevents a deploy that signs
+    # session cookies (role + relayed access token) with a publicly-known key. In dev
+    # (COOKIE_SECURE unset) the default is allowed for convenience.
+    if settings.cookie_secure and settings.session_secret == DEFAULT_SESSION_SECRET:
+        raise RuntimeError(
+            "SESSION_SECRET is the insecure default while COOKIE_SECURE is enabled. "
+            "Set SESSION_SECRET to a strong random value (e.g. `openssl rand -hex 32`) — "
+            "the session cookie carries the role and the relayed access token."
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

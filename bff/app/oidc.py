@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import secrets
 from urllib.parse import urlencode
 
 import httpx
@@ -33,6 +34,9 @@ from .config import Settings
 # Asymmetric only — a BFF must never accept an HS*/none-signed ID token (TM-I-05/08).
 _ID_TOKEN_ALGS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
 
+# at_hash uses the hash whose size matches the signature alg (…256→SHA-256, etc.).
+_AT_HASH_DIGESTS = {"256": hashlib.sha256, "384": hashlib.sha384, "512": hashlib.sha512}
+
 _HTTP_TIMEOUT = 10.0
 
 
@@ -42,6 +46,19 @@ class OIDCError(Exception):
 
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _at_hash_matches(alg: str, access_token: str, expected: str) -> bool:
+    """True if ``expected`` is the OIDC ``at_hash`` of ``access_token`` for ``alg``.
+
+    at_hash = base64url(left-most half of the alg-sized hash of the ASCII access token)
+    (OIDC Core §3.1.3.6). Compared in constant time."""
+    digestmod = _AT_HASH_DIGESTS.get(alg[-3:])
+    if digestmod is None:
+        return False
+    digest = digestmod(access_token.encode("ascii")).digest()
+    computed = _b64url(digest[: len(digest) // 2])
+    return secrets.compare_digest(computed, expected)
 
 
 def make_pkce_pair() -> tuple[str, str]:
@@ -111,8 +128,12 @@ class OIDCClient:
             raise OIDCError("token response has no id_token")
         return tokens
 
-    async def validate_id_token(self, *, id_token: str, nonce: str) -> dict:
-        """Validate the ID token's signature/claims and bind it to ``nonce`` (TM-I-01)."""
+    async def validate_id_token(self, *, id_token: str, nonce: str, access_token: str | None = None) -> dict:
+        """Validate the ID token's signature/claims and bind it to ``nonce`` (TM-I-01).
+
+        When the IdP includes ``at_hash`` and we hold the access token, also bind the
+        access token to the ID token (OIDC Core §3.1.3.6) so a swapped access token is
+        rejected."""
         meta = await self._discover()
         assert self._jwks is not None  # set alongside _meta
 
@@ -133,4 +154,22 @@ class OIDCClient:
             raise OIDCError(f"id_token validation failed: {exc}")
         if claims.get("nonce") != nonce:
             raise OIDCError("id_token nonce mismatch")
+        expected_at_hash = claims.get("at_hash")
+        if expected_at_hash and access_token:
+            alg = jwt.get_unverified_header(id_token).get("alg", "")
+            if not _at_hash_matches(alg, access_token, expected_at_hash):
+                raise OIDCError("id_token at_hash does not match access_token")
         return claims
+
+    async def end_session_url(self, *, id_token_hint: str, post_logout_redirect_uri: str | None = None) -> str | None:
+        """RP-initiated (single) logout URL, or None if the IdP exposes no end_session_endpoint.
+
+        Returning None lets the caller fall back to a local-only logout."""
+        meta = await self._discover()
+        endpoint = meta.get("end_session_endpoint")
+        if not endpoint:
+            return None
+        params = {"id_token_hint": id_token_hint}
+        if post_logout_redirect_uri:
+            params["post_logout_redirect_uri"] = post_logout_redirect_uri
+        return f"{endpoint}?{urlencode(params)}"

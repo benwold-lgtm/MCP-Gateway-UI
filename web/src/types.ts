@@ -56,7 +56,9 @@ export type Session = {
   kind: "password" | "oidc";
   subject: string;
   role: Role | null;
-  scopes: Scope[];
+  // For OIDC the BFF relays whatever scopes the gateway grants, which may include strings
+  // outside the known union — so accept extra strings rather than over-narrowing.
+  scopes: (Scope | string)[];
   name?: string | null;
 };
 
