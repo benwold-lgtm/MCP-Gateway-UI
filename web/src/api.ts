@@ -39,7 +39,7 @@ export class ApiError extends Error {
 
 export const api = {
   login: (password: string) => req<{ role: Role }>("POST", "/auth/login", { password }),
-  logout: () => req<{ status: string }>("POST", "/auth/logout"),
+  logout: () => req<{ status: string; end_session_url?: string | null }>("POST", "/auth/logout"),
   me: () => req<Session>("GET", "/auth/me"),
   authConfig: () => req<AuthConfig>("GET", "/auth/config"),
   overview: () => req<Overview>("GET", "/api/overview"),

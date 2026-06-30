@@ -281,8 +281,16 @@ class _FakeOIDC:
         self.last["verifier"] = verifier
         return {"id_token": "id.tok.sig", "access_token": self.USER_TOKEN}
 
-    async def validate_id_token(self, *, id_token, nonce):
+    async def validate_id_token(self, *, id_token, nonce, access_token=None):
+        self.last["validated_access_token"] = access_token
         return {"sub": "alice", "name": "Alice", "nonce": nonce}
+
+    async def end_session_url(self, *, id_token_hint, post_logout_redirect_uri=None):
+        self.last["id_token_hint"] = id_token_hint
+        url = f"https://idp.example/logout?id_token_hint={id_token_hint}"
+        if post_logout_redirect_uri:
+            url += f"&post_logout_redirect_uri={post_logout_redirect_uri}"
+        return url
 
 
 def urlencode_min(**kw):
@@ -413,3 +421,99 @@ def test_password_session_does_not_relay_user_token(app_client):
     c.post("/auth/login", json={"password": "viewer-pw"})
     assert c.get("/api/devices").status_code == 200
     assert seen == [("/devices", None)]
+
+
+def test_oidc_logout_returns_end_session_url(oidc_client):
+    """RP-initiated logout: an OIDC session's logout hands back the IdP end-session URL
+    (with the id_token as id_token_hint) so the SPA can end the IdP session too."""
+    c, app = oidc_client
+
+    async def _g(path, bearer=None):
+        return httpx.Response(200, json={"subject": "oidc:alice", "scopes": ["devices:read"]})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    body = c.post("/auth/logout").json()
+    assert body["status"] == "logged out"
+    assert body["end_session_url"].startswith("https://idp.example/logout?id_token_hint=id.tok.sig")
+    # Session is gone afterwards.
+    assert c.get("/auth/me").status_code == 401
+
+
+def test_password_logout_has_no_end_session_url(app_client):
+    c, _ = app_client
+    c.post("/auth/login", json={"password": "admin-pw"})
+    body = c.post("/auth/logout").json()
+    assert body == {"status": "logged out", "end_session_url": None}
+
+
+def test_oidc_callback_passes_access_token_for_at_hash(oidc_client):
+    """The callback hands the access token to validate_id_token so at_hash can bind them."""
+    c, app = oidc_client
+
+    async def _g(path, bearer=None):
+        return httpx.Response(200, json={"subject": "oidc:alice", "scopes": []})
+
+    app.state.gateway.get = _g
+    _do_oidc_login(c)
+    assert app.state.oidc.last["validated_access_token"] == _FakeOIDC.USER_TOKEN
+
+
+# --- Hardening follow-ups (session secret, log cap, at_hash) ------------------
+
+
+def test_create_app_refuses_default_secret_under_tls(monkeypatch):
+    from app.config import DEFAULT_SESSION_SECRET
+
+    monkeypatch.setenv("SESSION_SECRET", DEFAULT_SESSION_SECRET)
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    with pytest.raises(RuntimeError, match="SESSION_SECRET"):
+        create_app()
+
+
+def test_create_app_allows_default_secret_without_tls(monkeypatch):
+    from app.config import DEFAULT_SESSION_SECRET
+
+    monkeypatch.setenv("SESSION_SECRET", DEFAULT_SESSION_SECRET)
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    create_app()  # dev convenience: no TLS → default secret tolerated
+
+
+def test_logs_limit_is_capped(monkeypatch):
+    """A caller cannot pull an unbounded result set: limit is clamped to _MAX_LOG_LIMIT."""
+    monkeypatch.setenv("LOKI_URL", "http://loki.local")
+    app = create_app()  # real gateway client built before we patch AsyncClient
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, path, params=None):
+            captured.update(params or {})
+            return httpx.Response(200, json={"data": {"result": []}})
+
+    monkeypatch.setattr("app.routers.api.httpx.AsyncClient", _FakeClient)
+    with TestClient(app) as c:
+        c.post("/auth/login", json={"password": "admin-pw"})
+        assert c.get("/api/logs", params={"limit": 999999}).status_code == 200
+    assert captured["limit"] == 1000  # capped
+
+
+def test_at_hash_matches_known_vector():
+    import hashlib
+
+    from app.oidc import _at_hash_matches, _b64url
+
+    token = "user-access-token"
+    expected = _b64url(hashlib.sha256(token.encode()).digest()[:16])
+    assert _at_hash_matches("RS256", token, expected) is True
+    assert _at_hash_matches("RS256", token, "tampered") is False
+    # Wrong hash size for the alg → mismatch (RS512 would use SHA-512's left half).
+    assert _at_hash_matches("RS512", token, expected) is False

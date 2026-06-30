@@ -49,8 +49,22 @@ async def login(request: Request, body: LoginBody) -> dict:
 
 @router.post("/logout")
 async def logout(request: Request) -> dict:
+    """Clear the local session. For an OIDC session, also return the IdP's RP-initiated
+    logout URL (when the IdP exposes one) so the SPA can end the IdP session too —
+    otherwise "Sign in with SSO" silently logs the user straight back in."""
+    sess = current_session(request)
+    oidc = request.app.state.oidc
+    end_session_url: str | None = None
+    if sess and sess.get("kind") == "oidc" and oidc is not None and sess.get("id_token"):
+        try:
+            end_session_url = await oidc.end_session_url(
+                id_token_hint=sess["id_token"],
+                post_logout_redirect_uri=request.app.state.settings.oidc_post_logout_redirect or None,
+            )
+        except Exception:
+            end_session_url = None  # IdP unreachable → local-only logout
     request.session.clear()
-    return {"status": "logged out"}
+    return {"status": "logged out", "end_session_url": end_session_url}
 
 
 @router.get("/me")
@@ -133,17 +147,21 @@ async def oidc_callback(
 
     try:
         tokens = await oidc.exchange_code(code=code, verifier=tx["verifier"])
-        claims = await oidc.validate_id_token(id_token=tokens["id_token"], nonce=tx["nonce"])
+        claims = await oidc.validate_id_token(
+            id_token=tokens["id_token"], nonce=tx["nonce"], access_token=tokens.get("access_token")
+        )
     except OIDCError as exc:
         raise HTTPException(status_code=401, detail=f"OIDC login failed: {exc}")
 
     # Establish the session. Rotate it (clear first) so the pre-login session id can't be
-    # fixated, and store the access token server-side for the upstream relay.
+    # fixated, and store the access token server-side for the upstream relay. The id_token
+    # is kept as the id_token_hint for RP-initiated logout.
     request.session.clear()
     request.session["auth"] = {
         "kind": "oidc",
         "sub": claims.get("sub"),
         "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
         "access_token": tokens.get("access_token"),
+        "id_token": tokens.get("id_token"),
     }
     return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)

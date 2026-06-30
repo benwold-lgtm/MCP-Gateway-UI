@@ -24,6 +24,11 @@ router = APIRouter(prefix="/api", tags=["api"])
 _any = Depends(require_role())  # any authenticated session
 _admin = Depends(require_role("admin"))
 
+# Upper bound on the recent-logs panel page size. The panel shows a tail, not a bulk
+# export, so cap the caller-supplied limit to keep one request from pulling an unbounded
+# result set out of Loki (the query itself is already confined to the configured backend).
+_MAX_LOG_LIMIT = 1000
+
 
 def _passthrough(resp: httpx.Response) -> JSONResponse:
     try:
@@ -195,6 +200,7 @@ async def logs(
         return JSONResponse(status_code=501, content={"detail": "LOKI_URL not configured — use your central logging"})
     end_ns = int(time.time() * 1_000_000_000)
     start_ns = end_ns - int(minutes) * 60 * 1_000_000_000
-    params = {"query": query, "limit": limit, "start": start_ns, "end": end_ns, "direction": "backward"}
+    capped = max(1, min(int(limit), _MAX_LOG_LIMIT))
+    params = {"query": query, "limit": capped, "start": start_ns, "end": end_ns, "direction": "backward"}
     async with httpx.AsyncClient(base_url=settings.loki_url, timeout=10.0) as client:
         return _passthrough(await client.get("/loki/api/v1/query_range", params=params))
