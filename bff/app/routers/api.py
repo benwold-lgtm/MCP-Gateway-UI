@@ -17,7 +17,8 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from ..security import require_role, upstream_bearer
+from ..relay import relay_get, relay_request
+from ..security import require_role
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -44,50 +45,42 @@ def _passthrough(resp: httpx.Response) -> JSONResponse:
 @router.get("/overview", dependencies=[_any])
 async def overview(request: Request) -> JSONResponse:
     # One upstream call — the gateway's F14 aggregate endpoint.
-    return _passthrough(await request.app.state.gateway.get("/admin/overview", bearer=upstream_bearer(request)))
+    return _passthrough(await relay_get(request, "/admin/overview"))
 
 
 @router.get("/devices", dependencies=[_any])
 async def list_devices(request: Request) -> JSONResponse:
-    return _passthrough(await request.app.state.gateway.get("/devices", bearer=upstream_bearer(request)))
+    return _passthrough(await relay_get(request, "/devices"))
 
 
 @router.get("/devices/{hostname}", dependencies=[_any])
 async def get_device(hostname: str, request: Request) -> JSONResponse:
-    return _passthrough(await request.app.state.gateway.get(f"/devices/{hostname}", bearer=upstream_bearer(request)))
+    return _passthrough(await relay_get(request, f"/devices/{hostname}"))
 
 
 @router.get("/devices/{hostname}/diagnostics", dependencies=[_any])
 async def device_diagnostics(hostname: str, request: Request) -> JSONResponse:
     # "Why is my device down?" — registry status, last-check age, spec/manifest
     # state, spawn error, and circuit breaker (gateway F-52).
-    return _passthrough(
-        await request.app.state.gateway.get(f"/devices/{hostname}/diagnostics", bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_get(request, f"/devices/{hostname}/diagnostics"))
 
 
 @router.get("/devices/{hostname}/tools", dependencies=[_any])
 async def device_tools(hostname: str, request: Request) -> JSONResponse:
-    return _passthrough(
-        await request.app.state.gateway.get(f"/devices/{hostname}/tools", bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_get(request, f"/devices/{hostname}/tools"))
 
 
 @router.get("/devices/{hostname}/tools/diff", dependencies=[_any])
 async def device_tools_diff(hostname: str, request: Request) -> JSONResponse:
     # The device's most recent tool-set change (added/removed/changed + breaking),
     # for the "recent changes" panel (gateway F-41).
-    return _passthrough(
-        await request.app.state.gateway.get(f"/devices/{hostname}/tools/diff", bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_get(request, f"/devices/{hostname}/tools/diff"))
 
 
 @router.post("/devices", dependencies=[_admin])
 async def register_device(request: Request) -> JSONResponse:
     body = await request.json()
-    return _passthrough(
-        await request.app.state.gateway.request("POST", "/devices", json=body, bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_request(request, "POST", "/devices", json=body))
 
 
 @router.put("/devices/{hostname}", dependencies=[_admin])
@@ -95,18 +88,12 @@ async def update_device(hostname: str, request: Request) -> JSONResponse:
     # PUT replaces a device's config; the gateway preserves any field the body omits
     # (including stored credentials when `auth` is omitted).
     body = await request.json()
-    return _passthrough(
-        await request.app.state.gateway.request(
-            "PUT", f"/devices/{hostname}", json=body, bearer=upstream_bearer(request)
-        )
-    )
+    return _passthrough(await relay_request(request, "PUT", f"/devices/{hostname}", json=body))
 
 
 @router.delete("/devices/{hostname}", dependencies=[_admin])
 async def delete_device(hostname: str, request: Request) -> JSONResponse:
-    return _passthrough(
-        await request.app.state.gateway.request("DELETE", f"/devices/{hostname}", bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_request(request, "DELETE", f"/devices/{hostname}"))
 
 
 # --- Dead-letter queue (gateway F-10; distributed mode only) ------------------
@@ -125,31 +112,21 @@ async def _optional_body(request: Request) -> Any:
 
 @router.get("/devices/{hostname}/deadletter", dependencies=[_any])
 async def deadletter_list(hostname: str, request: Request) -> JSONResponse:
-    return _passthrough(
-        await request.app.state.gateway.get(f"/devices/{hostname}/deadletter", bearer=upstream_bearer(request))
-    )
+    return _passthrough(await relay_get(request, f"/devices/{hostname}/deadletter"))
 
 
 @router.post("/devices/{hostname}/deadletter/replay", dependencies=[_admin])
 async def deadletter_replay(hostname: str, request: Request) -> JSONResponse:
     # Optional {"ids": [...]} replays specific entries; no body replays the oldest batch.
     body = await _optional_body(request)
-    return _passthrough(
-        await request.app.state.gateway.request(
-            "POST", f"/devices/{hostname}/deadletter/replay", json=body, bearer=upstream_bearer(request)
-        )
-    )
+    return _passthrough(await relay_request(request, "POST", f"/devices/{hostname}/deadletter/replay", json=body))
 
 
 @router.delete("/devices/{hostname}/deadletter", dependencies=[_admin])
 async def deadletter_drain(hostname: str, request: Request) -> JSONResponse:
     # Optional {"ids": [...]} drains specific entries; no body drains the whole queue.
     body = await _optional_body(request)
-    return _passthrough(
-        await request.app.state.gateway.request(
-            "DELETE", f"/devices/{hostname}/deadletter", json=body, bearer=upstream_bearer(request)
-        )
-    )
+    return _passthrough(await relay_request(request, "DELETE", f"/devices/{hostname}/deadletter", json=body))
 
 
 # --- Monitoring (Prometheus / Loki) -----------------------------------------
@@ -175,7 +152,7 @@ async def monitoring_meta(request: Request) -> JSONResponse:
 
 @router.get("/metrics/summary", dependencies=[_any])
 async def metrics_summary(request: Request) -> JSONResponse:
-    return _passthrough(await request.app.state.gateway.get("/metrics/summary", bearer=upstream_bearer(request)))
+    return _passthrough(await relay_get(request, "/metrics/summary"))
 
 
 @router.get("/prometheus/query", dependencies=[_any])

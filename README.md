@@ -60,7 +60,7 @@ Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 | `OIDC_ENABLED` | Turn on federated SSO (Authorization Code + PKCE). See **Federated identity** below |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | IdP issuer URL + client credentials (omit the secret for a public/PKCE-only client) |
 | `OIDC_REDIRECT_URL` | This BFF's callback, registered with the IdP (`…/auth/oidc/callback`) |
-| `OIDC_SCOPES` / `OIDC_POST_LOGIN_REDIRECT` | Requested scopes (include one yielding a gateway-audience access token) / where to land after login |
+| `OIDC_SCOPES` / `OIDC_POST_LOGIN_REDIRECT` | Requested scopes (include one yielding a gateway-audience access token; defaults include `offline_access` so the IdP issues a refresh token for silent refresh — drop it if your IdP rejects it) / where to land after login |
 | `OIDC_POST_LOGOUT_REDIRECT` | Where the IdP returns the browser after RP-initiated (single) logout; must be registered with the IdP. Empty = omit. Used only if the IdP exposes an `end_session_endpoint` |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
@@ -77,6 +77,14 @@ Browser ──/auth/oidc/login──> BFF ──Auth Code + PKCE──> IdP
 BFF validates the ID token (JWKS sig, iss/aud/exp, nonce), stores the user's tokens
 server-side, then the browser carries only a signed session cookie.
 ```
+
+When a relayed access token expires, the BFF **silently refreshes** it: a gateway `401`
+triggers a `refresh_token` grant (server-side) and the call is retried once, so the user
+isn't bounced to the login screen mid-session. This needs a refresh token, which the IdP
+issues when `offline_access` is granted (in the default `OIDC_SCOPES`). If the refresh
+fails (revoked/expired), the session ends and RP-initiated logout applies. Refresh state
+lives in the per-user cookie, so concurrent requests racing an expiry may both refresh;
+with refresh-token rotation the loser simply re-logs in.
 
 There are **two kinds of session**:
 

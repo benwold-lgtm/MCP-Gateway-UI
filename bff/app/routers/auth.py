@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from ..oidc import OIDCError, make_pkce_pair
+from ..relay import relay_get
 from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -86,15 +87,17 @@ async def me(request: Request) -> dict:
             "scopes": PASSWORD_ROLE_SCOPES.get(role, []),
         }
 
-    # OIDC: ask the gateway who this user is (it owns group→scope). Relay the user's token.
+    # OIDC: ask the gateway who this user is (it owns group→scope). The relay forwards the
+    # user's token and, on a 401, silently refreshes it once before we give up (review #4).
     scopes: list[str] = []
     subject = sess.get("sub") or "unknown"
     try:
-        resp = await request.app.state.gateway.get("/auth/me", bearer=sess.get("access_token"))
+        resp = await relay_get(request, "/auth/me")
     except Exception:
         resp = None
     if resp is not None and resp.status_code == 401:
-        # The user's token was rejected (expired/revoked). End the session.
+        # Token rejected and refresh did not recover it (expired/revoked, or no refresh
+        # token). End the session.
         request.session.clear()
         raise HTTPException(status_code=401, detail="Session expired")
     if resp is not None and resp.status_code == 200:
@@ -163,5 +166,8 @@ async def oidc_callback(
         "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
         "access_token": tokens.get("access_token"),
         "id_token": tokens.get("id_token"),
+        # Server-side only, used to silently refresh the access token (review #4). Present
+        # only when the IdP issued one (e.g. the offline_access scope was granted).
+        "refresh_token": tokens.get("refresh_token"),
     }
     return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)

@@ -128,6 +128,25 @@ class OIDCClient:
             raise OIDCError("token response has no id_token")
         return tokens
 
+    async def refresh_tokens(self, *, refresh_token: str) -> dict:
+        """Exchange a refresh token for a fresh token set at the token endpoint.
+
+        The IdP may return a rotated ``refresh_token`` and/or a new ``id_token`` alongside
+        the new ``access_token``; the caller persists whatever comes back. Scope is omitted
+        so the IdP re-issues the originally granted scopes."""
+        meta = await self._discover()
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self._s.oidc_client_id,
+        }
+        auth = (self._s.oidc_client_id, self._s.oidc_client_secret) if self._s.oidc_client_secret else None
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.post(meta["token_endpoint"], data=data, auth=auth)
+        if resp.status_code != 200:
+            raise OIDCError(f"refresh_token grant returned {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
     async def validate_id_token(self, *, id_token: str, nonce: str, access_token: str | None = None) -> dict:
         """Validate the ID token's signature/claims and bind it to ``nonce`` (TM-I-01).
 
