@@ -21,6 +21,7 @@ from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
 from .routers import api, auth
+from .throttle import LoginThrottle
 
 
 def create_app() -> FastAPI:
@@ -50,6 +51,11 @@ def create_app() -> FastAPI:
     # OIDC Relying Party (ADR-0007). None unless OIDC_ENABLED and the issuer/client are
     # configured — a misconfiguration fails fast here rather than on the first login.
     app.state.oidc = OIDCClient(settings) if settings.oidc_enabled else None
+    # Brute-force throttle for the break-glass password login (review #3).
+    app.state.login_throttle = LoginThrottle(
+        max_failures=settings.login_max_failures,
+        window=settings.login_window_seconds,
+    )
 
     # Signed-cookie session. same_site=lax + httponly; set COOKIE_SECURE=true behind TLS.
     app.add_middleware(

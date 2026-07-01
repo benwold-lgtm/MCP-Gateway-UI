@@ -599,3 +599,63 @@ def test_password_session_401_is_not_refreshed(app_client):
     app.state.gateway.get = _g
     c.post("/auth/login", json={"password": "viewer-pw"})
     assert c.get("/api/devices").status_code == 401
+
+
+# --- Login throttling of the break-glass password (review #3) -----------------
+
+
+def test_login_throttled_after_max_failures(app_client):
+    c, _ = app_client
+    for _ in range(5):  # default LOGIN_MAX_FAILURES
+        assert c.post("/auth/login", json={"password": "wrong"}).status_code == 401
+    blocked = c.post("/auth/login", json={"password": "wrong"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) >= 1
+
+
+def test_lockout_blocks_even_the_correct_password(app_client):
+    c, _ = app_client
+    for _ in range(5):
+        c.post("/auth/login", json={"password": "wrong"})
+    # The correct admin password is refused while the IP is locked out.
+    assert c.post("/auth/login", json={"password": "admin-pw"}).status_code == 429
+
+
+def test_successful_login_resets_failure_streak(app_client):
+    c, _ = app_client
+    for _ in range(4):  # under the limit of 5
+        assert c.post("/auth/login", json={"password": "wrong"}).status_code == 401
+    assert c.post("/auth/login", json={"password": "admin-pw"}).json() == {"role": "admin"}
+    # Streak cleared by the success — a subsequent wrong attempt is a 401, not an instant 429.
+    assert c.post("/auth/login", json={"password": "wrong"}).status_code == 401
+
+
+def test_throttle_is_per_ip_via_trusted_forwarded_for(monkeypatch):
+    monkeypatch.setenv("LOGIN_MAX_FAILURES", "2")
+    monkeypatch.setenv("TRUST_FORWARDED_FOR", "true")
+    app = create_app()
+    with TestClient(app) as c:
+        a = {"X-Forwarded-For": "203.0.113.1"}
+        b = {"X-Forwarded-For": "203.0.113.2"}
+        for _ in range(2):
+            assert c.post("/auth/login", json={"password": "wrong"}, headers=a).status_code == 401
+        assert c.post("/auth/login", json={"password": "wrong"}, headers=a).status_code == 429
+        # A different source IP has its own budget and is unaffected.
+        assert c.post("/auth/login", json={"password": "wrong"}, headers=b).status_code == 401
+
+
+def test_login_throttle_window_rolls_off(monkeypatch):
+    from app import throttle as thr
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(thr.time, "monotonic", lambda: clock["t"])
+    t = thr.LoginThrottle(max_failures=2, window=60)
+    t.record_failure("ip")
+    t.record_failure("ip")
+    assert t.retry_after("ip") > 0  # locked out
+    clock["t"] += 61  # the whole window elapses
+    assert t.retry_after("ip") == 0  # failures aged out
+    # A success clears an in-window streak immediately.
+    t.record_failure("ip")
+    t.record_success("ip")
+    assert t.retry_after("ip") == 0
