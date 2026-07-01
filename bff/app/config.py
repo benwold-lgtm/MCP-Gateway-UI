@@ -33,6 +33,13 @@ class Settings:
     grafana_url: str = ""
     cors_origins: list[str] = field(default_factory=list)
     cookie_secure: bool = False
+    # Break-glass password login throttle (review #3): after login_max_failures failed
+    # attempts from one client IP within login_window_seconds, further attempts get 429.
+    login_max_failures: int = 5
+    login_window_seconds: int = 60
+    # Only trust X-Forwarded-For for the client IP when the BFF sits behind a proxy that
+    # sets it — otherwise a caller could spoof the header to evade the throttle.
+    trust_forwarded_for: bool = False
     # Federated identity (OIDC, ADR-0007). When enabled, the BFF runs an Authorization
     # Code + PKCE login against the IdP and relays the user's access token upstream
     # (Mode A token passthrough), so the gateway authorizes the real user. Local
@@ -75,6 +82,9 @@ def load_settings() -> Settings:
         grafana_url=os.getenv("GRAFANA_URL", ""),
         cors_origins=_split(os.getenv("CORS_ORIGINS", "")),
         cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes"),
+        login_max_failures=int(os.getenv("LOGIN_MAX_FAILURES", "5")),
+        login_window_seconds=int(os.getenv("LOGIN_WINDOW_SECONDS", "60")),
+        trust_forwarded_for=os.getenv("TRUST_FORWARDED_FOR", "false").lower() in ("1", "true", "yes"),
         # OIDC (federated identity). Disabled unless OIDC_ENABLED is truthy AND an
         # issuer + client id are configured (validated in OIDCClient).
         oidc_enabled=os.getenv("OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),

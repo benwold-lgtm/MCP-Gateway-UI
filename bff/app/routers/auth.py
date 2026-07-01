@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
+from ..throttle import client_ip
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,9 +41,25 @@ async def auth_config(request: Request) -> dict:
 
 @router.post("/login")
 async def login(request: Request, body: LoginBody) -> dict:
-    role = resolve_role(request.app.state.settings, body.password)
+    settings = request.app.state.settings
+    throttle = request.app.state.login_throttle
+    ip = client_ip(request, trust_forwarded=settings.trust_forwarded_for)
+
+    # Refuse before touching the password once this IP has failed too many times recently
+    # (review #3) — brute-force protection the constant-time compare alone can't provide.
+    locked = throttle.retry_after(ip)
+    if locked:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts; try again later",
+            headers={"Retry-After": str(locked)},
+        )
+
+    role = resolve_role(settings, body.password)
     if role is None:
+        throttle.record_failure(ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    throttle.record_success(ip)  # clear this IP's failure streak on success
     request.session.clear()
     request.session["role"] = role
     return {"role": role}
