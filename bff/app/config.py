@@ -60,6 +60,23 @@ def _split(csv: str) -> list[str]:
     return [item.strip() for item in csv.split(",") if item.strip()]
 
 
+def _secret(env_name: str, file_env: str) -> str:
+    """A secret from ``env_name``, or from the file named by ``file_env`` if the var is
+    empty (the standard ``*_FILE`` convention). Lets the lite stack share the gateway key
+    the gateway self-provisioned to a mounted volume — no secret copied between containers."""
+    value = os.getenv(env_name, "")
+    if value:
+        return value
+    file_path = os.getenv(file_env, "").strip()
+    if file_path:
+        try:
+            with open(file_path, encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            return ""
+    return ""
+
+
 def load_settings() -> Settings:
     return Settings(
         gateway_url=os.getenv("GATEWAY_URL", "http://localhost:8000"),
@@ -67,8 +84,9 @@ def load_settings() -> Settings:
         # Override only when the gateway introduces a new version (e.g. /v2). The
         # unversioned probes (/health, /readyz) are not proxied by the BFF.
         gateway_api_prefix=os.getenv("GATEWAY_API_PREFIX", "/v1"),
-        # Admin bearer token for the gateway API (server-side only).
-        gateway_token=os.getenv("GATEWAY_API_TOKEN", ""),
+        # Admin bearer token for the gateway API (server-side only). Falls back to
+        # GATEWAY_TOKEN_FILE so the lite stack can read the key the gateway generated.
+        gateway_token=_secret("GATEWAY_API_TOKEN", "GATEWAY_TOKEN_FILE"),
         # UI login passwords → role. Leave a role's password empty to disable it.
         ui_admin_password=os.getenv("UI_ADMIN_PASSWORD", ""),
         ui_viewer_password=os.getenv("UI_VIEWER_PASSWORD", ""),

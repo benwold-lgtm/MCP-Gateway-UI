@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from .bootstrap import apply_first_run_bootstrap
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
@@ -26,6 +27,10 @@ from .throttle import LoginThrottle
 
 def create_app() -> FastAPI:
     settings = load_settings()
+    # LITE first-run bootstrap: when BFF_STATE_DIR is set, fill in any secret the operator
+    # didn't provide (generating + persisting it) so a home box runs without hand-config.
+    # No-op otherwise, so the fail-closed check below still guards enterprise deploys.
+    settings = apply_first_run_bootstrap(settings)
 
     # Fail closed on an insecure session secret in production. COOKIE_SECURE=true is the
     # "behind TLS / production" signal; refusing to boot here prevents a deploy that signs
