@@ -47,6 +47,15 @@ make web-install && make web-dev        # http://localhost:5173
 
 Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 
+## Lite / home deployment (Raspberry Pi, mini-PC)
+
+To run this UI **together with** the gateway as a single low-power stack — embedded mode,
+local-only login, secrets generated on first boot, amd64 or arm64 — use the gateway repo's
+`docker-compose.lite.yml`. It builds the BFF and web images from this repo (kept side by
+side) or pulls the published `:lite` images.
+
+Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gateway/docs/lite-deploy.md)**.
+
 ## Configuration (BFF env)
 
 | Var | Purpose |
