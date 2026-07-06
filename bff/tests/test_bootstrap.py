@@ -30,6 +30,21 @@ def test_noop_without_state_dir(monkeypatch):
     assert apply_first_run_bootstrap(s) is s  # unchanged, nothing written
 
 
+def test_unwritable_state_dir_degrades_instead_of_crashing(monkeypatch, tmp_path):
+    """Regression: a root-owned/read-only mounted volume (e.g. a misconfigured container
+    image) must not crash app startup -- it should fall back to the unmodified settings,
+    same as the state-dir-missing case. This is exactly the failure mode a Docker named
+    volume hits when the image never pre-created + chowned the mount path."""
+    monkeypatch.setenv("BFF_STATE_DIR", str(tmp_path))
+    tmp_path.chmod(0o500)  # dir exists (mkdir succeeds) but is not writable
+    try:
+        s = _settings()
+        out = apply_first_run_bootstrap(s)
+        assert out is s  # unchanged -- no crash, no partial state
+    finally:
+        tmp_path.chmod(0o700)  # restore so pytest can clean up tmp_path
+
+
 def test_generates_and_persists(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("BFF_STATE_DIR", str(tmp_path))
     out = apply_first_run_bootstrap(_settings())
