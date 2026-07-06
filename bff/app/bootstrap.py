@@ -41,15 +41,19 @@ def apply_first_run_bootstrap(settings: Settings) -> Settings:
     if not state_dir:
         return settings
 
-    path = Path(state_dir) / STATE_FILENAME
     try:
-        Path(state_dir).mkdir(parents=True, exist_ok=True)
-        stored = _load(path)
+        return _bootstrap(settings, Path(state_dir) / STATE_FILENAME)
     except OSError as exc:
-        # A home box with an unwritable volume shouldn't fail to boot — fall back to
-        # whatever the environment already provides.
+        # A home box with an unwritable state dir/volume shouldn't fail to boot — fall back
+        # to whatever the environment already provides. Covers a failure at any point in the
+        # flow (mkdir, load, *or* save — a volume can be readable but not writable).
         print(f"[bootstrap] state dir {state_dir!r} unavailable ({exc}); skipping", flush=True)
         return settings
+
+
+def _bootstrap(settings: Settings, path: Path) -> Settings:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stored = _load(path)
 
     # str values, but typed Any so dataclasses.replace(**updates) type-checks against the
     # mixed-type Settings fields.
