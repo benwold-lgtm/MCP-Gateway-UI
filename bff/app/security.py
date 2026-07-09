@@ -14,8 +14,9 @@ Two kinds of session (ADR-0007):
   The BFF therefore does **not** re-authorize (no BFF-side authz is load-bearing for OIDC,
   per the threat model) — it only requires that a session exists.
 
-The session cookie never holds the gateway admin token; for OIDC it holds the user's
-access token, which is forwarded only server-side.
+Session content (the password role; for OIDC the user's tokens) lives in the
+server-side store (:mod:`app.sessions`) — the browser cookie carries only an opaque
+signed session id. No token or role ever reaches the browser.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ import hmac
 from typing import Optional, TypedDict
 
 from fastapi import HTTPException, Request
+
+from . import sessions
 
 ROLES = ("admin", "viewer")
 
@@ -57,36 +60,29 @@ def resolve_role(settings, password: str) -> Optional[str]:
     return None
 
 
-def current_session(request: Request) -> Optional[SessionInfo]:
-    """The authenticated session, normalised across the two kinds, or None.
-
-    OIDC sessions are stored under ``auth``; password sessions keep the legacy
-    top-level ``role`` key so existing cookies/tests are unaffected.
-    """
-    auth = request.session.get("auth")
-    if isinstance(auth, dict) and auth.get("kind") == "oidc":
-        return auth  # type: ignore[return-value]
-    role = request.session.get("role")
-    if role:
-        return {"kind": "password", "role": role}
+async def current_session(request: Request) -> Optional[SessionInfo]:
+    """The authenticated session from the server-side store, or None."""
+    data = await sessions.load(request)
+    if isinstance(data, dict) and data.get("kind") in ("password", "oidc"):
+        return data  # type: ignore[return-value]
     return None
 
 
-def current_role(request: Request) -> Optional[str]:
+async def current_role(request: Request) -> Optional[str]:
     """The legacy role accessor — only meaningful for password sessions."""
-    sess = current_session(request)
+    sess = await current_session(request)
     if sess and sess.get("kind") == "password":
         return sess.get("role")
     return None
 
 
-def upstream_bearer(request: Request) -> Optional[str]:
+async def upstream_bearer(request: Request) -> Optional[str]:
     """The token the BFF should present to the gateway for this request.
 
     OIDC session → the user's access token (per-user identity, F-30). Password session
     → None, so the GatewayClient falls back to its configured admin token.
     """
-    sess = current_session(request)
+    sess = await current_session(request)
     if sess and sess.get("kind") == "oidc":
         return sess.get("access_token")
     return None
@@ -97,7 +93,7 @@ def require_role(*allowed: str):
     is permitted. OIDC sessions pass through — the gateway is the authorization point."""
 
     async def _dep(request: Request) -> SessionInfo:
-        sess = current_session(request)
+        sess = await current_session(request)
         if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if sess.get("kind") == "oidc":

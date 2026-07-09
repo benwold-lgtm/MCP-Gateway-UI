@@ -6,6 +6,9 @@ metadata:
   labels:
     app.kubernetes.io/name: device-mcp-ui-bff
 spec:
+  # With more than one replica there is no session affinity, so the BFF's session
+  # store must be shared: set SESSION_REDIS_URL (see secret.example.yaml). Without
+  # it each replica keeps sessions in memory and users are randomly logged out.
   replicas: 2
   selector:
     matchLabels:

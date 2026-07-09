@@ -4,7 +4,7 @@
 """OIDC Relying-Party for the BFF — Authorization Code + PKCE (ADR-0007, boundaries I1/I2).
 
 The BFF logs the user in against the IdP and obtains tokens server-side; the browser
-never sees them (they live in the signed-cookie session). This module owns the IdP
+never sees them (they live in the server-side session store). This module owns the IdP
 conversation: discovery, the authorization redirect (with PKCE + ``state`` + ``nonce``),
 the code→token exchange, and **ID-token validation** (signature via the IdP's JWKS,
 ``iss``/``aud``/``exp`` and ``nonce``).

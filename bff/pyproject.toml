@@ -14,11 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Redis-backed session store (SESSION_REDIS_URL) — needed only for >1 BFF replica.
+redis = ["redis>=5.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "black>=24.0",
     "flake8>=7.0",
+    "fakeredis>=2.30",  # exercises RedisSessionStore without a Redis server
 ]
 
 [tool.black]

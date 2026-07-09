@@ -3,10 +3,12 @@
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
 """BFF application factory.
 
-  Browser ──(signed session cookie)──> BFF ──(gateway bearer token)──> Gateway API
-                                          └──> Prometheus / Loki (monitoring, phase 2)
+  Browser ──(signed cookie: session id)──> BFF ──(gateway bearer token)──> Gateway API
+                                              └──> Prometheus / Loki (monitoring, phase 2)
 
-The gateway token is held only here; the browser holds an opaque session cookie.
+The gateway token is held only here. The browser's cookie carries just an opaque
+session id; session content (role, OIDC tokens) lives in the server-side store
+(app/sessions.py — in-memory by default, Redis via SESSION_REDIS_URL).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
 from .routers import api, auth
+from .sessions import MemorySessionStore, RedisSessionStore
 from .throttle import LoginThrottle
 
 
@@ -33,14 +36,15 @@ def create_app() -> FastAPI:
     settings = apply_first_run_bootstrap(settings)
 
     # Fail closed on an insecure session secret in production. COOKIE_SECURE=true is the
-    # "behind TLS / production" signal; refusing to boot here prevents a deploy that signs
-    # session cookies (role + relayed access token) with a publicly-known key. In dev
+    # "behind TLS / production" signal. The cookie now carries only a session id, but the
+    # secret still signs the OIDC login transaction (state/nonce/PKCE verifier) — a
+    # publicly-known key would let an attacker tamper with it (login CSRF). In dev
     # (COOKIE_SECURE unset) the default is allowed for convenience.
     if settings.cookie_secure and settings.session_secret == DEFAULT_SESSION_SECRET:
         raise RuntimeError(
             "SESSION_SECRET is the insecure default while COOKIE_SECURE is enabled. "
             "Set SESSION_SECRET to a strong random value (e.g. `openssl rand -hex 32`) — "
-            "the session cookie carries the role and the relayed access token."
+            "it signs the session-id cookie and the OIDC login transaction."
         )
 
     @asynccontextmanager
@@ -49,10 +53,18 @@ def create_app() -> FastAPI:
             yield
         finally:
             await app.state.gateway.aclose()
+            await app.state.sessions.aclose()
 
     app = FastAPI(title="Device MCP Gateway UI — BFF", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.gateway = GatewayClient(settings)
+    # Server-side session store: memory for a single replica (lite/dev); Redis when
+    # SESSION_REDIS_URL is set, which multi-replica deploys need (no session affinity).
+    app.state.sessions = (
+        RedisSessionStore(settings.session_redis_url, ttl=settings.session_ttl_seconds)
+        if settings.session_redis_url
+        else MemorySessionStore(ttl=settings.session_ttl_seconds)
+    )
     # OIDC Relying Party (ADR-0007). None unless OIDC_ENABLED and the issuer/client are
     # configured — a misconfiguration fails fast here rather than on the first login.
     app.state.oidc = OIDCClient(settings) if settings.oidc_enabled else None

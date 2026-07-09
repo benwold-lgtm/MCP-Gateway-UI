@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+from .. import sessions
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
@@ -60,8 +61,7 @@ async def login(request: Request, body: LoginBody) -> dict:
         throttle.record_failure(ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     throttle.record_success(ip)  # clear this IP's failure streak on success
-    request.session.clear()
-    request.session["role"] = role
+    await sessions.establish(request, {"kind": "password", "role": role})
     return {"role": role}
 
 
@@ -70,7 +70,7 @@ async def logout(request: Request) -> dict:
     """Clear the local session. For an OIDC session, also return the IdP's RP-initiated
     logout URL (when the IdP exposes one) so the SPA can end the IdP session too —
     otherwise "Sign in with SSO" silently logs the user straight back in."""
-    sess = current_session(request)
+    sess = await current_session(request)
     oidc = request.app.state.oidc
     end_session_url: str | None = None
     if sess and sess.get("kind") == "oidc" and oidc is not None and sess.get("id_token"):
@@ -81,7 +81,7 @@ async def logout(request: Request) -> dict:
             )
         except Exception:
             end_session_url = None  # IdP unreachable → local-only logout
-    request.session.clear()
+    await sessions.destroy(request)
     return {"status": "logged out", "end_session_url": end_session_url}
 
 
@@ -91,7 +91,7 @@ async def me(request: Request) -> dict:
     for both session kinds. Password roles use the local break-glass bundle; OIDC sessions
     get their real per-user scopes from the gateway's whoami (relayed with the user token),
     so the UI and gateway can't drift (ADR-0007)."""
-    sess = current_session(request)
+    sess = await current_session(request)
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -115,7 +115,7 @@ async def me(request: Request) -> dict:
     if resp is not None and resp.status_code == 401:
         # Token rejected and refresh did not recover it (expired/revoked, or no refresh
         # token). End the session.
-        request.session.clear()
+        await sessions.destroy(request)
         raise HTTPException(status_code=401, detail="Session expired")
     if resp is not None and resp.status_code == 200:
         data = resp.json()
@@ -173,18 +173,20 @@ async def oidc_callback(
     except OIDCError as exc:
         raise HTTPException(status_code=401, detail=f"OIDC login failed: {exc}")
 
-    # Establish the session. Rotate it (clear first) so the pre-login session id can't be
-    # fixated, and store the access token server-side for the upstream relay. The id_token
-    # is kept as the id_token_hint for RP-initiated logout.
-    request.session.clear()
-    request.session["auth"] = {
-        "kind": "oidc",
-        "sub": claims.get("sub"),
-        "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
-        "access_token": tokens.get("access_token"),
-        "id_token": tokens.get("id_token"),
-        # Server-side only, used to silently refresh the access token (review #4). Present
-        # only when the IdP issued one (e.g. the offline_access scope was granted).
-        "refresh_token": tokens.get("refresh_token"),
-    }
+    # Establish the session in the server-side store (establish() mints a fresh sid, so
+    # a pre-login session id can't be fixated). The tokens never enter the cookie; the
+    # id_token is kept as the id_token_hint for RP-initiated logout.
+    await sessions.establish(
+        request,
+        {
+            "kind": "oidc",
+            "sub": claims.get("sub"),
+            "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
+            "access_token": tokens.get("access_token"),
+            "id_token": tokens.get("id_token"),
+            # Used to silently refresh the access token (review #4). Present only when
+            # the IdP issued one (e.g. the offline_access scope was granted).
+            "refresh_token": tokens.get("refresh_token"),
+        },
+    )
     return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)
