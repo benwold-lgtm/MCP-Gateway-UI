@@ -2,27 +2,31 @@
 
 A **separate, optional** management UI for the [Device MCP Gateway](../device-mcp-gateway).
 Deployed independently; the gateway has **no dependency** on it (it only added a small
-aggregate endpoint, `GET /admin/overview`). This is a **starter scaffold** (F14) — minimal
-but real structure to build on.
+aggregate endpoint, `GET /admin/overview`). It covers device management (register/edit/
+remove, diagnostics, tool explorer, dead-letter queue), a monitoring view, and federated
+identity (OIDC SSO with per-user token passthrough).
 
 ## Architecture — thin BFF + SPA
 
 ```
   Browser (SPA: React + Vite + TS)
-      │  signed session cookie (opaque; no gateway token in the browser)
+      │  signed cookie carrying only a session id (no token, no role in the browser)
       ▼
-  BFF (FastAPI)  ── holds the gateway admin token, runs the session, authorizes by role
+  BFF (FastAPI)  ── holds the gateway admin token + server-side session store, authorizes by role
       │
       ├──► Gateway API        (device CRUD, /admin/overview, /metrics/summary)
       ├──► Prometheus query    (phase 2 — monitoring panels)
       └──► Loki / Splunk query (phase 2 — logs; the gateway is never in the log path)
 ```
 
-**Why a BFF?** The browser must never hold the gateway admin credential. The BFF keeps it
-server-side, exposes only an opaque signed-cookie session, maps that session to a role
-(`admin`/`viewer`, mirroring the gateway's RBAC), and proxies allowed calls upstream.
+**Why a BFF?** The browser must never hold the gateway admin credential — or any token.
+Session content (the role; for OIDC the user's tokens) lives in a **server-side session
+store** (`bff/app/sessions.py`: in-memory by default, Redis via `SESSION_REDIS_URL` for
+multi-replica deploys); the cookie carries only an opaque signed session id. The BFF maps
+that session to a role (`admin`/`viewer`, mirroring the gateway's RBAC) and proxies
+allowed calls upstream.
 
-## What's in the scaffold
+## What's in the repo
 
 | Path | What |
 |------|------|
@@ -64,7 +68,9 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `GATEWAY_API_PREFIX` | Gateway management-API version prefix (default `/v1`; change only for a future `/v2`) |
 | `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only); used for local password sessions and as break-glass |
 | `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Local break-glass login password → role (empty disables) |
-| `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`). The BFF **refuses to start** with the default value when `COOKIE_SECURE=true` |
+| `SESSION_SECRET` | Signs the session-id cookie and the OIDC login transaction (`openssl rand -hex 32`). The BFF **refuses to start** with the default value when `COOKIE_SECURE=true` |
+| `SESSION_REDIS_URL` | Shared server-side session store. **Required for >1 BFF replica** (the K8s overlay runs 2 — no session affinity); empty = in-memory store, right for a single replica |
+| `SESSION_TTL_SECONDS` | Server-side session lifetime (default `28800` = 8 h) |
 | `COOKIE_SECURE` | `true` behind TLS |
 | `LOGIN_MAX_FAILURES` / `LOGIN_WINDOW_SECONDS` | Break-glass password throttle: after this many failed attempts from one client IP within the window, further attempts get `429` until it rolls off (defaults `5` / `60`) |
 | `TRUST_FORWARDED_FOR` | `true` only when the BFF is behind a proxy that sets `X-Forwarded-For`, so the throttle keys on the real client IP rather than the proxy (default `false` — otherwise the header is spoofable) |
@@ -86,16 +92,16 @@ Set `OIDC_ENABLED=true` (plus the `OIDC_*` vars) to let users sign in through yo
 Browser ──/auth/oidc/login──> BFF ──Auth Code + PKCE──> IdP
         <─────302 callback──── BFF <──code→tokens──────┘
 BFF validates the ID token (JWKS sig, iss/aud/exp, nonce), stores the user's tokens
-server-side, then the browser carries only a signed session cookie.
+in the server-side session store, then the browser carries only a session-id cookie.
 ```
 
 When a relayed access token expires, the BFF **silently refreshes** it: a gateway `401`
 triggers a `refresh_token` grant (server-side) and the call is retried once, so the user
 isn't bounced to the login screen mid-session. This needs a refresh token, which the IdP
 issues when `offline_access` is granted (in the default `OIDC_SCOPES`). If the refresh
-fails (revoked/expired), the session ends and RP-initiated logout applies. Refresh state
-lives in the per-user cookie, so concurrent requests racing an expiry may both refresh;
-with refresh-token rotation the loser simply re-logs in.
+fails (revoked/expired), the session ends and RP-initiated logout applies. Refresh runs
+under a **per-session lock** in the session store, so concurrent requests racing an
+expiry refresh exactly once — safe with refresh-token rotation.
 
 There are **two kinds of session**:
 
@@ -116,7 +122,7 @@ sessions, so the UI and gateway authorization can't drift.
 
 ## Roadmap (phasing)
 
-1. **Device management** (this scaffold) — list/remove over the gateway REST API, status from `/admin/overview`.
+1. **Device management** ✅ — list/remove over the gateway REST API, status from `/admin/overview`.
 2. **Device detail** ✅ — per-device diagnostics ("why is my device down?"), a tool explorer (the generated MCP tools + their input schemas), and a **recent tool-set change** panel (added/removed/changed + breaking flag), from `/devices/{h}/diagnostics`, `/devices/{h}/tools`, and `/devices/{h}/tools/diff`.
 3. **Register / edit** ✅ — a full create + edit form (auth `api_key`/`oauth2`, `spec_url`, rate limit), `POST` to register and `PUT` to edit; edit pre-fills from the gateway and omits `auth` by default so stored credentials are preserved.
 4. **Monitoring + DLQ** ✅ — a lightweight native monitoring view: critical at-a-glance metric tiles (Prometheus instant queries) + a recent-logs panel (Loki LogQL), both proxied through the BFF, plus first-class pointers to **central monitoring** (the gateway's `:9100/metrics` scrape endpoint and an optional Grafana link); intentionally not a full monitoring app. Plus a per-device **dead-letter queue** panel in device detail (inspect any session; replay/drain admin-only; distributed mode).
@@ -124,7 +130,10 @@ sessions, so the UI and gateway authorization can't drift.
    token passthrough to the gateway and local passwords kept as break-glass (ADR-0007). The
    SPA offers a "Sign in with SSO" button and **gates write affordances on the gateway's
    scopes** (`/auth/me`), so UI and gateway authorization stay in lockstep.
-6. **Live** — SSE/WS device status, login throttling, finer per-scope views.
+6. **Server-side sessions** ✅ — session content (role, OIDC tokens) moved out of the
+   cookie into a store (memory, or Redis via `SESSION_REDIS_URL` for multi-replica);
+   OIDC refresh serialised per session. Login throttling on the break-glass password ✅.
+7. **Live** — SSE/WS device status, finer per-scope views.
 
 ## Keep the contract typed (no manual drift)
 
