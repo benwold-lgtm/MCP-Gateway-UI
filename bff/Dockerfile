@@ -5,7 +5,9 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install .
+# The redis extra backs the shared session store (SESSION_REDIS_URL) — a few hundred
+# kB, baked in so the same image serves single-replica lite and multi-replica K8s.
+RUN pip install --upgrade pip && pip install ".[redis]"
 
 COPY app ./app
 

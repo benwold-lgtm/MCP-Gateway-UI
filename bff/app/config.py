@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-# The session cookie is the whole trust boundary: it carries the password role and, for
-# OIDC, the relayed access token. A known default secret means anyone can forge a cookie
-# (an admin session, or an arbitrary relayed token). Booting with it under TLS is refused
-# in main.create_app().
+# The session cookie carries only an opaque session id (content lives in the server-side
+# store, app/sessions.py) plus the short-lived OIDC login transaction. The secret still
+# matters: a known default lets an attacker mint cookies and tamper with the OIDC
+# state/nonce/PKCE transaction (login CSRF). Booting with it under TLS is refused in
+# main.create_app().
 DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
 
 
@@ -31,6 +32,11 @@ class Settings:
     prometheus_url: str
     loki_url: str
     grafana_url: str = ""
+    # Server-side session store (app/sessions.py). Default: in-process memory — right
+    # for a single replica (lite/dev). Set SESSION_REDIS_URL when running >1 BFF
+    # replica (the K8s overlay does) so any replica can resolve any session.
+    session_redis_url: str = ""
+    session_ttl_seconds: int = 28800  # 8 hours
     cors_origins: list[str] = field(default_factory=list)
     cookie_secure: bool = False
     # Break-glass password login throttle (review #3): after login_max_failures failed
@@ -93,6 +99,8 @@ def load_settings() -> Settings:
         # MUST be overridden in production; signs the session cookie. Booting with this
         # default while COOKIE_SECURE is on is refused in create_app().
         session_secret=os.getenv("SESSION_SECRET", DEFAULT_SESSION_SECRET),
+        session_redis_url=os.getenv("SESSION_REDIS_URL", ""),
+        session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", "28800")),  # 8 hours
         prometheus_url=os.getenv("PROMETHEUS_URL", ""),
         loki_url=os.getenv("LOKI_URL", ""),
         # Optional link to central Grafana — surfaced in the UI's monitoring view so
