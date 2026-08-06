@@ -120,6 +120,23 @@ describe("DeviceDetail", () => {
     expect(screen.getByText(/tool\(s\) removed/)).toBeInTheDocument();
   });
 
+  it("names a proxied MCP upstream and does not promise spec auto-discovery for it", async () => {
+    // The base fixture has no upstream_kind at all, so the openapi case below is the
+    // schema default doing the work rather than a seeded value.
+    diagnostics.mockResolvedValue(DIAG);
+    tools.mockResolvedValue(TOOLS);
+    const { rerender } = render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
+    expect(await screen.findByText("openapi")).toBeInTheDocument();
+    expect(screen.getByText("(auto-discovered)")).toBeInTheDocument();
+
+    diagnostics.mockResolvedValue({ ...DIAG, upstream_kind: "mcp", spec_url: null });
+    rerender(<DeviceDetail hostname="sensor-2" canWrite={true} onClose={vi.fn()} />);
+    expect(await screen.findByText("mcp (proxied server)")).toBeInTheDocument();
+    // An MCP upstream has no OpenAPI document; "(auto-discovered)" would be a lie.
+    expect(screen.queryByText("(auto-discovered)")).not.toBeInTheDocument();
+    expect(screen.getByText(/not used by an MCP upstream/)).toBeInTheDocument();
+  });
+
   it("notes when there have been no tool-set changes", async () => {
     diagnostics.mockResolvedValue(DIAG);
     tools.mockResolvedValue(TOOLS);

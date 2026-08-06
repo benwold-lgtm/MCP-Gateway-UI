@@ -84,8 +84,21 @@ export function DeviceDetail({
               <Row label="Reachable" value={diag.reachable ? "✅ yes" : "❌ no"} />
               <Row label="Pod active" value={diag.pod_active ? "🟢 yes" : "⚪ no"} />
               <Row label="Mode" value={diag.mode} />
+              <Row
+                label="Upstream"
+                value={diag.upstream_kind === "mcp" ? "mcp (proxied server)" : "openapi"}
+              />
               <Row label="Base URL" value={diag.base_url} />
-              <Row label="Spec URL" value={diag.spec_url ?? "(auto-discovered)"} />
+              {/* An MCP upstream has no OpenAPI document, so the gateway rejects spec_url for
+                  it (ADR-0009) — say that rather than "(auto-discovered)", which never happens. */}
+              <Row
+                label="Spec URL"
+                value={
+                  diag.upstream_kind === "mcp"
+                    ? "— (not used by an MCP upstream)"
+                    : (diag.spec_url ?? "(auto-discovered)")
+                }
+              />
               {diag.worker_id != null && <Row label="Worker" value={diag.worker_id} />}
               <Row
                 label="Last check"
