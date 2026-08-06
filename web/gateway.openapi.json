@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Device MCP Gateway",
-    "version": "0.1.2"
+    "version": "0.1.4"
   },
   "paths": {
     "/health": {
@@ -656,6 +656,90 @@
         }
       }
     },
+    "/v1/fleet/sse": {
+      "get": {
+        "summary": "Fleet Sse Stream",
+        "operationId": "fleet_sse_stream_v1_fleet_sse_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "devices",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Devices"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/fleet/messages": {
+      "post": {
+        "summary": "Fleet Sse Message",
+        "operationId": "fleet_sse_message_v1_fleet_messages_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/metrics/summary": {
       "get": {
         "summary": "Get Metrics Summary",
@@ -666,6 +750,29 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/auth/me": {
+      "get": {
+        "summary": "Whoami",
+        "operationId": "whoami_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoAmIResponse"
+                }
               }
             }
           }
@@ -816,6 +923,11 @@
             ],
             "title": "Rate Limit Rps"
           },
+          "upstream_kind": {
+            "type": "string",
+            "title": "Upstream Kind",
+            "default": "openapi"
+          },
           "spec_url": {
             "anyOf": [
               {
@@ -875,6 +987,11 @@
             "type": "integer",
             "title": "Tools Revision",
             "default": 0
+          },
+          "upstream_transport": {
+            "type": "string",
+            "title": "Upstream Transport",
+            "default": "http"
           }
         },
         "type": "object",
@@ -916,6 +1033,11 @@
           "transport": {
             "type": "string",
             "title": "Transport"
+          },
+          "upstream_kind": {
+            "type": "string",
+            "title": "Upstream Kind",
+            "default": "openapi"
           },
           "reachable": {
             "type": "boolean",
@@ -1094,6 +1216,11 @@
               }
             ],
             "title": "Rate Limit Rps"
+          },
+          "upstream_kind": {
+            "type": "string",
+            "title": "Upstream Kind",
+            "default": "openapi"
           }
         },
         "type": "object",
@@ -1297,6 +1424,33 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WhoAmIResponse": {
+        "properties": {
+          "subject": {
+            "type": "string",
+            "title": "Subject"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "auth_method": {
+            "type": "string",
+            "title": "Auth Method"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subject",
+          "scopes",
+          "auth_method"
+        ],
+        "title": "WhoAmIResponse",
+        "description": "The authenticated caller's own identity and effective authorization, so a UI/BFF\ncan gate views on the **gateway's** scopes rather than maintaining a parallel role\nmodel (ADR-0007). ``scopes`` is sorted for a stable response."
       }
     },
     "securitySchemes": {
