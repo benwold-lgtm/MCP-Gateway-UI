@@ -5,6 +5,8 @@
 
 import stat
 
+from cryptography.fernet import Fernet
+
 from app.bootstrap import apply_first_run_bootstrap
 from app.config import DEFAULT_SESSION_SECRET, Settings, _secret
 
@@ -73,12 +75,44 @@ def test_reuses_persisted_across_restart(monkeypatch, tmp_path, capsys):
 
 
 def test_env_override_wins_and_is_not_persisted(monkeypatch, tmp_path):
+    """An operator who supplies every secret gets nothing written to their volume.
+
+    The audit keys are part of "every secret" since ADR-0013 §9/§10 — supplying only the
+    session secret and password would leave two to generate, which is what the sibling
+    test below covers.
+    """
     monkeypatch.setenv("BFF_STATE_DIR", str(tmp_path))
-    out = apply_first_run_bootstrap(_settings(session_secret="operator-secret", ui_admin_password="operator-pw"))
+    out = apply_first_run_bootstrap(
+        _settings(
+            session_secret="operator-secret",
+            ui_admin_password="operator-pw",
+            audit_content_key=Fernet.generate_key().decode(),
+            audit_pseudonym_key="operator-pseudonym-key",
+        )
+    )
     assert out.session_secret == "operator-secret"
     assert out.ui_admin_password == "operator-pw"
     # Nothing was generated, so no state file is written.
     assert not (tmp_path / "bootstrap.json").exists()
+
+
+def test_audit_keys_are_generated_and_stable_across_restarts(monkeypatch, tmp_path):
+    """A home box gets a shreddable, attributable audit from its FIRST record.
+
+    Neither key can be introduced retroactively: records already written in the clear
+    stay in the clear, and a hash chain cannot be re-keyed. So bootstrap generates both
+    rather than leaving the operator to discover them in the documentation later.
+    """
+    monkeypatch.setenv("BFF_STATE_DIR", str(tmp_path))
+    first = apply_first_run_bootstrap(_settings())
+    assert first.audit_content_key and first.audit_pseudonym_key
+    Fernet(first.audit_content_key.encode())  # a usable key, not just a string
+    # And the chain gets somewhere durable to live, so it re-seeds instead of resetting.
+    assert first.audit_path.endswith("audit.log")
+
+    second = apply_first_run_bootstrap(_settings())
+    assert second.audit_content_key == first.audit_content_key
+    assert second.audit_pseudonym_key == first.audit_pseudonym_key
 
 
 def test_env_password_but_generated_session_secret(monkeypatch, tmp_path):

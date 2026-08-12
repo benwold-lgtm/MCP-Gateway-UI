@@ -82,6 +82,34 @@ def _bootstrap(settings: Settings, path: Path) -> Settings:
         updates["ui_admin_password"] = generated_password
         to_persist["admin_password"] = generated_password
 
+    # Audit content key (ADR-0013 §10) and pseudonym key (§9). Both are generated and
+    # persisted rather than left empty, because neither can be introduced later without
+    # consequence: records already written in the clear stay in the clear, and a chain
+    # cannot be re-keyed retroactively. A home box therefore gets a shreddable audit from
+    # its first record instead of from whenever someone reads the documentation.
+    if settings.audit_content_key:
+        pass  # operator supplied one via AUDIT_CONTENT_KEY
+    elif stored.get("audit_content_key"):
+        updates["audit_content_key"] = stored["audit_content_key"]
+    else:
+        value = _fernet_key()
+        updates["audit_content_key"] = value
+        to_persist["audit_content_key"] = value
+
+    if settings.audit_pseudonym_key:
+        pass
+    elif stored.get("audit_pseudonym_key"):
+        updates["audit_pseudonym_key"] = stored["audit_pseudonym_key"]
+    else:
+        value = secrets.token_hex(32)
+        updates["audit_pseudonym_key"] = value
+        to_persist["audit_pseudonym_key"] = value
+
+    # Give the chain somewhere durable to live so it re-seeds across restarts. Without a
+    # file the chain silently restarts at genesis on every boot, which reads as a reset.
+    if not settings.audit_path:
+        updates["audit_path"] = str(path.parent / "audit.log")
+
     if to_persist != stored:
         _save(path, to_persist)
 
@@ -89,6 +117,12 @@ def _bootstrap(settings: Settings, path: Path) -> Settings:
         _announce_login(generated_password, path)
 
     return dataclasses.replace(settings, **updates) if updates else settings
+
+
+def _fernet_key() -> str:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode("ascii")
 
 
 def _load(path: Path) -> dict[str, str]:

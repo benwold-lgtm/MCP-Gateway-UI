@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .. import sessions
+from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
@@ -50,6 +51,9 @@ async def login(request: Request, body: LoginBody) -> dict:
     # (review #3) — brute-force protection the constant-time compare alone can't provide.
     locked = throttle.retry_after(ip)
     if locked:
+        # Audited: a lockout is the signal that someone is being brute-forced, and it is
+        # invisible in the gateway's chain because the request never reaches the gateway.
+        await record_request(request, "auth.login", outcome=OUTCOME_DENIED, reason="throttled", ip=ip)
         raise HTTPException(
             status_code=429,
             detail="Too many failed login attempts; try again later",
@@ -59,9 +63,13 @@ async def login(request: Request, body: LoginBody) -> dict:
     role = resolve_role(settings, body.password)
     if role is None:
         throttle.record_failure(ip)
+        await record_request(request, "auth.login", outcome=OUTCOME_DENIED, reason="bad_credentials", ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     throttle.record_success(ip)  # clear this IP's failure streak on success
     await sessions.establish(request, {"kind": "password", "role": role})
+    # Recorded after establish() so the actor resolves to the session just created rather
+    # than to "unauthenticated" — the record should name who got in, not who asked.
+    await record_request(request, "auth.login", outcome=OUTCOME_SUCCESS, target=role, ip=ip, method="password")
     return {"role": role}
 
 
@@ -81,6 +89,8 @@ async def logout(request: Request) -> dict:
             )
         except Exception:
             end_session_url = None  # IdP unreachable → local-only logout
+    # Before destroy(), so the actor is still resolvable from the session being ended.
+    await record_request(request, "auth.logout", outcome=OUTCOME_SUCCESS, method=(sess or {}).get("kind"))
     await sessions.destroy(request)
     return {"status": "logged out", "end_session_url": end_session_url}
 
@@ -162,7 +172,9 @@ async def oidc_callback(
     if not code or not state or not isinstance(tx, dict):
         raise HTTPException(status_code=400, detail="Invalid OIDC callback")
     if not secrets.compare_digest(state, tx.get("state", "")):
-        # state mismatch → possible CSRF/forged callback. Refuse.
+        # state mismatch → possible CSRF/forged callback. Refuse — and record it, because a
+        # forged callback is an attack signal, not a user error.
+        await record_request(request, "auth.oidc_login", outcome=OUTCOME_DENIED, reason="state_mismatch")
         raise HTTPException(status_code=400, detail="OIDC state mismatch")
 
     try:
@@ -171,6 +183,7 @@ async def oidc_callback(
             id_token=tokens["id_token"], nonce=tx["nonce"], access_token=tokens.get("access_token")
         )
     except OIDCError as exc:
+        await record_request(request, "auth.oidc_login", outcome=OUTCOME_DENIED, reason="token_exchange_failed")
         raise HTTPException(status_code=401, detail=f"OIDC login failed: {exc}")
 
     # Establish the session in the server-side store (establish() mints a fresh sid, so
@@ -189,4 +202,6 @@ async def oidc_callback(
             "refresh_token": tokens.get("refresh_token"),
         },
     )
+    # After establish(), so the actor is the federated subject rather than "unauthenticated".
+    await record_request(request, "auth.oidc_login", outcome=OUTCOME_SUCCESS, method="oidc")
     return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)

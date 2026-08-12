@@ -82,6 +82,53 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
+| `AUDIT_PATH` | File the hash-chained audit is appended to. Empty = records still chain and go to stdout, but the chain **restarts at genesis on every boot** because there is no tail to re-seed from. Set it anywhere the audit is meant to be evidence |
+| `AUDIT_TENANT` | Which tenant this stack serves (default `default`). Stamped on every record in the clear — it is what tells a reader which content key applies |
+| `AUDIT_CONTENT_KEY` | Fernet key encrypting record content, so offboarding a tenant is a key destruction rather than a row deletion. Empty = content in the clear and **no crypto-shredding**; the chain is unaffected either way. Also `AUDIT_CONTENT_KEY_FILE` |
+| `AUDIT_PSEUDONYM_KEY` | HMAC key producing stable, non-reversible handles for cross-plane (provider) actors. Empty = the writer emits an opaque constant rather than a real identity, because an unkeyed pseudonym is reversible by dictionary attack. Also `AUDIT_PSEUDONYM_KEY_FILE` |
+
+## Audit (tamper-evident)
+
+The BFF keeps its **own** hash-chained audit, on the gateway's F-57 model. It is not
+redundant with the gateway's: once provider federation ships
+([ADR-0012](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0012-federation-credential-model.md)),
+the gateway no longer sees the real human — it sees whatever credential the BFF presented.
+Today per-user OIDC relay hides that gap; federation ends it. Some events are also invisible
+to the gateway by construction: a **failed login** or a throttle lockout never reaches it.
+
+What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain)
+and every authentication event (password login success/failure/lockout, OIDC login, logout).
+Reads are deliberately **not** recorded — per-user relay means the gateway's own chain already
+has them, so duplicating would add noise rather than accountability. That changes when the
+provider plane lands.
+
+Three properties, per
+[ADR-0013](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md)
+§9/§10:
+
+- **Tamper-evident.** Each record commits to `sha256(seq, prev, payload)` and links to its
+  predecessor, so an edit, deletion or reorder is detectable by replay. Records carry an
+  instance id and verify as one sub-chain *per writer*, so several replicas appending to one
+  sink are not mistaken for tampering.
+- **The actor is pseudonymized at write time**, never at render time — a hash-chained record
+  cannot be redacted afterwards without breaking verification, so the substitution has to
+  happen before the bytes are committed. Handles are stable, so a tenant can tell one
+  engineer from two.
+- **Content is encrypted per tenant**, so offboarding destroys a key rather than deleting
+  rows from a chain that spans tenants.
+
+**The hash covers the ciphertext, not the plaintext.** That is what lets a shredded tenant's
+records still verify — otherwise erasure would cost tamper-evidence exactly when you most
+need to prove the log was not altered. The consequence, stated plainly: the tenant tag,
+timestamp and chain position survive a shred, so you can still see *that* tenant X acted N
+times and when. Nothing about what, to what, or by whom survives.
+
+Verifying a log:
+
+```python
+from app.audit import verify_chain
+ok, detail = verify_chain("/var/lib/bff/audit.log")   # needs no content key
+```
 
 ## Federated identity (OIDC SSO)
 

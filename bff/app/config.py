@@ -61,6 +61,23 @@ class Settings:
     # registered with the IdP as a post_logout_redirect_uri. Empty → omit the param.
     oidc_post_logout_redirect: str = ""
 
+    # --- Audit (gateway F-57 model, ADR-0013 §9/§10) --------------------------
+    # File the hash-chained audit is appended to. Empty → records still chain and still
+    # go to stdout, but the chain restarts at genesis on every boot because there is no
+    # tail to re-seed from. Set this anywhere the audit is expected to be evidence.
+    audit_path: str = ""
+    # Which tenant this stack serves. Stamped on every record in the clear, because it is
+    # what tells a reader which content key applies — see audit.py on what survives a shred.
+    audit_tenant: str = "default"
+    # Fernet key encrypting this tenant's record content, so offboarding can be a key
+    # destruction rather than a row deletion (ADR-0013 §10). Empty → content is written in
+    # the clear and crypto-shredding is unavailable; the chain is unaffected either way.
+    audit_content_key: str = ""
+    # HMAC key producing stable, non-reversible handles for cross-plane (provider) actors
+    # (ADR-0013 §9). Unkeyed pseudonyms would be reversible by dictionary attack over a
+    # staff list, so without this the writer emits an opaque constant rather than a name.
+    audit_pseudonym_key: str = ""
+
 
 def _split(csv: str) -> list[str]:
     return [item.strip() for item in csv.split(",") if item.strip()]
@@ -123,4 +140,10 @@ def load_settings() -> Settings:
         oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email offline_access"),
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
+        # Audit. AUDIT_PATH defaults under BFF_STATE_DIR when the lite bootstrap is in
+        # play, so a home box gets a durable, re-seedable chain without configuring one.
+        audit_path=os.getenv("AUDIT_PATH", ""),
+        audit_tenant=os.getenv("AUDIT_TENANT", "default"),
+        audit_content_key=_secret("AUDIT_CONTENT_KEY", "AUDIT_CONTENT_KEY_FILE"),
+        audit_pseudonym_key=_secret("AUDIT_PSEUDONYM_KEY", "AUDIT_PSEUDONYM_KEY_FILE"),
     )
