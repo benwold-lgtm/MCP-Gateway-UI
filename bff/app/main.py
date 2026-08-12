@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from .audit import AuditLog, Pseudonymizer, TenantKeyring
 from .bootstrap import apply_first_run_bootstrap
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
@@ -72,6 +73,26 @@ def create_app() -> FastAPI:
     app.state.login_throttle = LoginThrottle(
         max_failures=settings.login_max_failures,
         window=settings.login_window_seconds,
+    )
+    # Hash-chained audit (gateway F-57 model, ADR-0013 §9/§10). Built here rather than
+    # lazily so the chain re-seeds from its own tail once, at startup, instead of racing
+    # the first request.
+    keyring = TenantKeyring()
+    if settings.audit_content_key:
+        keyring.add(settings.audit_tenant, settings.audit_content_key.encode("ascii"))
+    else:
+        print(
+            "[audit] AUDIT_CONTENT_KEY is not set — audit content is written in the clear "
+            "and this tenant cannot be crypto-shredded on offboarding (ADR-0013 §10).",
+            flush=True,
+        )
+    app.state.audit = AuditLog(
+        path=settings.audit_path or None,
+        tenant=settings.audit_tenant,
+        keyring=keyring,
+        pseudonymizer=Pseudonymizer(
+            settings.audit_pseudonym_key.encode("utf-8") if settings.audit_pseudonym_key else None
+        ),
     )
 
     # Signed-cookie session. same_site=lax + httponly; set COOKIE_SECURE=true behind TLS.

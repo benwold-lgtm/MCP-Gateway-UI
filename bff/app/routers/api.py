@@ -17,6 +17,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from ..audit import outcome_for, record_request
 from ..relay import relay_get, relay_request
 from ..security import require_role
 
@@ -37,6 +38,19 @@ def _passthrough(resp: httpx.Response) -> JSONResponse:
     except ValueError:
         body = {"detail": resp.text}
     return JSONResponse(status_code=resp.status_code, content=body)
+
+
+async def _audited(request: Request, resp: httpx.Response, action: str, target: str | None = None) -> JSONResponse:
+    """Pass an upstream response through, recording it in the BFF's audit chain first.
+
+    Only *mutations* are audited here. Reads are deliberately not — with per-user OIDC
+    relay the gateway's own chain already records the real human behind every proxied
+    read, so auditing them again would duplicate rather than add. That changes when
+    provider federation lands (ADR-0012): the gateway stops seeing the person, and reads
+    by a human provider principal become exactly what ADR-0013 §9 says a tenant must see.
+    """
+    await record_request(request, action, outcome=outcome_for(resp.status_code), target=target, status=resp.status_code)
+    return _passthrough(resp)
 
 
 # --- Devices (proxied to the gateway) ----------------------------------------
@@ -80,7 +94,8 @@ async def device_tools_diff(hostname: str, request: Request) -> JSONResponse:
 @router.post("/devices", dependencies=[_admin])
 async def register_device(request: Request) -> JSONResponse:
     body = await request.json()
-    return _passthrough(await relay_request(request, "POST", "/devices", json=body))
+    resp = await relay_request(request, "POST", "/devices", json=body)
+    return await _audited(request, resp, "device.register", target=str(body.get("hostname") or "-"))
 
 
 @router.put("/devices/{hostname}", dependencies=[_admin])
@@ -88,12 +103,14 @@ async def update_device(hostname: str, request: Request) -> JSONResponse:
     # PUT replaces a device's config; the gateway preserves any field the body omits
     # (including stored credentials when `auth` is omitted).
     body = await request.json()
-    return _passthrough(await relay_request(request, "PUT", f"/devices/{hostname}", json=body))
+    resp = await relay_request(request, "PUT", f"/devices/{hostname}", json=body)
+    return await _audited(request, resp, "device.update", target=hostname)
 
 
 @router.delete("/devices/{hostname}", dependencies=[_admin])
 async def delete_device(hostname: str, request: Request) -> JSONResponse:
-    return _passthrough(await relay_request(request, "DELETE", f"/devices/{hostname}"))
+    resp = await relay_request(request, "DELETE", f"/devices/{hostname}")
+    return await _audited(request, resp, "device.delete", target=hostname)
 
 
 # --- Dead-letter queue (gateway F-10; distributed mode only) ------------------
@@ -119,14 +136,16 @@ async def deadletter_list(hostname: str, request: Request) -> JSONResponse:
 async def deadletter_replay(hostname: str, request: Request) -> JSONResponse:
     # Optional {"ids": [...]} replays specific entries; no body replays the oldest batch.
     body = await _optional_body(request)
-    return _passthrough(await relay_request(request, "POST", f"/devices/{hostname}/deadletter/replay", json=body))
+    resp = await relay_request(request, "POST", f"/devices/{hostname}/deadletter/replay", json=body)
+    return await _audited(request, resp, "deadletter.replay", target=hostname)
 
 
 @router.delete("/devices/{hostname}/deadletter", dependencies=[_admin])
 async def deadletter_drain(hostname: str, request: Request) -> JSONResponse:
     # Optional {"ids": [...]} drains specific entries; no body drains the whole queue.
     body = await _optional_body(request)
-    return _passthrough(await relay_request(request, "DELETE", f"/devices/{hostname}/deadletter", json=body))
+    resp = await relay_request(request, "DELETE", f"/devices/{hostname}/deadletter", json=body)
+    return await _audited(request, resp, "deadletter.drain", target=hostname)
 
 
 # --- Monitoring (Prometheus / Loki) -----------------------------------------

@@ -11,6 +11,11 @@ dependencies = [
     "itsdangerous>=2.1",   # Starlette SessionMiddleware (signed cookies)
     "pydantic>=2.6",
     "PyJWT[crypto]>=2.8",  # OIDC ID-token validation (ADR-0007)
+    # Fernet, for per-tenant audit content keys (ADR-0013 §10). The floor is 44.0.0
+    # rather than something older on purpose: it is the first release carrying the
+    # primitives this project standardised on, and a floor that cannot run the code is
+    # its own bug — `pip install` resolves against this file and ignores any lockfile.
+    "cryptography>=44.0.0,<50.0.0",
 ]
 
 [project.optional-dependencies]
