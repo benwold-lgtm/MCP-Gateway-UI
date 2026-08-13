@@ -4,6 +4,7 @@
 import type {
   AuthConfig,
   DeviceFull,
+  DeviceMutation,
   DevicePayload,
   Diagnostics,
   Overview,
@@ -50,6 +51,10 @@ export const api = {
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),
+  // Re-pin a device to the key it is now presenting (gateway ADR-0015 §6). Admin-only at
+  // the BFF; the gateway 409s when the device is not actually pending approval.
+  approveFingerprint: (hostname: string) =>
+    req<DeviceMutation>("POST", `/api/devices/${hostname}/fingerprint/approve`),
   // Dead-letter queue (gateway F-10, distributed mode). `ids` selects specific
   // entries; omit to act on the whole batch.
   deadLetters: (hostname: string) => req<DeadLetterList>("GET", `/api/devices/${hostname}/deadletter`),

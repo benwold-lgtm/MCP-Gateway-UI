@@ -13,6 +13,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.audit import verify_chain  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 
@@ -204,6 +205,107 @@ def test_deadletter_drain_admin_only(app_client):
     assert resp.json()["removed"] == 5
     # No body → drain the whole queue (json=None forwarded).
     assert seen == [("DELETE", "/devices/dev/deadletter", None)]
+
+
+# --- Endpoint fingerprint approval (gateway ADR-0015 §6) ----------------------
+
+
+@pytest.fixture
+def audited_client(tmp_path, monkeypatch):
+    """An app whose audit log actually writes to a file.
+
+    The default fixture leaves AUDIT_PATH empty, so records chain but land nowhere and
+    `read()` returns nothing. Approval is a *trust decision* — the claim that it is
+    audited is only worth testing against the real writer, so this fixture gives it one.
+    """
+    monkeypatch.setenv("AUDIT_PATH", str(tmp_path / "audit.log"))
+    app = create_app()
+    with TestClient(app) as c:
+        yield c, app, tmp_path / "audit.log"
+
+
+def test_fingerprint_approve_is_admin_only(app_client):
+    c, app = app_client
+    seen = []
+    app.state.gateway.request = _capture_request(seen, {"status": "fingerprint_approved"})
+    # A viewer is refused here, not upstream: the gateway must never see the call.
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.post("/api/devices/dev/fingerprint/approve").status_code == 403
+    assert seen == []
+
+    c.post("/auth/login", json={"password": "admin-pw"})
+    resp = c.post("/api/devices/dev/fingerprint/approve")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "fingerprint_approved"
+    # POST with no body — the gateway's approve endpoint takes none.
+    assert seen == [("POST", "/devices/dev/fingerprint/approve", None)]
+
+
+def test_fingerprint_approve_requires_a_session(app_client):
+    c, _ = app_client
+    assert c.post("/api/devices/dev/fingerprint/approve").status_code == 401
+
+
+def test_fingerprint_approve_passes_the_gateway_409_through(app_client):
+    """Approving a device that is not pending must fail visibly.
+
+    The gateway 409s when the state moved on (someone else approved, or the device was
+    re-probed) — the operator is acting on a stale screen, and turning that into a 200
+    would tell them a trust decision succeeded when it did not.
+    """
+    c, app = app_client
+    app.state.gateway.request = _fake_request({"detail": "no fingerprint change awaiting approval"}, status=409)
+    c.post("/auth/login", json={"password": "admin-pw"})
+    resp = c.post("/api/devices/dev/fingerprint/approve")
+    assert resp.status_code == 409
+    assert "awaiting approval" in resp.json()["detail"]
+
+
+def test_fingerprint_approve_is_audited(audited_client):
+    c, app, path = audited_client
+    app.state.gateway.request = _fake_request({"status": "fingerprint_approved"})
+    c.post("/auth/login", json={"password": "admin-pw"})
+    assert c.post("/api/devices/dev/fingerprint/approve").status_code == 200
+
+    # The same action name the gateway uses, so the two chains describe one event.
+    approvals = [r["content"] for r in app.state.audit.read() if r["content"]["action"] == "device.fingerprint.approve"]
+    assert len(approvals) == 1, "approval wrote no audit record (or wrote it twice)"
+    assert approvals[0]["target"] == "dev"
+    assert approvals[0]["outcome"] == "success"
+    ok, detail = verify_chain(path)
+    assert ok, detail
+
+
+def test_fingerprint_approve_audits_a_refusal_as_denied(audited_client):
+    """A rejected approval is the record an incident actually asks for.
+
+    403 maps to `denied` rather than a generic error precisely so "who was refused what"
+    survives in the log.
+    """
+    c, app, _ = audited_client
+    app.state.gateway.request = _fake_request({"detail": "forbidden"}, status=403)
+    c.post("/auth/login", json={"password": "admin-pw"})
+    assert c.post("/api/devices/dev/fingerprint/approve").status_code == 403
+
+    approvals = [r["content"] for r in app.state.audit.read() if r["content"]["action"] == "device.fingerprint.approve"]
+    assert len(approvals) == 1
+    assert approvals[0]["outcome"] == "denied"
+
+
+def test_viewer_refusal_is_not_audited_by_the_bff(audited_client):
+    """A viewer never reaches the audited handler — the role dependency refuses first.
+
+    Asserted so the gap is a recorded decision rather than a surprise: the BFF's chain
+    covers *attempted mutations that got as far as the gateway*, and role refusals are
+    the session layer's business.
+    """
+    c, app, _ = audited_client
+    app.state.gateway.request = _fake_request({"status": "fingerprint_approved"})
+    c.post("/auth/login", json={"password": "viewer-pw"})
+    assert c.post("/api/devices/dev/fingerprint/approve").status_code == 403
+    # The login itself is audited, so filter rather than asserting an empty log.
+    actions = [r["content"]["action"] for r in app.state.audit.read()]
+    assert "device.fingerprint.approve" not in actions
 
 
 def test_monitoring_meta_reports_unconfigured_by_default(app_client):

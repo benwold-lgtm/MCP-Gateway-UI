@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { Diagnostics, Tool, ToolsDiff } from "../types";
+import type { DeviceFull, Diagnostics, Tool, ToolsDiff } from "../types";
 import { DeadLetterPanel } from "./DeadLetterPanel";
+import { FingerprintPanel } from "./FingerprintPanel";
 
-// Per-device detail: the gateway's diagnostics ("why is my device down?") plus a
-// tool explorer (the generated MCP tools and their input schemas). Diagnostics is
-// the source of truth for health; the tool list is best-effort (the gateway returns
-// 409 when there is no active pod), so a down device still shows its diagnostics.
+// Per-device detail: the gateway's diagnostics ("why is my device down?"), the endpoint
+// fingerprint (what the device *is*), and a tool explorer. Diagnostics is the source of
+// truth for health; the tool list is best-effort (the gateway returns 409 when there is
+// no active pod), so a down device still shows its diagnostics.
+//
+// The fingerprint fields live on the device record rather than on diagnostics, so this
+// view reads both.
 export function DeviceDetail({
   hostname,
   canWrite,
@@ -18,20 +22,31 @@ export function DeviceDetail({
   onClose: () => void;
 }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
+  const [device, setDevice] = useState<DeviceFull | null>(null);
   const [tools, setTools] = useState<Tool[] | null>(null);
   const [diff, setDiff] = useState<ToolsDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openTool, setOpenTool] = useState<string | null>(null);
+  // Bumped after an approval so the whole view re-reads: the pin moves, and under an
+  // enforce policy the quarantine lifts, which can make the tool list available again.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let active = true;
     setDiag(null);
+    setDevice(null);
     setTools(null);
     setDiff(null);
     setError(null);
     setOpenTool(null);
     Promise.all([
       api.diagnostics(hostname),
+      // The device record carries the fingerprint. Tolerated like the others so a
+      // failure here cannot blank the health view; the panel is hidden and said to be.
+      api.getDevice(hostname).then(
+        (d) => d,
+        () => null,
+      ),
       // Tools require an active pod; tolerate failure so diagnostics still render.
       api.tools(hostname).then(
         (t) => t.tools,
@@ -43,9 +58,10 @@ export function DeviceDetail({
         () => null,
       ),
     ])
-      .then(([d, t, df]) => {
+      .then(([d, dev, t, df]) => {
         if (!active) return;
         setDiag(d);
+        setDevice(dev);
         setTools(t);
         setDiff(df);
       })
@@ -55,7 +71,7 @@ export function DeviceDetail({
     return () => {
       active = false;
     };
-  }, [hostname]);
+  }, [hostname, reload]);
 
   return (
     <section
@@ -112,6 +128,21 @@ export function DeviceDetail({
               <Row label="Circuit breaker" value={breakerText(diag.breaker)} />
             </tbody>
           </table>
+
+          {device ? (
+            <FingerprintPanel
+              device={device}
+              tls={diag.tls}
+              canWrite={canWrite}
+              onApproved={() => setReload((n) => n + 1)}
+            />
+          ) : (
+            // Don't leave a security panel silently absent — an operator would read a
+            // missing fingerprint section as "this device has none".
+            <p style={{ color: "#888", marginTop: 16, fontSize: 13 }}>
+              Endpoint fingerprint unavailable — the device record could not be read.
+            </p>
+          )}
 
           {diff?.last_change && <ToolChanges change={diff.last_change} />}
           {diff && !diff.last_change && (

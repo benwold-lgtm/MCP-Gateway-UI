@@ -113,6 +113,22 @@ async def delete_device(hostname: str, request: Request) -> JSONResponse:
     return await _audited(request, resp, "device.delete", target=hostname)
 
 
+@router.post("/devices/{hostname}/fingerprint/approve", dependencies=[_admin])
+async def approve_fingerprint(hostname: str, request: Request) -> JSONResponse:
+    """Re-pin a device to the key it is now presenting (gateway ADR-0015 §6).
+
+    Admin-gated because the gateway requires `devices:write`, and audited under the
+    *same* action name the gateway uses — the two chains then line up on one event
+    instead of describing it twice in different words.
+
+    The gateway answers 409 when the device is not actually pending (or is pending with
+    no recorded key), and that passes straight through: approving from a stale screen
+    should fail visibly rather than look like it worked.
+    """
+    resp = await relay_request(request, "POST", f"/devices/{hostname}/fingerprint/approve")
+    return await _audited(request, resp, "device.fingerprint.approve", target=hostname)
+
+
 # --- Dead-letter queue (gateway F-10; distributed mode only) ------------------
 #
 # Inspect is a read; replay/drain mutate, so they require an admin session. The
