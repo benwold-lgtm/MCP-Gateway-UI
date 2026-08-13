@@ -9,6 +9,8 @@ type Schemas = components["schemas"];
 export type Device = Schemas["DeviceSummary"];
 export type DeviceFull = Schemas["DeviceDetail"];
 export type Overview = Schemas["OverviewResponse"];
+// What a device write returns: the envelope plus the resulting device.
+export type DeviceMutation = Schemas["DeviceMutationResult"];
 export type Diagnostics = Schemas["DeviceDiagnostics"];
 export type ToolsDiff = Schemas["ToolsDiffResponse"];
 

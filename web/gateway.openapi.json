@@ -1,1463 +1,1956 @@
 {
-  "openapi": "3.1.0",
-  "info": {
-    "title": "Device MCP Gateway",
-    "version": "0.1.4"
-  },
-  "paths": {
-    "/health": {
-      "get": {
-        "summary": "Health Check",
-        "operationId": "health_check_health_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Device MCP Gateway",
+        "version": "0.3.3"
     },
-    "/livez": {
-      "get": {
-        "summary": "Liveness Check",
-        "description": "Lightweight liveness probe \u2014 proves the event loop is turning (F-17).\n\nUnlike /health (which does Redis/registry work and is really a readiness\nsignal), this does no I/O: it only checks that the background heartbeat tick\nis fresh. A wedged event loop can't advance the tick (and can't run this\nhandler either), so the probe fails \u2014 catching a \"wedged-but-serving\"\ngateway that /health, answering from cache, would miss. K8s livenessProbe\ntarget.",
-        "operationId": "liveness_check_livez_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/readyz": {
-      "get": {
-        "summary": "Readiness Check",
-        "description": "Deep readiness probe \u2014 checks backend infrastructure connectivity.\nK8s readiness probe target; returns 503 until the backend is reachable.\nUnlike /health, does NOT check business state (device count, pod_active).",
-        "operationId": "readiness_check_readyz_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices": {
-      "get": {
-        "summary": "List Devices",
-        "operationId": "list_devices_v1_devices_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceListResponse"
+    "paths": {
+        "/health": {
+            "get": {
+                "summary": "Health Check",
+                "operationId": "health_check_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
                 }
-              }
             }
-          }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      },
-      "post": {
-        "summary": "Register Device",
-        "operationId": "register_device_v1_devices_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceMutationResult"
+        "/livez": {
+            "get": {
+                "summary": "Liveness Check",
+                "description": "Lightweight liveness probe \u2014 proves the event loop is turning (F-17).\n\nUnlike /health (which does Redis/registry work and is really a readiness\nsignal), this does no I/O: it only checks that the background heartbeat tick\nis fresh. A wedged event loop can't advance the tick (and can't run this\nhandler either), so the probe fails \u2014 catching a \"wedged-but-serving\"\ngateway that /health, answering from cache, would miss. K8s livenessProbe\ntarget.",
+                "operationId": "liveness_check_livez_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
                 }
-              }
             }
-          }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/v1/devices/{hostname}": {
-      "put": {
-        "summary": "Update Device",
-        "operationId": "update_device_v1_devices__hostname__put",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceMutationResult"
+        "/readyz": {
+            "get": {
+                "summary": "Readiness Check",
+                "description": "Deep readiness probe \u2014 checks backend infrastructure connectivity.\nK8s readiness probe target; returns 503 until the backend is reachable.\nUnlike /health, does NOT check business state (device count, pod_active).",
+                "operationId": "readiness_check_readyz_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
                 }
-              }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "summary": "Get Device",
-        "operationId": "get_device_v1_devices__hostname__get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceDetail"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Unregister Device",
-        "operationId": "unregister_device_v1_devices__hostname__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/tools": {
-      "get": {
-        "summary": "Get Device Tools",
-        "operationId": "get_device_tools_v1_devices__hostname__tools_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/tools/diff": {
-      "get": {
-        "summary": "Get Device Tools Diff",
-        "description": "Tool-set change governance (F-41): what was added/removed/changed when\nthe device's tools last moved, and whether it was breaking. ``last_change``\nis ``null`` when no change has been observed since registration. Unlike\n``/tools`` this does not require an active pod \u2014 a UI can show \"the tools\nchanged (and how)\" even for a device that is currently down.",
-        "operationId": "get_device_tools_diff_v1_devices__hostname__tools_diff_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolsDiffResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/diagnostics": {
-      "get": {
-        "summary": "Device Diagnostics",
-        "description": "Self-service \"why is my device down?\" diagnostics (F-52): registry\nstatus, last check + age, spec/manifest state, spawn error, and the\ncircuit breaker (in-process pods only).",
-        "operationId": "device_diagnostics_v1_devices__hostname__diagnostics_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceDiagnostics"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/deadletter": {
-      "get": {
-        "summary": "List Dead Letters",
-        "description": "Inspect a device's dead-lettered tool calls (newest first) \u2014 F-10.",
-        "operationId": "list_dead_letters_v1_devices__hostname__deadletter_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "default": 50,
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Purge Dead Letters",
-        "description": "Drain a device's DLQ. Optional JSON body ``{\"ids\": [...]}`` deletes\nspecific entries; otherwise the whole queue is dropped (F-10).",
-        "operationId": "purge_dead_letters_v1_devices__hostname__deadletter_delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/deadletter/replay": {
-      "post": {
-        "summary": "Replay Dead Letters",
-        "description": "Re-publish dead-lettered calls onto the device's call stream and remove\nthem from the DLQ. Optional JSON body ``{\"ids\": [...]}`` replays specific\nentries; otherwise up to ``limit`` oldest are replayed (F-10).",
-        "operationId": "replay_dead_letters_v1_devices__hostname__deadletter_replay_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "default": 50,
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/sse": {
-      "get": {
-        "summary": "Device Sse Stream",
-        "operationId": "device_sse_stream_v1_devices__hostname__sse_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
-            }
-          },
-          {
-            "name": "session_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
+        },
+        "/v1/devices": {
+            "get": {
+                "summary": "List Devices",
+                "operationId": "list_devices_v1_devices_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeviceListResponse"
+                                }
+                            }
+                        }
+                    }
                 },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Session Id"
-            }
-          },
-          {
-            "name": "client_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
+            },
+            "post": {
+                "summary": "Register Device",
+                "operationId": "register_device_v1_devices_post",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeviceMutationResult"
+                                }
+                            }
+                        }
+                    }
                 },
-                {
-                  "type": "null"
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
+            }
+        },
+        "/v1/devices/{hostname}": {
+            "put": {
+                "summary": "Update Device",
+                "operationId": "update_device_v1_devices__hostname__put",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeviceMutationResult"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
                 }
-              ],
-              "title": "Client Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+            },
+            "get": {
+                "summary": "Get Device",
+                "operationId": "get_device_v1_devices__hostname__get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeviceDetail"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
                 }
-              }
+            },
+            "delete": {
+                "summary": "Unregister Device",
+                "operationId": "unregister_device_v1_devices__hostname__delete",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
             }
-          }
-        }
-      }
-    },
-    "/v1/devices/{hostname}/messages": {
-      "post": {
-        "summary": "Device Sse Message",
-        "operationId": "device_sse_message_v1_devices__hostname__messages_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hostname"
+        },
+        "/v1/devices/{hostname}/tools": {
+            "get": {
+                "summary": "Get Device Tools",
+                "operationId": "get_device_tools_v1_devices__hostname__tools_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
             }
-          },
-          {
-            "name": "session_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
+        },
+        "/v1/devices/{hostname}/tools/diff": {
+            "get": {
+                "summary": "Get Device Tools Diff",
+                "description": "Tool-set change governance (F-41): what was added/removed/changed when\nthe device's tools last moved, and whether it was breaking. ``last_change``\nis ``null`` when no change has been observed since registration. Unlike\n``/tools`` this does not require an active pod \u2014 a UI can show \"the tools\nchanged (and how)\" even for a device that is currently down.",
+                "operationId": "get_device_tools_diff_v1_devices__hostname__tools_diff_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ToolsDiffResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/diagnostics": {
+            "get": {
+                "summary": "Device Diagnostics",
+                "description": "Self-service \"why is my device down?\" diagnostics (F-52): registry\nstatus, last check + age, spec/manifest state, spawn error, and the\ncircuit breaker (in-process pods only).",
+                "operationId": "device_diagnostics_v1_devices__hostname__diagnostics_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeviceDiagnostics"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/fingerprint/approve": {
+            "post": {
+                "summary": "Approve a changed endpoint fingerprint",
+                "description": "Re-pin a device to the key it is now presenting (ADR-0015 \u00a76).\n\nApproval is a **trust decision**, not a dismissal, so it is audited with the principal\nand both key values. `devices:write` is the scope by decision (\u00a79): the operator who\nregisters devices is the one who knows whether a changed endpoint is still the right\none, and the gateway's RBAC is deliberately small. The trade-off is explicit \u2014 this is\nnot separation of duty, and the audit record is what carries the accountability.",
+                "operationId": "approve_fingerprint_v1_devices__hostname__fingerprint_approve_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/deadletter": {
+            "get": {
+                "summary": "List Dead Letters",
+                "description": "Inspect a device's dead-lettered tool calls (newest first) \u2014 F-10.",
+                "operationId": "list_dead_letters_v1_devices__hostname__deadletter_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "Purge Dead Letters",
+                "description": "Drain a device's DLQ. Optional JSON body ``{\"ids\": [...]}`` deletes\nspecific entries; otherwise the whole queue is dropped (F-10).",
+                "operationId": "purge_dead_letters_v1_devices__hostname__deadletter_delete",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/deadletter/replay": {
+            "post": {
+                "summary": "Replay Dead Letters",
+                "description": "Re-publish dead-lettered calls onto the device's call stream and remove\nthem from the DLQ. Optional JSON body ``{\"ids\": [...]}`` replays specific\nentries; otherwise up to ``limit`` oldest are replayed (F-10).",
+                "operationId": "replay_dead_letters_v1_devices__hostname__deadletter_replay_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/sse": {
+            "get": {
+                "summary": "Device Sse Stream",
+                "operationId": "device_sse_stream_v1_devices__hostname__sse_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    },
+                    {
+                        "name": "session_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Session Id"
+                        }
+                    },
+                    {
+                        "name": "client_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Client Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/messages": {
+            "post": {
+                "summary": "Device Sse Message",
+                "operationId": "device_sse_message_v1_devices__hostname__messages_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    },
+                    {
+                        "name": "session_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Session Id"
+                        }
+                    },
+                    {
+                        "name": "client_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Client Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/devices/{hostname}/mcp": {
+            "post": {
+                "summary": "Device Streamable Post",
+                "description": "Accept one JSON-RPC message and answer it on this response.",
+                "operationId": "device_streamable_post_v1_devices__hostname__mcp_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "get": {
+                "summary": "Device Streamable Get",
+                "description": "No server-initiated stream is offered at this endpoint.\n\nThe transport says a server that does not offer one here MUST answer 405, and we\ngenuinely do not: the gateway advertises no server-initiated capability\n(`listChanged: false`, no sampling, no roots), so there is nothing to push. Answering\n405 is the honest reading, and it is what tells a conforming client to stop asking.",
+                "operationId": "device_streamable_get_v1_devices__hostname__mcp_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "Device Streamable Delete",
+                "description": "Explicit session termination by the client.",
+                "operationId": "device_streamable_delete_v1_devices__hostname__mcp_delete",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "hostname",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Hostname"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/fleet/sse": {
+            "get": {
+                "summary": "Fleet Sse Stream",
+                "operationId": "fleet_sse_stream_v1_fleet_sse_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "devices",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Devices"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/fleet/messages": {
+            "post": {
+                "summary": "Fleet Sse Message",
+                "operationId": "fleet_sse_message_v1_fleet_messages_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Session Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/fleet/mcp": {
+            "post": {
+                "summary": "Fleet Streamable Post",
+                "description": "Accept one JSON-RPC message for a fleet session and answer it on this response.",
+                "operationId": "fleet_streamable_post_v1_fleet_mcp_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "devices",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Devices"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "get": {
+                "summary": "Fleet Streamable Get",
+                "description": "No server-initiated stream is offered here \u2014 see the per-device route for why.",
+                "operationId": "fleet_streamable_get_v1_fleet_mcp_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "Fleet Streamable Delete",
+                "description": "Explicit session termination by the client.",
+                "operationId": "fleet_streamable_delete_v1_fleet_mcp_delete",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/metrics/summary": {
+            "get": {
+                "summary": "Get Metrics Summary",
+                "operationId": "get_metrics_summary_v1_metrics_summary_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
                 },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Session Id"
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
             }
-          },
-          {
-            "name": "client_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
+        },
+        "/v1/auth/me": {
+            "get": {
+                "summary": "Whoami",
+                "operationId": "whoami_v1_auth_me_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/WhoAmIResponse"
+                                }
+                            }
+                        }
+                    }
                 },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Client Id"
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
             }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/fleet/sse": {
-      "get": {
-        "summary": "Fleet Sse Stream",
-        "operationId": "fleet_sse_stream_v1_fleet_sse_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "devices",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Devices"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/fleet/messages": {
-      "post": {
-        "summary": "Fleet Sse Message",
-        "operationId": "fleet_sse_message_v1_fleet_messages_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Session Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/metrics/summary": {
-      "get": {
-        "summary": "Get Metrics Summary",
-        "operationId": "get_metrics_summary_v1_metrics_summary_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/v1/auth/me": {
-      "get": {
-        "summary": "Whoami",
-        "operationId": "whoami_v1_auth_me_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhoAmIResponse"
-                }
-              }
+        "/v1/admin/overview": {
+            "get": {
+                "summary": "Admin Overview",
+                "operationId": "admin_overview_v1_admin_overview_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OverviewResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
             }
-          }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/overview": {
-      "get": {
-        "summary": "Admin Overview",
-        "operationId": "admin_overview_v1_admin_overview_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OverviewResponse"
+        "/v1/admin/backup": {
+            "get": {
+                "summary": "Export Backup",
+                "description": "Ciphertext archive \u2014 credentials stay encrypted under this stack's MCP_SECRET_KEY.\n\nRestores into this stack or any stack sharing that key. For an archive that crosses key\ngenerations, POST to this path with ``kind=portable``.",
+                "operationId": "export_backup_v1_admin_backup_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "include_deadletters",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean",
+                            "default": false,
+                            "title": "Include Deadletters"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
                 }
-              }
+            },
+            "post": {
+                "summary": "Export Backup With Body",
+                "description": "Either archive kind. Body: ``{kind, passphrase, include_deadletters}``.\n\nThe route that exists so a portable export's passphrase travels in a body rather than\na URL.",
+                "operationId": "export_backup_with_body_v1_admin_backup_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
             }
-          }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
+        "/v1/admin/restore": {
+            "post": {
+                "summary": "Restore Backup",
+                "description": "Replay an archive into this stack.\n\nBody: ``{archive, passphrase?, dry_run?, on_conflict?, include_deadletters?}``.\n\n``dry_run`` defaults to **true** \u2014 the destructive direction is never the one you get\nby omission. A dry run runs the same fail-closed preflight and the same per-device\ngates as a real one, so its report predicts rather than guesses.",
+                "operationId": "restore_backup_v1_admin_restore_post",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ]
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "BreakerState": {
+                "properties": {
+                    "available": {
+                        "type": "boolean",
+                        "title": "Available"
+                    },
+                    "state": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "State"
+                    },
+                    "fail_counter": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fail Counter"
+                    },
+                    "fail_max": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fail Max"
+                    },
+                    "reset_timeout": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reset Timeout"
+                    },
+                    "note": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Note"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "available"
+                ],
+                "title": "BreakerState",
+                "description": "Per-pod circuit-breaker state. Only readable when the pod is in-process\n(embedded mode); in distributed mode the pod runs on a worker, so the gateway\nreports ``available: false`` with a note."
+            },
+            "DeviceDetail": {
+                "properties": {
+                    "hostname": {
+                        "type": "string",
+                        "title": "Hostname"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "title": "Base Url"
+                    },
+                    "transport": {
+                        "type": "string",
+                        "title": "Transport"
+                    },
+                    "reachable": {
+                        "type": "boolean",
+                        "title": "Reachable"
+                    },
+                    "pod_active": {
+                        "type": "boolean",
+                        "title": "Pod Active"
+                    },
+                    "last_check": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Check"
+                    },
+                    "rate_limit_rps": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Rate Limit Rps"
+                    },
+                    "upstream_kind": {
+                        "type": "string",
+                        "title": "Upstream Kind",
+                        "default": "openapi"
+                    },
+                    "spec_url": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spec Url"
+                    },
+                    "spec_hash": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spec Hash"
+                    },
+                    "auth_type": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Auth Type"
+                    },
+                    "spawn_error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spawn Error"
+                    },
+                    "worker_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Worker Id"
+                    },
+                    "tools_revision": {
+                        "type": "integer",
+                        "title": "Tools Revision",
+                        "default": 0
+                    },
+                    "upstream_transport": {
+                        "type": "string",
+                        "title": "Upstream Transport",
+                        "default": "http"
+                    },
+                    "fingerprint_state": {
+                        "type": "string",
+                        "title": "Fingerprint State",
+                        "default": "unpinned"
+                    },
+                    "fingerprint_pinned_at": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fingerprint Pinned At"
+                    },
+                    "tls_spki_sha256": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tls Spki Sha256"
+                    },
+                    "tls_cert_sha256": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tls Cert Sha256"
+                    },
+                    "tls_issuer": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tls Issuer"
+                    },
+                    "tls_not_after": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tls Not After"
+                    },
+                    "pending_tls_spki_sha256": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pending Tls Spki Sha256"
+                    },
+                    "declared_name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Declared Name"
+                    },
+                    "declared_version": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Declared Version"
+                    },
+                    "fingerprint_policy": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fingerprint Policy"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "hostname",
+                    "base_url",
+                    "transport",
+                    "reachable",
+                    "pod_active"
+                ],
+                "title": "DeviceDetail",
+                "description": "Full device projection for the single-device read \u2014 a superset of\n:class:`DeviceSummary` adding the fields a detail/diagnostic view needs."
+            },
+            "DeviceDiagnostics": {
+                "properties": {
+                    "hostname": {
+                        "type": "string",
+                        "title": "Hostname"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "title": "Mode"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "title": "Base Url"
+                    },
+                    "spec_url": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spec Url"
+                    },
+                    "transport": {
+                        "type": "string",
+                        "title": "Transport"
+                    },
+                    "upstream_kind": {
+                        "type": "string",
+                        "title": "Upstream Kind",
+                        "default": "openapi"
+                    },
+                    "reachable": {
+                        "type": "boolean",
+                        "title": "Reachable"
+                    },
+                    "pod_active": {
+                        "type": "boolean",
+                        "title": "Pod Active"
+                    },
+                    "worker_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Worker Id"
+                    },
+                    "last_check": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Check"
+                    },
+                    "last_check_age_seconds": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Check Age Seconds"
+                    },
+                    "spec_hash": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spec Hash"
+                    },
+                    "has_manifest": {
+                        "type": "boolean",
+                        "title": "Has Manifest"
+                    },
+                    "tool_count": {
+                        "type": "integer",
+                        "title": "Tool Count"
+                    },
+                    "tools_revision": {
+                        "type": "integer",
+                        "title": "Tools Revision",
+                        "default": 0
+                    },
+                    "spawn_error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Spawn Error"
+                    },
+                    "breaker": {
+                        "$ref": "#/components/schemas/BreakerState"
+                    },
+                    "tls": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/TlsProfileInfo"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "hostname",
+                    "mode",
+                    "base_url",
+                    "transport",
+                    "reachable",
+                    "pod_active",
+                    "has_manifest",
+                    "tool_count",
+                    "breaker"
+                ],
+                "title": "DeviceDiagnostics",
+                "description": "\"Why is my device down?\" \u2014 a single read combining registry status, the\nlast check, spec/manifest state, the spawn error, and the circuit breaker\n(F-52)."
+            },
+            "DeviceListResponse": {
+                "properties": {
+                    "devices": {
+                        "items": {
+                            "$ref": "#/components/schemas/DeviceSummary"
+                        },
+                        "type": "array",
+                        "title": "Devices"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "devices"
+                ],
+                "title": "DeviceListResponse"
+            },
+            "DeviceMutationResult": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status"
+                    },
+                    "provisioning": {
+                        "type": "boolean",
+                        "title": "Provisioning"
+                    },
+                    "device": {
+                        "$ref": "#/components/schemas/DeviceDetail"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "provisioning",
+                    "device"
+                ],
+                "title": "DeviceMutationResult",
+                "description": "Response for a register/update write: the write-time envelope plus the full\nresulting device, so a client gets the resource back without a follow-up GET."
+            },
+            "DeviceSummary": {
+                "properties": {
+                    "hostname": {
+                        "type": "string",
+                        "title": "Hostname"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "title": "Base Url"
+                    },
+                    "transport": {
+                        "type": "string",
+                        "title": "Transport"
+                    },
+                    "reachable": {
+                        "type": "boolean",
+                        "title": "Reachable"
+                    },
+                    "pod_active": {
+                        "type": "boolean",
+                        "title": "Pod Active"
+                    },
+                    "last_check": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Check"
+                    },
+                    "rate_limit_rps": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Rate Limit Rps"
+                    },
+                    "upstream_kind": {
+                        "type": "string",
+                        "title": "Upstream Kind",
+                        "default": "openapi"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "hostname",
+                    "base_url",
+                    "transport",
+                    "reachable",
+                    "pod_active"
+                ],
+                "title": "DeviceSummary",
+                "description": "Lean device projection for list/overview screens."
+            },
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "OverviewCounts": {
+                "properties": {
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    },
+                    "active_pods": {
+                        "type": "integer",
+                        "title": "Active Pods"
+                    },
+                    "reachable": {
+                        "type": "integer",
+                        "title": "Reachable"
+                    },
+                    "unreachable": {
+                        "type": "integer",
+                        "title": "Unreachable"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "total",
+                    "active_pods",
+                    "reachable",
+                    "unreachable"
+                ],
+                "title": "OverviewCounts"
+            },
+            "OverviewResponse": {
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "title": "Mode"
+                    },
+                    "counts": {
+                        "$ref": "#/components/schemas/OverviewCounts"
+                    },
+                    "devices": {
+                        "items": {
+                            "$ref": "#/components/schemas/DeviceSummary"
+                        },
+                        "type": "array",
+                        "title": "Devices"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "mode",
+                    "counts",
+                    "devices"
+                ],
+                "title": "OverviewResponse"
+            },
+            "TlsProfileInfo": {
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "title": "Source"
+                    },
+                    "verify": {
+                        "type": "boolean",
+                        "title": "Verify"
+                    },
+                    "ca_bundle": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ca Bundle"
+                    },
+                    "client_cert": {
+                        "type": "boolean",
+                        "title": "Client Cert",
+                        "default": false
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "source",
+                    "verify"
+                ],
+                "title": "TlsProfileInfo",
+                "description": "The resolved outbound TLS posture for one device (no secrets, no full paths)."
+            },
+            "ToolChangeRecord": {
+                "properties": {
+                    "tools_revision": {
+                        "type": "integer",
+                        "title": "Tools Revision"
+                    },
+                    "at": {
+                        "type": "number",
+                        "title": "At"
+                    },
+                    "added": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Added",
+                        "default": []
+                    },
+                    "removed": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Removed",
+                        "default": []
+                    },
+                    "changed": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Changed",
+                        "default": []
+                    },
+                    "breaking": {
+                        "type": "boolean",
+                        "title": "Breaking",
+                        "default": false
+                    },
+                    "breaking_reasons": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Breaking Reasons",
+                        "default": []
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tools_revision",
+                    "at"
+                ],
+                "title": "ToolChangeRecord",
+                "description": "The most recent tool-set change for a device \u2014 what was added/removed/\nchanged when its upstream OpenAPI spec last mutated, and whether that was\nbackwards-breaking for clients calling the old shape (F-41)."
+            },
+            "ToolsDiffResponse": {
+                "properties": {
+                    "hostname": {
+                        "type": "string",
+                        "title": "Hostname"
+                    },
+                    "tools_revision": {
+                        "type": "integer",
+                        "title": "Tools Revision"
+                    },
+                    "last_change": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ToolChangeRecord"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "hostname",
+                    "tools_revision"
+                ],
+                "title": "ToolsDiffResponse",
+                "description": "Tool-set change governance for a device. ``last_change`` is ``null`` when no\nchange has been observed since registration (the tool set is as first\ngenerated). ``tools_revision`` is the device's current monotonic revision \u2014\npoll it to detect a change, then read ``last_change`` to see what moved."
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    },
+                    "input": {
+                        "title": "Input"
+                    },
+                    "ctx": {
+                        "type": "object",
+                        "title": "Context"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            },
+            "WhoAmIResponse": {
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "title": "Subject"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Scopes"
+                    },
+                    "auth_method": {
+                        "type": "string",
+                        "title": "Auth Method"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "subject",
+                    "scopes",
+                    "auth_method"
+                ],
+                "title": "WhoAmIResponse",
+                "description": "The authenticated caller's own identity and effective authorization, so a UI/BFF\ncan gate views on the **gateway's** scopes rather than maintaining a parallel role\nmodel (ADR-0007). ``scopes`` is sorted for a stable response."
+            }
+        },
+        "securitySchemes": {
+            "HTTPBearer": {
+                "type": "http",
+                "scheme": "bearer"
+            }
+        }
     }
-  },
-  "components": {
-    "schemas": {
-      "BreakerState": {
-        "properties": {
-          "available": {
-            "type": "boolean",
-            "title": "Available"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "State"
-          },
-          "fail_counter": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Fail Counter"
-          },
-          "fail_max": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Fail Max"
-          },
-          "reset_timeout": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reset Timeout"
-          },
-          "note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Note"
-          }
-        },
-        "type": "object",
-        "required": [
-          "available"
-        ],
-        "title": "BreakerState",
-        "description": "Per-pod circuit-breaker state. Only readable when the pod is in-process\n(embedded mode); in distributed mode the pod runs on a worker, so the gateway\nreports ``available: false`` with a note."
-      },
-      "DeviceDetail": {
-        "properties": {
-          "hostname": {
-            "type": "string",
-            "title": "Hostname"
-          },
-          "base_url": {
-            "type": "string",
-            "title": "Base Url"
-          },
-          "transport": {
-            "type": "string",
-            "title": "Transport"
-          },
-          "reachable": {
-            "type": "boolean",
-            "title": "Reachable"
-          },
-          "pod_active": {
-            "type": "boolean",
-            "title": "Pod Active"
-          },
-          "last_check": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Check"
-          },
-          "rate_limit_rps": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rate Limit Rps"
-          },
-          "upstream_kind": {
-            "type": "string",
-            "title": "Upstream Kind",
-            "default": "openapi"
-          },
-          "spec_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spec Url"
-          },
-          "spec_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spec Hash"
-          },
-          "auth_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Auth Type"
-          },
-          "spawn_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spawn Error"
-          },
-          "worker_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Worker Id"
-          },
-          "tools_revision": {
-            "type": "integer",
-            "title": "Tools Revision",
-            "default": 0
-          },
-          "upstream_transport": {
-            "type": "string",
-            "title": "Upstream Transport",
-            "default": "http"
-          }
-        },
-        "type": "object",
-        "required": [
-          "hostname",
-          "base_url",
-          "transport",
-          "reachable",
-          "pod_active"
-        ],
-        "title": "DeviceDetail",
-        "description": "Full device projection for the single-device read \u2014 a superset of\n:class:`DeviceSummary` adding the fields a detail/diagnostic view needs."
-      },
-      "DeviceDiagnostics": {
-        "properties": {
-          "hostname": {
-            "type": "string",
-            "title": "Hostname"
-          },
-          "mode": {
-            "type": "string",
-            "title": "Mode"
-          },
-          "base_url": {
-            "type": "string",
-            "title": "Base Url"
-          },
-          "spec_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spec Url"
-          },
-          "transport": {
-            "type": "string",
-            "title": "Transport"
-          },
-          "upstream_kind": {
-            "type": "string",
-            "title": "Upstream Kind",
-            "default": "openapi"
-          },
-          "reachable": {
-            "type": "boolean",
-            "title": "Reachable"
-          },
-          "pod_active": {
-            "type": "boolean",
-            "title": "Pod Active"
-          },
-          "worker_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Worker Id"
-          },
-          "last_check": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Check"
-          },
-          "last_check_age_seconds": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Check Age Seconds"
-          },
-          "spec_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spec Hash"
-          },
-          "has_manifest": {
-            "type": "boolean",
-            "title": "Has Manifest"
-          },
-          "tool_count": {
-            "type": "integer",
-            "title": "Tool Count"
-          },
-          "tools_revision": {
-            "type": "integer",
-            "title": "Tools Revision",
-            "default": 0
-          },
-          "spawn_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spawn Error"
-          },
-          "breaker": {
-            "$ref": "#/components/schemas/BreakerState"
-          }
-        },
-        "type": "object",
-        "required": [
-          "hostname",
-          "mode",
-          "base_url",
-          "transport",
-          "reachable",
-          "pod_active",
-          "has_manifest",
-          "tool_count",
-          "breaker"
-        ],
-        "title": "DeviceDiagnostics",
-        "description": "\"Why is my device down?\" \u2014 a single read combining registry status, the\nlast check, spec/manifest state, the spawn error, and the circuit breaker\n(F-52)."
-      },
-      "DeviceListResponse": {
-        "properties": {
-          "devices": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceSummary"
-            },
-            "type": "array",
-            "title": "Devices"
-          }
-        },
-        "type": "object",
-        "required": [
-          "devices"
-        ],
-        "title": "DeviceListResponse"
-      },
-      "DeviceMutationResult": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "provisioning": {
-            "type": "boolean",
-            "title": "Provisioning"
-          },
-          "device": {
-            "$ref": "#/components/schemas/DeviceDetail"
-          }
-        },
-        "type": "object",
-        "required": [
-          "status",
-          "provisioning",
-          "device"
-        ],
-        "title": "DeviceMutationResult",
-        "description": "Response for a register/update write: the write-time envelope plus the full\nresulting device, so a client gets the resource back without a follow-up GET."
-      },
-      "DeviceSummary": {
-        "properties": {
-          "hostname": {
-            "type": "string",
-            "title": "Hostname"
-          },
-          "base_url": {
-            "type": "string",
-            "title": "Base Url"
-          },
-          "transport": {
-            "type": "string",
-            "title": "Transport"
-          },
-          "reachable": {
-            "type": "boolean",
-            "title": "Reachable"
-          },
-          "pod_active": {
-            "type": "boolean",
-            "title": "Pod Active"
-          },
-          "last_check": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Check"
-          },
-          "rate_limit_rps": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rate Limit Rps"
-          },
-          "upstream_kind": {
-            "type": "string",
-            "title": "Upstream Kind",
-            "default": "openapi"
-          }
-        },
-        "type": "object",
-        "required": [
-          "hostname",
-          "base_url",
-          "transport",
-          "reachable",
-          "pod_active"
-        ],
-        "title": "DeviceSummary",
-        "description": "Lean device projection for list/overview screens."
-      },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "type": "array",
-            "title": "Detail"
-          }
-        },
-        "type": "object",
-        "title": "HTTPValidationError"
-      },
-      "OverviewCounts": {
-        "properties": {
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "active_pods": {
-            "type": "integer",
-            "title": "Active Pods"
-          },
-          "reachable": {
-            "type": "integer",
-            "title": "Reachable"
-          },
-          "unreachable": {
-            "type": "integer",
-            "title": "Unreachable"
-          }
-        },
-        "type": "object",
-        "required": [
-          "total",
-          "active_pods",
-          "reachable",
-          "unreachable"
-        ],
-        "title": "OverviewCounts"
-      },
-      "OverviewResponse": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "title": "Mode"
-          },
-          "counts": {
-            "$ref": "#/components/schemas/OverviewCounts"
-          },
-          "devices": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceSummary"
-            },
-            "type": "array",
-            "title": "Devices"
-          }
-        },
-        "type": "object",
-        "required": [
-          "mode",
-          "counts",
-          "devices"
-        ],
-        "title": "OverviewResponse"
-      },
-      "ToolChangeRecord": {
-        "properties": {
-          "tools_revision": {
-            "type": "integer",
-            "title": "Tools Revision"
-          },
-          "at": {
-            "type": "number",
-            "title": "At"
-          },
-          "added": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Added",
-            "default": []
-          },
-          "removed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Removed",
-            "default": []
-          },
-          "changed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Changed",
-            "default": []
-          },
-          "breaking": {
-            "type": "boolean",
-            "title": "Breaking",
-            "default": false
-          },
-          "breaking_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Breaking Reasons",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "tools_revision",
-          "at"
-        ],
-        "title": "ToolChangeRecord",
-        "description": "The most recent tool-set change for a device \u2014 what was added/removed/\nchanged when its upstream OpenAPI spec last mutated, and whether that was\nbackwards-breaking for clients calling the old shape (F-41)."
-      },
-      "ToolsDiffResponse": {
-        "properties": {
-          "hostname": {
-            "type": "string",
-            "title": "Hostname"
-          },
-          "tools_revision": {
-            "type": "integer",
-            "title": "Tools Revision"
-          },
-          "last_change": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ToolChangeRecord"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object",
-        "required": [
-          "hostname",
-          "tools_revision"
-        ],
-        "title": "ToolsDiffResponse",
-        "description": "Tool-set change governance for a device. ``last_change`` is ``null`` when no\nchange has been observed since registration (the tool set is as first\ngenerated). ``tools_revision`` is the device's current monotonic revision \u2014\npoll it to detect a change, then read ``last_change`` to see what moved."
-      },
-      "ValidationError": {
-        "properties": {
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
-            },
-            "type": "array",
-            "title": "Location"
-          },
-          "msg": {
-            "type": "string",
-            "title": "Message"
-          },
-          "type": {
-            "type": "string",
-            "title": "Error Type"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "ctx": {
-            "type": "object",
-            "title": "Context"
-          }
-        },
-        "type": "object",
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError"
-      },
-      "WhoAmIResponse": {
-        "properties": {
-          "subject": {
-            "type": "string",
-            "title": "Subject"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scopes"
-          },
-          "auth_method": {
-            "type": "string",
-            "title": "Auth Method"
-          }
-        },
-        "type": "object",
-        "required": [
-          "subject",
-          "scopes",
-          "auth_method"
-        ],
-        "title": "WhoAmIResponse",
-        "description": "The authenticated caller's own identity and effective authorization, so a UI/BFF\ncan gate views on the **gateway's** scopes rather than maintaining a parallel role\nmodel (ADR-0007). ``scopes`` is sorted for a stable response."
-      }
-    },
-    "securitySchemes": {
-      "HTTPBearer": {
-        "type": "http",
-        "scheme": "bearer"
-      }
-    }
-  }
 }

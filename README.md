@@ -30,8 +30,8 @@ allowed calls upstream.
 
 | Path | What |
 |------|------|
-| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, device CRUD incl. `PUT`, per-device diagnostics + tools, dead-letter inspect/replay/drain, metrics summary, Prometheus/Loki + monitoring meta), session + role gating. Tests included. |
-| `web/` | React + Vite + TypeScript SPA — login, device list + counts, a **full register/edit form** (auth `api_key`/`oauth2`, `spec_url`, rate limit; create via `POST`, edit via `PUT`), remove, a **device-detail panel** (diagnostics + tool explorer + dead-letter queue), and a **Monitoring view** (critical-metric tiles + central-monitoring pointers + recent logs). Typed client (`src/api.ts`) over the BFF. |
+| `bff/` | FastAPI BFF — `auth` (login/logout/me), `api` (proxy: overview, device CRUD incl. `PUT`, per-device diagnostics + tools, endpoint-fingerprint approval, dead-letter inspect/replay/drain, metrics summary, Prometheus/Loki + monitoring meta), session + role gating. Tests included. |
+| `web/` | React + Vite + TypeScript SPA — login, device list + counts, a **full register/edit form** (auth `api_key`/`oauth2`, `spec_url`, rate limit; create via `POST`, edit via `PUT`), remove, a **device-detail panel** (diagnostics + **endpoint fingerprint** + tool explorer + dead-letter queue), and a **Monitoring view** (critical-metric tiles + central-monitoring pointers + recent logs). Typed client (`src/api.ts`) over the BFF. |
 | `deploy/kubernetes/` | Own namespace, BFF + web Deployments/Services, Ingress, NetworkPolicies (BFF egress to gateway/Prometheus/Loki; web egress to BFF only), kustomization. Secrets via `secret.example.yaml`. |
 | `docker-compose.yml` | Local build/preview of BFF + web. |
 
@@ -180,7 +180,43 @@ sessions, so the UI and gateway authorization can't drift.
 6. **Server-side sessions** ✅ — session content (role, OIDC tokens) moved out of the
    cookie into a store (memory, or Redis via `SESSION_REDIS_URL` for multi-replica);
    OIDC refresh serialised per session. Login throttling on the break-glass password ✅.
-7. **Live** — SSE/WS device status, finer per-scope views.
+7. **Endpoint fingerprint** ✅ — the device-detail view renders the gateway's endpoint
+   fingerprint (ADR-0015) and offers the approval decision when a device's TLS key has
+   changed. See below for the rule that shapes it.
+8. **Live** — SSE/WS device status, finer per-scope views.
+
+## Endpoint fingerprint — three dimensions, never one badge
+
+The gateway pins what a device *is* along three dimensions, and the UI is required to keep
+them visually distinct:
+
+| Group | Field(s) | What it is worth |
+|-------|----------|------------------|
+| **Authenticated** | `tls_spki_sha256` | Cryptographic. The **public-key** digest, not the certificate — a routine renewal reissues against the same key, so it stays quiet until the key itself moves. |
+| **Self-reported** | `declared_name`, `declared_version` | Whatever the upstream chose to say about itself. A change signal; **spoofable**, and never evidence of identity. |
+| **Behavioural** | `tools_revision` | What the device actually exposes. |
+
+Collapsing these into one "verified" badge would lend the self-reported half a weight it has
+not earned. There is no such badge, and the tests assert its absence. For the same reason the
+state chip (`unpinned` / `pinned` / `pending approval`) describes **the pin**, not trust —
+even "pinned" only means "the same key as last time", because the baseline itself was
+trust-on-first-use and validated nothing.
+
+Two related honesty rules the panel follows:
+
+- An `http://` device has no certificate at all. Its missing pin is reported as a **fact**,
+  not as a gap to close — a standing false alarm is how a control gets ignored.
+- When a device sets no `fingerprint_policy` it **inherits** the fleet setting, and the
+  gateway resolves the effective value at enforcement time without reporting it. The panel
+  says "inherited" rather than naming a policy it cannot see.
+
+Approving a changed key (`POST /api/devices/{hostname}/fingerprint/approve`) is admin-only
+and recorded in the BFF's audit chain under the same action name the gateway uses,
+`device.fingerprint.approve`, so the two chains describe one event.
+
+**Known gap (gateway-side):** `DeviceSummary` carries no `fingerprint_state`, so the device
+list cannot flag a device awaiting approval — it is only visible on the detail view. Closing
+that needs one field on the gateway's list projection.
 
 ## Keep the contract typed (no manual drift)
 
