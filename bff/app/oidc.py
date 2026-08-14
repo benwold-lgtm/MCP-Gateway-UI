@@ -19,6 +19,8 @@ Threat-model alignment (docs/threat-model-identity.md):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import base64
 import hashlib
 import os
@@ -68,15 +70,54 @@ def make_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+@dataclass(frozen=True)
+class _ProviderView:
+    """The provider IdP's settings under the field names :class:`OIDCClient` reads.
+
+    An adapter rather than a parallel client: the provider plane needs the *same* RP
+    behaviour (discovery, PKCE, at_hash, RP-initiated logout) against a *different* IdP,
+    and a second implementation of that is a second place for a verification step to go
+    missing. ADR-0013 §2 makes these separate populations, not separate protocols.
+    """
+
+    oidc_issuer: str
+    oidc_client_id: str
+    oidc_client_secret: str
+    oidc_redirect_url: str
+    oidc_scopes: str
+
+
 class OIDCClient:
     """Per-app OIDC RP. Discovery + JWKS are fetched lazily and memoised."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings) -> None:
         if not settings.oidc_issuer or not settings.oidc_client_id or not settings.oidc_redirect_url:
             raise ValueError("OIDC is enabled but OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_REDIRECT_URL must all be set")
         self._s = settings
         self._meta: dict | None = None
         self._jwks: jwt.PyJWKClient | None = None
+
+    @classmethod
+    def for_provider(cls, settings: Settings) -> "OIDCClient":
+        """The provider-plane RP (ADR-0013 §2), built from the PROVIDER_OIDC_* settings."""
+        if (
+            not settings.provider_oidc_issuer
+            or not settings.provider_oidc_client_id
+            or not settings.provider_oidc_redirect_url
+        ):
+            raise ValueError(
+                "The provider plane is enabled but PROVIDER_OIDC_ISSUER, PROVIDER_OIDC_CLIENT_ID "
+                "and PROVIDER_OIDC_REDIRECT_URL must all be set"
+            )
+        return cls(
+            _ProviderView(
+                oidc_issuer=settings.provider_oidc_issuer,
+                oidc_client_id=settings.provider_oidc_client_id,
+                oidc_client_secret=settings.provider_oidc_client_secret,
+                oidc_redirect_url=settings.provider_oidc_redirect_url,
+                oidc_scopes=settings.provider_oidc_scopes,
+            )
+        )
 
     async def _discover(self) -> dict:
         if self._meta is None:

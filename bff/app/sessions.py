@@ -107,17 +107,21 @@ class RedisSessionStore(SessionStore):
     #: A crashed/hung holder can't wedge everyone else: the lock key expires.
     LOCK_TTL = 10
 
-    def __init__(self, url: str, ttl: int, client=None) -> None:
+    def __init__(self, url: str, ttl: int, client=None, namespace: str = "tenant") -> None:
         if client is None:
             import redis.asyncio as aioredis  # optional dependency (the "redis" extra)
 
             client = aioredis.from_url(url, decode_responses=True)
         self._redis = client
         self._ttl = ttl
+        # Which deployment these sessions belong to. Without it every BFF pointed at one
+        # Redis shares a keyspace, so a provider console and a tenant BFF would resolve
+        # each other's session ids — the missing-discriminator shape, one layer out from
+        # the plane wall (ADR-0013 §2/§3).
+        self._ns = namespace
 
-    @staticmethod
-    def _key(sid: str) -> str:
-        return f"bff:sess:{sid}"
+    def _key(self, sid: str) -> str:
+        return f"bff:sess:{self._ns}:{sid}"
 
     async def get(self, sid: str) -> Optional[dict]:
         raw = await self._redis.get(self._key(sid))
