@@ -20,10 +20,11 @@ What is being pinned:
 * **§5 — `provider:*` are BFF scopes.** They must never appear in a tenant-plane session
   however that tenant's IdP names its groups, and must never be relayed to a gateway as if
   they were gateway scopes.
-* **§4 — cross-tenant power is exercised, not held.** Until the grant machinery lands
-  (slice 2), a provider session reaching the tenant data plane is refused outright. That
-  refusal is the honest interim state, not a placeholder: standing access is exactly what
-  §4 exists to prevent.
+* **§4 — cross-tenant power is exercised, not held.** A provider session reaching the
+  tenant data plane *without a grant* is refused outright. The grant that lifts that
+  refusal — act-on-tenant, one tenant at a time, absolute window, justified and audited —
+  is `test_act_on_tenant.py`; what stays pinned here is the **unheld** case, which is the
+  state a provider session is in for all but a deliberate, time-boxed act.
 """
 
 from __future__ import annotations
@@ -242,11 +243,13 @@ def test_a_provider_session_holds_only_provider_scopes(provider_console):
 
 
 def test_a_provider_session_is_refused_on_the_tenant_data_plane(provider_console):
-    """Until the §4/§8 grant machinery lands, this is a hard refusal.
+    """No grant, no data plane — the default state of every provider session.
 
-    That is the honest interim behaviour rather than a gap: standing estate-wide access is
-    precisely what §4 exists to prevent, so "allow it for now" would ship the thing the
-    design rejects and then try to take it back.
+    This console configures no `TENANT_ID`, so it is also the *fail-closed* half: a
+    deployment that cannot name the tenant it serves cannot check that a grant names it,
+    and therefore admits nobody. Standing estate-wide access is precisely what §4 exists to
+    prevent, and the grant in `test_act_on_tenant.py` is the only thing that lifts this —
+    for one named tenant, for one hour, with a reason in the chain.
     """
     c, app = provider_console
     called = []

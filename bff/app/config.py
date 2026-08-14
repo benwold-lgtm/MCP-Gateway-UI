@@ -61,6 +61,13 @@ class Settings:
     # registered with the IdP as a post_logout_redirect_uri. Empty → omit the param.
     oidc_post_logout_redirect: str = ""
 
+    # Which tenant this deployment serves (ADR-0013 §4). Only consulted to decide whether
+    # a provider session's act-on-tenant grant names *this* stack — so empty, the default,
+    # admits no provider session at all and every existing tenant deployment is unchanged.
+    # Deliberately the same name the gateway uses for the same concept (`gateway.tenant_id`,
+    # ADR-0013 §11): one name for one thing across both halves.
+    tenant_id: str = ""
+
     # --- Provider plane (ADR-0013 §2/§3) --------------------------------------
     # A SECOND IdP, for the provider's own operators. Configuring it turns this BFF into
     # the provider console; the plane of a session is decided by which of the two IdPs
@@ -181,6 +188,7 @@ def load_settings() -> Settings:
         oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email offline_access"),
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
+        tenant_id=os.getenv("TENANT_ID", "").strip(),
         # Provider plane (ADR-0013). Absent → this BFF serves the tenant plane only, which
         # is what a tenant-stack deployment should look like.
         provider_oidc_enabled=os.getenv("PROVIDER_OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),

@@ -84,6 +84,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
 | `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable; the elevated grants are refused here by design |
 | `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
+| `TENANT_ID` | Which tenant this deployment serves (ADR-0013 §4). Only consulted to decide whether a provider session's **act-on-tenant** grant names *this* stack — so empty (the default) admits no provider session at all. Deliberately the same name the gateway uses for the same thing (`gateway.tenant_id`) |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
@@ -101,11 +102,13 @@ the gateway no longer sees the real human — it sees whatever credential the BF
 Today per-user OIDC relay hides that gap; federation ends it. Some events are also invisible
 to the gateway by construction: a **failed login** or a throttle lockout never reaches it.
 
-What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain)
-and every authentication event (password login success/failure/lockout, OIDC login, logout).
-Reads are deliberately **not** recorded — per-user relay means the gateway's own chain already
-has them, so duplicating would add noise rather than accountability. That changes when the
-provider plane lands.
+What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain),
+every authentication event (password login success/failure/lockout, OIDC login, logout), and
+every **act-on-tenant** grant — acquired, superseded or released, with its justification, and
+including the ones that were *refused*, since "who was refused what" is the question an audit
+is most often asked. Reads are deliberately **not** recorded — per-user relay means the
+gateway's own chain already has them, so duplicating would add noise rather than
+accountability. That changes when a provider session's reads reach a tenant (§9).
 
 Three properties, per
 [ADR-0013](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md)
@@ -226,12 +229,45 @@ as the refusal, not instead of it, because it is what still holds if a session d
 |---|---|
 | Holds | `provider:*` scopes, mapped from provider-IdP groups (`PROVIDER_GROUP_SCOPES`) |
 | Never holds | any gateway scope; the two vocabularies are reported separately by `/auth/me` |
-| Tenant data plane (`/api/*`) | **refused** — reaching a tenant needs an "act on tenant" grant (§4), which this build does not yet issue |
+| Tenant data plane (`/api/*`) | **refused** unless the session holds a live **act-on-tenant** grant naming this deployment's `TENANT_ID` (§4) |
 | Standing tenant credential | none. A provider session stores no gateway access token |
 
 `provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
 membership at all — mapping a group to one is refused at startup. They are time-boxed,
 individually justified, separately audited grants (§5a/§8), landing in a later slice.
+
+### Act on tenant — the grant that opens the data plane
+
+Cross-tenant power is **exercised, not held** (§4). A provider operator holding
+`provider:admin` acquires authority over **one named tenant at a time**, for a bounded
+window, with a reason that goes into the audit chain:
+
+```
+POST   /provider/tenants/{tenant}/authorize   {"justification": "ticket INC-4471: …"}
+GET    /provider/act-on-tenant                 → the live grant, or {"grant": null}
+DELETE /provider/act-on-tenant                 → end it early
+```
+
+Four rules, each of which the obvious implementation breaks:
+
+- **One tenant at a time.** Acquiring a grant for another tenant *drops* the first, and the
+  drop gets its own audit record. Holding several would rebuild ambient estate-wide
+  authority one justified act at a time — §4 defeated by accumulation.
+- **The window is absolute** (default 60 min), so *using* the grant never extends it. A
+  sliding window never expires for someone who keeps working, which is exactly an
+  attacker's profile.
+- **Renewal is a new act, not an extension** — a new grant id, a new justification, a new
+  record. Re-authorizing does not push the old deadline out.
+- **The justification is required and enforced.** It is the only record of *why* a
+  customer's stack was touched, which is the question an audit is actually asked. Empty is
+  refused, over-long is refused rather than truncated, and refusals are audited too.
+
+**`TENANT_ID` must be set for any of this to open anything.** Empty is the default and
+admits nobody: a deployment that cannot name the tenant it serves cannot check that a grant
+names *it*. That is also why no existing tenant-stack deployment needs a config change.
+
+The grant opens the *BFF's* gate. What the BFF then presents upstream to a tenant gateway is
+a separate question, and lands with the cross-gateway fan-out.
 
 `PROVIDER_GROUP_SCOPES` has **no fallback**: an unmapped group grants nothing. Kept as a
 shared or defaulting table it would be an escalation primitive — the same reason the gateway

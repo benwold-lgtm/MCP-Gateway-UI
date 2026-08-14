@@ -22,6 +22,7 @@ signed session id. No token or role ever reaches the browser.
 from __future__ import annotations
 
 import hmac
+import time
 from typing import Optional, TypedDict
 
 from fastapi import HTTPException, Request
@@ -194,11 +195,20 @@ def require_role(*allowed: str):
     401 if no session; for password sessions, 403 unless the role is permitted. OIDC
     sessions pass through — the gateway is the authorization point.
 
-    A **provider-plane session is refused outright** (ADR-0013 §4). Cross-tenant power is
-    exercised, not held: reaching a tenant's data plane requires a discrete, audited,
-    time-boxed "act on tenant X" grant, and until that machinery exists there is nothing to
-    exercise. Admitting provider sessions "for now" would ship the standing estate-wide
-    access the design exists to prevent and then try to take it back.
+    A provider-plane session reaches this plane **only while holding a live act-on-tenant
+    grant naming the tenant this deployment serves** (ADR-0013 §4). Cross-tenant power is
+    exercised, not held: the grant is a discrete, audited, time-boxed act, and everything
+    about it — one tenant at a time, an absolute window, a justification — lives in
+    `grants.py`.
+
+    Two halves of the check, and both are load-bearing:
+
+    * **`settings.tenant_id` must be configured.** Empty is the default and admits nobody,
+      which is what keeps every existing tenant-stack deployment behaving exactly as it did
+      — and it fails closed, since a deployment that cannot name itself cannot verify that
+      a grant names *it*.
+    * **The grant must name that tenant.** Without the comparison, "act on tenant X" is
+      "act on any tenant", which is §4 inverted rather than implemented.
     """
 
     async def _dep(request: Request) -> SessionInfo:
@@ -206,13 +216,19 @@ def require_role(*allowed: str):
         if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if session_plane(sess) == PLANE_PROVIDER:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "This is the tenant data plane; a provider session reaches it only through an "
-                    "'act on tenant' grant (ADR-0013 §4), which this build does not yet issue."
-                ),
-            )
+            from .grants import active_grant
+
+            tenant_id = getattr(request.app.state.settings, "tenant_id", "") or ""
+            grant = active_grant(sess, now=time.time())
+            if not tenant_id or grant is None or grant.tenant != tenant_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "This is the tenant data plane; a provider session reaches it only while "
+                        "holding a live 'act on tenant' grant for this tenant (ADR-0013 §4)."
+                    ),
+                )
+            return sess
         if sess.get("kind") == "oidc":
             # Authorization is delegated to the gateway (it sees the user's real scopes).
             return sess
