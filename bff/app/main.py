@@ -48,6 +48,19 @@ def create_app() -> FastAPI:
             "it signs the session-id cookie and the OIDC login transaction."
         )
 
+    # ADR-0013 §5, enforced rather than advised. A tenant's BFF lives inside the tenant's
+    # stack, so carrying the provider IdP there puts cross-tenant machinery inside the
+    # per-tenant isolation unit — the same mistake §5 refuses for the gateway, and the only
+    # topology in which a cross-plane leak is possible at all. A README paragraph is not a
+    # control; §11 rejected a whole design option on exactly that ground.
+    if settings.oidc_enabled and settings.provider_oidc_enabled:
+        raise RuntimeError(
+            "Both OIDC_ENABLED (tenant plane) and PROVIDER_OIDC_ENABLED (provider plane) are set. "
+            "A tenant-stack BFF must not carry the provider IdP (ADR-0013 §2/§5). Deploy the "
+            "provider console separately: it sets PROVIDER_OIDC_* and leaves OIDC_* unset. "
+            "Break-glass password login stays available in both."
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
@@ -61,8 +74,13 @@ def create_app() -> FastAPI:
     app.state.gateway = GatewayClient(settings)
     # Server-side session store: memory for a single replica (lite/dev); Redis when
     # SESSION_REDIS_URL is set, which multi-replica deploys need (no session affinity).
+    # Namespaced per deployment. The startup refusal above is per-process and the store is
+    # not: two BFFs sharing one SESSION_REDIS_URL would otherwise share `bff:sess:{sid}`
+    # and resolve each other's session ids. The plane wall still holds if that happens,
+    # which is why both controls exist rather than either alone.
+    session_ns = "provider" if settings.provider_oidc_enabled else f"tenant:{settings.audit_tenant}"
     app.state.sessions = (
-        RedisSessionStore(settings.session_redis_url, ttl=settings.session_ttl_seconds)
+        RedisSessionStore(settings.session_redis_url, ttl=settings.session_ttl_seconds, namespace=session_ns)
         if settings.session_redis_url
         else MemorySessionStore(ttl=settings.session_ttl_seconds)
     )

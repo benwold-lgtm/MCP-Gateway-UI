@@ -203,15 +203,22 @@ for a handler to forget to validate.
 
 ### Deployment topology — a tenant BFF should not configure the provider IdP
 
-The code supports both IdPs in one process, and the tests prove the wall holds in that
-configuration. **That is not a recommendation to deploy it that way.** A tenant's BFF lives
-inside the tenant's stack, and putting cross-tenant machinery there is the same mistake
-ADR-0013 §5 refuses for the gateway — it is also the only topology in which a cross-plane
-leak is possible at all.
+**Setting both IdPs in one process is refused at startup.** A tenant's BFF lives inside the
+tenant's stack, and putting cross-tenant machinery there is the same mistake ADR-0013 §5
+refuses for the gateway. This is enforced rather than advised, for the reason §11 used to
+reject a whole design option: a bound that lives in a README is not a bound.
 
 - **Tenant stack** — set `OIDC_*` only. `PROVIDER_OIDC_ENABLED` stays false, so a
-  provider-plane session cannot exist in that process.
-- **Provider console** — a separate deployment with `PROVIDER_OIDC_*` set.
+  provider-plane session cannot be minted in that process.
+- **Provider console** — a separate deployment with `PROVIDER_OIDC_*` set and `OIDC_*` unset.
+
+Break-glass password login stays available in both, and is always tenant-plane.
+
+**The startup refusal is per-process; the session store is not.** Two BFFs sharing one
+`SESSION_REDIS_URL` would otherwise share the `bff:sess:{sid}` keyspace and resolve each
+other's session ids. Session keys are therefore namespaced per deployment
+(`bff:sess:provider:…` / `bff:sess:tenant:<tenant>:…`) — and the plane wall is kept as well
+as the refusal, not instead of it, because it is what still holds if a session does cross.
 
 ### What a provider session can and cannot do today
 

@@ -94,7 +94,9 @@ async def test_redis_roundtrip_and_delete(redis_store):
 
 async def test_redis_sets_ttl(redis_store):
     await redis_store.set("sid1", {"kind": "password", "role": "admin"})
-    ttl = await redis_store._redis.ttl("bff:sess:sid1")
+    # Ask the store for its own key: this test is about the TTL, not the key format, and
+    # the namespace (ADR-0013 §2) is pinned by test_plane_isolation instead.
+    ttl = await redis_store._redis.ttl(redis_store._key("sid1"))
     assert 0 < ttl <= 60
 
 
@@ -109,8 +111,14 @@ async def test_redis_lock_serialises(redis_store):
 
     await asyncio.gather(critical("a"), critical("b"))
     assert order in (["a-in", "a-out", "b-in", "b-out"], ["b-in", "b-out", "a-in", "a-out"])
-    # The lock key is released afterwards.
-    assert await redis_store._redis.get("bff:sess:sid1:lock") is None
+    # The lock key is released afterwards. Derived from the store rather than hardcoded:
+    # a stale literal here would assert "is None" against a key that never exists, so the
+    # test would keep passing even if the lock were never released.
+    lock_key = f"{redis_store._key('sid1')}:lock"
+    assert await redis_store._redis.get(lock_key) is None
+    # ...and it really was held during the critical section, so the assertion above is
+    # about release rather than about a key that was never written.
+    assert redis_store._key("sid1").endswith(":sid1")
 
 
 # --- Concurrent OIDC refresh through the app (the race the store exists to fix) --
