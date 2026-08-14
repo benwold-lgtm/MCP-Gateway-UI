@@ -22,6 +22,7 @@ signed session id. No token or role ever reaches the browser.
 from __future__ import annotations
 
 import hmac
+import time
 from typing import Optional, TypedDict
 
 from fastapi import HTTPException, Request
@@ -173,8 +174,28 @@ async def upstream_bearer(request: Request) -> Optional[str]:
 
     OIDC session → the user's access token (per-user identity, F-30). Password session
     → None, so the GatewayClient falls back to its configured admin token.
+
+    **A provider-plane session must never reach that fallback** (ADR-0013 §4/§5a). Returning
+    ``None`` for one is not "no credential" — the ``GatewayClient`` carries the tenant
+    stack's *admin* key as its default header, so a fall-through would present a provider
+    operator to the tenant's gateway as gateway ``admin``: above the §5a ceiling that makes
+    provider access everyday debugging, carrying `tools:call` and every `backup:*` with no
+    step-up and no grant claim, and recorded in the tenant's audit as a shared key rather
+    than a human. That is precisely the outcome the second-issuer design (§6) exists to
+    replace, so it fails closed here rather than being avoided by convention upstream.
     """
     sess = await current_session(request)
+    if session_plane(sess) == PLANE_PROVIDER:
+        token = sess.get("access_token") if sess else None
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "A provider session has no credential to present to this tenant's gateway. "
+                    "It is never relayed with the stack's admin key (ADR-0013 §4/§5a)."
+                ),
+            )
+        return token
     if sess and sess.get("kind") == "oidc":
         return sess.get("access_token")
     return None
@@ -194,11 +215,25 @@ def require_role(*allowed: str):
     401 if no session; for password sessions, 403 unless the role is permitted. OIDC
     sessions pass through — the gateway is the authorization point.
 
-    A **provider-plane session is refused outright** (ADR-0013 §4). Cross-tenant power is
-    exercised, not held: reaching a tenant's data plane requires a discrete, audited,
-    time-boxed "act on tenant X" grant, and until that machinery exists there is nothing to
-    exercise. Admitting provider sessions "for now" would ship the standing estate-wide
-    access the design exists to prevent and then try to take it back.
+    A provider-plane session reaches this plane **only while holding a live act-on-tenant
+    grant naming the tenant this deployment serves** (ADR-0013 §4). Cross-tenant power is
+    exercised, not held: the grant is a discrete, audited, time-boxed act, and everything
+    about it — one tenant at a time, an absolute window, a justification — lives in
+    `grants.py`.
+
+    Three parts to the check, and all are load-bearing:
+
+    * **`settings.tenant_id` must be configured.** Empty is the default and admits nobody,
+      which is what keeps every existing tenant-stack deployment behaving exactly as it did
+      — and it fails closed, since a deployment that cannot name itself cannot verify that
+      a grant names *it*.
+    * **The grant must name that tenant.** Without the comparison, "act on tenant X" is
+      "act on any tenant", which is §4 inverted rather than implemented.
+    * **The session must have a credential of its own to present.** The grant is the BFF's
+      authorization to proceed; it is not a credential. Admitting a session with nothing to
+      relay does not produce a refusal upstream — it produces a request carrying the stack's
+      *admin* key, which is above the §5a ceiling and attributable to nobody. Checked at the
+      gate so the refusal is one clean 403 here rather than a surprise mid-relay.
     """
 
     async def _dep(request: Request) -> SessionInfo:
@@ -206,13 +241,32 @@ def require_role(*allowed: str):
         if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if session_plane(sess) == PLANE_PROVIDER:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "This is the tenant data plane; a provider session reaches it only through an "
-                    "'act on tenant' grant (ADR-0013 §4), which this build does not yet issue."
-                ),
-            )
+            from .grants import active_grant
+
+            tenant_id = getattr(request.app.state.settings, "tenant_id", "") or ""
+            grant = active_grant(sess, now=time.time())
+            # Grant first, credential second — deliberately. "You have not authorized an act
+            # on this tenant" is the condition an operator is actually in, and it is the one
+            # they can fix; leading with the credential message would answer a question they
+            # did not ask. Both refuse, so the order costs nothing but clarity.
+            if not tenant_id or grant is None or grant.tenant != tenant_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "This is the tenant data plane; a provider session reaches it only while "
+                        "holding a live 'act on tenant' grant for this tenant (ADR-0013 §4)."
+                    ),
+                )
+            if not sess.get("access_token"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "A provider session holds no credential for this tenant's gateway, so it "
+                        "cannot reach the tenant data plane — and it is never relayed with the "
+                        "stack's admin key (ADR-0013 §4/§5a)."
+                    ),
+                )
+            return sess
         if sess.get("kind") == "oidc":
             # Authorization is delegated to the gateway (it sees the user's real scopes).
             return sess

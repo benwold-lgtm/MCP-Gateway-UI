@@ -325,9 +325,23 @@ async def provider_callback(
             "sub": claims.get("sub"),
             "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
             "provider_scopes": sorted(scopes),
-            # Deliberately NOT storing an access_token. A provider session has no standing
-            # tenant-API credential (§4/§7): reaching a tenant needs an "act on tenant"
-            # grant, and estate monitoring reads Prometheus, not the tenant API.
+            # The operator's own token, kept so the BFF has an accountable identity to
+            # present to a tenant's gateway — which is exactly what ADR-0013 §6 added a
+            # second trusted issuer for. Two things bound it, and neither is optional:
+            #
+            #   * It is relayed **only while a live act-on-tenant grant names that tenant**
+            #     (§4, enforced in `security.require_role` / `upstream_bearer`). Stored is
+            #     not the same as usable: without a grant this token opens nothing.
+            #   * The gateway caps what it can reach regardless — the provider plane's
+            #     server-side ceiling is `devices:read` + `devices:write` + `metrics:read`
+            #     (§5a/§6a), never `tools:call` and never any `backup:*`.
+            #
+            # The alternative — presenting nothing — is not "no credential": the
+            # GatewayClient falls back to the tenant stack's *admin* key, which is above
+            # the ceiling and attributable to nobody. That is the outcome §6 exists to
+            # replace, so a provider session carrying its own identity is the safer shape,
+            # not the riskier one.
+            "access_token": tokens.get("access_token"),
             "id_token": tokens.get("id_token"),
         },
     )
