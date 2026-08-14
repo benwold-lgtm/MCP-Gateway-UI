@@ -69,6 +69,9 @@ def create_app() -> FastAPI:
     # OIDC Relying Party (ADR-0007). None unless OIDC_ENABLED and the issuer/client are
     # configured — a misconfiguration fails fast here rather than on the first login.
     app.state.oidc = OIDCClient(settings) if settings.oidc_enabled else None
+    # The provider plane's own RP (ADR-0013 §2). None on a tenant-stack BFF, which is
+    # what a tenant deployment should look like — see the README topology note.
+    app.state.provider_oidc = OIDCClient.for_provider(settings) if settings.provider_oidc_enabled else None
     # Brute-force throttle for the break-glass password login (review #3).
     app.state.login_throttle = LoginThrottle(
         max_failures=settings.login_max_failures,

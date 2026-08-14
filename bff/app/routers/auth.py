@@ -21,7 +21,15 @@ from .. import sessions
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
-from ..security import PASSWORD_ROLE_SCOPES, current_session, resolve_role
+from ..security import (
+    PASSWORD_ROLE_SCOPES,
+    PLANE_PROVIDER,
+    PLANE_TENANT,
+    current_session,
+    provider_scopes_for_groups,
+    resolve_role,
+    session_plane,
+)
 from ..throttle import client_ip
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -66,7 +74,10 @@ async def login(request: Request, body: LoginBody) -> dict:
         await record_request(request, "auth.login", outcome=OUTCOME_DENIED, reason="bad_credentials", ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     throttle.record_success(ip)  # clear this IP's failure streak on success
-    await sessions.establish(request, {"kind": "password", "role": role})
+    # Break-glass password login is tenant-plane by construction. There is no field in
+    # the body that can change that: the provider console is not reachable with a local
+    # password (ADR-0013 §2 — provider operators authenticate to the provider IdP).
+    await sessions.establish(request, {"kind": "password", "role": role, "plane": PLANE_TENANT})
     # Recorded after establish() so the actor resolves to the session just created rather
     # than to "unauthenticated" — the record should name who got in, not who asked.
     await record_request(request, "auth.login", outcome=OUTCOME_SUCCESS, target=role, ip=ip, method="password")
@@ -105,13 +116,31 @@ async def me(request: Request) -> dict:
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    plane = session_plane(sess)
+
+    if plane == PLANE_PROVIDER:
+        # A provider session carries provider scopes and NO tenant-plane authority. The
+        # two vocabularies are reported separately so the SPA cannot render one as the
+        # other — a combined "scopes" list would invite exactly that (§5).
+        return {
+            "kind": sess.get("kind", "oidc"),
+            "plane": PLANE_PROVIDER,
+            "subject": sess.get("sub") or "unknown",
+            "name": sess.get("name"),
+            "role": None,
+            "scopes": [],
+            "provider_scopes": sorted(sess.get("provider_scopes") or []),
+        }
+
     if sess.get("kind") == "password":
         role = sess.get("role") or "viewer"
         return {
             "kind": "password",
+            "plane": PLANE_TENANT,
             "subject": f"local:{role}",
             "role": role,
             "scopes": PASSWORD_ROLE_SCOPES.get(role, []),
+            "provider_scopes": [],
         }
 
     # OIDC: ask the gateway who this user is (it owns group→scope). The relay forwards the
@@ -134,7 +163,17 @@ async def me(request: Request) -> dict:
     # On any other upstream condition (e.g. an older gateway without /auth/me) we fall back
     # to no scopes: the SPA shows a read-only affordance while the gateway still authorizes
     # each actual call on the relayed token.
-    return {"kind": "oidc", "subject": subject, "name": sess.get("name"), "role": None, "scopes": scopes}
+    return {
+        "kind": "oidc",
+        "plane": PLANE_TENANT,
+        "subject": subject,
+        "name": sess.get("name"),
+        "role": None,
+        "scopes": scopes,
+        # Always empty on the tenant plane, and stated rather than omitted: a client that
+        # reads a missing key as "unknown" should read it as "none".
+        "provider_scopes": [],
+    }
 
 
 # --- OIDC (Authorization Code + PKCE) ----------------------------------------
@@ -193,6 +232,9 @@ async def oidc_callback(
         request,
         {
             "kind": "oidc",
+            # Set from WHICH IdP authenticated, never from the request (§3). This handler
+            # is reachable only from the tenant IdP's callback, so the plane is structural.
+            "plane": PLANE_TENANT,
             "sub": claims.get("sub"),
             "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
             "access_token": tokens.get("access_token"),
@@ -205,3 +247,89 @@ async def oidc_callback(
     # After establish(), so the actor is the federated subject rather than "unauthenticated".
     await record_request(request, "auth.oidc_login", outcome=OUTCOME_SUCCESS, method="oidc")
     return RedirectResponse(request.app.state.settings.oidc_post_login_redirect or "/", status_code=302)
+
+
+# --- Provider plane (ADR-0013 §2/§3) -----------------------------------------
+#
+# A second, structurally separate login. Separate endpoints rather than a `plane=`
+# parameter on the existing ones: with no selector in the request there is nothing for a
+# handler to forget to validate, and the plane of a session is a fact about which IdP
+# authenticated rather than something a caller asserted.
+
+
+@router.get("/provider/login")
+async def provider_login(request: Request) -> RedirectResponse:
+    oidc = request.app.state.provider_oidc
+    if oidc is None:
+        raise HTTPException(status_code=404, detail="The provider plane is not enabled on this BFF")
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    verifier, challenge = make_pkce_pair()
+    # A separate transaction key, so a tenant login in flight cannot be completed by a
+    # provider callback or the reverse — the plane is fixed from the first redirect.
+    request.session["provider_oidc_tx"] = {"state": state, "nonce": nonce, "verifier": verifier}
+    url = await oidc.authorization_url(state=state, nonce=nonce, challenge=challenge)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/provider/callback")
+async def provider_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    oidc = request.app.state.provider_oidc
+    if oidc is None:
+        raise HTTPException(status_code=404, detail="The provider plane is not enabled on this BFF")
+
+    tx = request.session.pop("provider_oidc_tx", None)
+    if error:
+        raise HTTPException(status_code=400, detail=f"IdP returned an error: {error}")
+    if not code or not state or not isinstance(tx, dict):
+        raise HTTPException(status_code=400, detail="Invalid OIDC callback")
+    if not secrets.compare_digest(state, tx.get("state", "")):
+        await record_request(request, "auth.provider_login", outcome=OUTCOME_DENIED, reason="state_mismatch")
+        raise HTTPException(status_code=400, detail="OIDC state mismatch")
+
+    try:
+        tokens = await oidc.exchange_code(code=code, verifier=tx["verifier"])
+        claims = await oidc.validate_id_token(
+            id_token=tokens["id_token"], nonce=tx["nonce"], access_token=tokens.get("access_token")
+        )
+    except OIDCError as exc:
+        await record_request(request, "auth.provider_login", outcome=OUTCOME_DENIED, reason="token_exchange_failed")
+        raise HTTPException(status_code=401, detail=f"OIDC login failed: {exc}")
+
+    settings = request.app.state.settings
+    groups = claims.get(settings.provider_groups_claim) or []
+    if isinstance(groups, str):  # some IdPs emit a single group as a bare string
+        groups = [groups]
+    # Mapped here, on the provider-plane path only. There is no shared table a tenant
+    # login could reach by naming a group after the provider mapping (§6a's rule, this side).
+    scopes = provider_scopes_for_groups(groups, settings.provider_group_scopes)
+    if not scopes:
+        # Authenticated but unmapped: a session with no provider authority. Every provider
+        # route then 403s and the audit names who was refused — better than a blank 401
+        # that hides the identity.
+        await record_request(
+            request, "auth.provider_login", outcome=OUTCOME_DENIED, reason="no_mapped_group", method="oidc"
+        )
+
+    await sessions.establish(
+        request,
+        {
+            "kind": "oidc",
+            # Structural: this handler is reachable only from the provider IdP's callback.
+            "plane": PLANE_PROVIDER,
+            "sub": claims.get("sub"),
+            "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
+            "provider_scopes": sorted(scopes),
+            # Deliberately NOT storing an access_token. A provider session has no standing
+            # tenant-API credential (§4/§7): reaching a tenant needs an "act on tenant"
+            # grant, and estate monitoring reads Prometheus, not the tenant API.
+            "id_token": tokens.get("id_token"),
+        },
+    )
+    await record_request(request, "auth.provider_login", outcome=OUTCOME_SUCCESS, method="oidc")
+    return RedirectResponse(settings.oidc_post_login_redirect or "/", status_code=302)

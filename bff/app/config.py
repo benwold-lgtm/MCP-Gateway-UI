@@ -61,6 +61,26 @@ class Settings:
     # registered with the IdP as a post_logout_redirect_uri. Empty → omit the param.
     oidc_post_logout_redirect: str = ""
 
+    # --- Provider plane (ADR-0013 §2/§3) --------------------------------------
+    # A SECOND IdP, for the provider's own operators. Configuring it turns this BFF into
+    # the provider console; the plane of a session is decided by which of the two IdPs
+    # authenticated, never by a request parameter.
+    #
+    # ⚠️ A tenant-stack BFF should NOT configure this. Putting cross-tenant machinery
+    # inside a per-tenant deployment is the same mistake ADR-0013 §5 refuses for the
+    # gateway — and it is the only topology in which a cross-plane leak is even possible.
+    provider_oidc_enabled: bool = False
+    provider_oidc_issuer: str = ""
+    provider_oidc_client_id: str = ""
+    provider_oidc_client_secret: str = ""
+    provider_oidc_redirect_url: str = ""
+    provider_oidc_scopes: str = "openid profile email"
+    # provider-IdP group → provider scope, as JSON. No fallback: an unmapped group grants
+    # nothing (§6a's rule, applied on this side). Elevated scopes are refused here — they
+    # are time-boxed audited grants, not group memberships.
+    provider_group_scopes: dict = field(default_factory=dict)
+    provider_groups_claim: str = "groups"
+
     # --- Audit (gateway F-57 model, ADR-0013 §9/§10) --------------------------
     # File the hash-chained audit is appended to. Empty → records still chain and still
     # go to stdout, but the chain restarts at genesis on every boot because there is no
@@ -98,6 +118,27 @@ def _secret(env_name: str, file_env: str) -> str:
         except OSError:
             return ""
     return ""
+
+
+def _json_map(env_name: str) -> dict:
+    """A ``{"group": "scope"}`` map from a JSON env var.
+
+    Malformed JSON raises rather than defaulting to an empty map: a group→scope table that
+    silently becomes ``{}`` grants nothing and looks like a permissions bug for as long as
+    it takes someone to find the typo. Failing at startup names the real cause.
+    """
+    raw = os.getenv(env_name, "").strip()
+    if not raw:
+        return {}
+    import json
+
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{env_name} is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+        raise ValueError(f"{env_name} must be a JSON object of string→string")
+    return parsed
 
 
 def load_settings() -> Settings:
@@ -140,6 +181,16 @@ def load_settings() -> Settings:
         oidc_scopes=os.getenv("OIDC_SCOPES", "openid profile email offline_access"),
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
+        # Provider plane (ADR-0013). Absent → this BFF serves the tenant plane only, which
+        # is what a tenant-stack deployment should look like.
+        provider_oidc_enabled=os.getenv("PROVIDER_OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),
+        provider_oidc_issuer=os.getenv("PROVIDER_OIDC_ISSUER", ""),
+        provider_oidc_client_id=os.getenv("PROVIDER_OIDC_CLIENT_ID", ""),
+        provider_oidc_client_secret=_secret("PROVIDER_OIDC_CLIENT_SECRET", "PROVIDER_OIDC_CLIENT_SECRET_FILE"),
+        provider_oidc_redirect_url=os.getenv("PROVIDER_OIDC_REDIRECT_URL", ""),
+        provider_oidc_scopes=os.getenv("PROVIDER_OIDC_SCOPES", "openid profile email"),
+        provider_group_scopes=_json_map("PROVIDER_GROUP_SCOPES"),
+        provider_groups_claim=os.getenv("PROVIDER_GROUPS_CLAIM", "groups"),
         # Audit. AUDIT_PATH defaults under BFF_STATE_DIR when the lite bootstrap is in
         # play, so a home box gets a durable, re-seedable chain without configuring one.
         audit_path=os.getenv("AUDIT_PATH", ""),

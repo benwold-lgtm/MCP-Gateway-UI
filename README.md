@@ -79,6 +79,11 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `OIDC_REDIRECT_URL` | This BFF's callback, registered with the IdP (`…/auth/oidc/callback`) |
 | `OIDC_SCOPES` / `OIDC_POST_LOGIN_REDIRECT` | Requested scopes (include one yielding a gateway-audience access token; defaults include `offline_access` so the IdP issues a refresh token for silent refresh — drop it if your IdP rejects it) / where to land after login |
 | `OIDC_POST_LOGOUT_REDIRECT` | Where the IdP returns the browser after RP-initiated (single) logout; must be registered with the IdP. Empty = omit. Used only if the IdP exposes an `end_session_endpoint` |
+| `PROVIDER_OIDC_ENABLED` | Turn on the **provider plane** — a second IdP for the platform's own operators (ADR-0013 §2). ⚠️ Leave off in a tenant-stack deployment; see **The provider plane** below |
+| `PROVIDER_OIDC_ISSUER` / `PROVIDER_OIDC_CLIENT_ID` / `PROVIDER_OIDC_CLIENT_SECRET` | The provider IdP's issuer + client credentials (also honours `PROVIDER_OIDC_CLIENT_SECRET_FILE`) |
+| `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
+| `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable; the elevated grants are refused here by design |
+| `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
@@ -184,6 +189,46 @@ sessions, so the UI and gateway authorization can't drift.
    fingerprint (ADR-0015) and offers the approval decision when a device's TLS key has
    changed. See below for the rule that shapes it.
 8. **Live** — SSE/WS device status, finer per-scope views.
+
+## The provider plane (ADR-0013)
+
+Two populations, not one. A **tenant user** belongs to a single tenant and signs in to that
+tenant's IdP. A **provider operator** is cross-tenant by design — the platform's own staff,
+running the manager-of-managers console — and signs in to the *provider's* IdP.
+
+`plane` (`tenant` | `provider`) is set **at login, from which IdP authenticated**, and never
+from a request parameter. The two login routes are separate endpoints (`/auth/oidc/login`
+and `/auth/provider/login`) for exactly that reason: with no `plane=` input there is nothing
+for a handler to forget to validate.
+
+### Deployment topology — a tenant BFF should not configure the provider IdP
+
+The code supports both IdPs in one process, and the tests prove the wall holds in that
+configuration. **That is not a recommendation to deploy it that way.** A tenant's BFF lives
+inside the tenant's stack, and putting cross-tenant machinery there is the same mistake
+ADR-0013 §5 refuses for the gateway — it is also the only topology in which a cross-plane
+leak is possible at all.
+
+- **Tenant stack** — set `OIDC_*` only. `PROVIDER_OIDC_ENABLED` stays false, so a
+  provider-plane session cannot exist in that process.
+- **Provider console** — a separate deployment with `PROVIDER_OIDC_*` set.
+
+### What a provider session can and cannot do today
+
+| | |
+|---|---|
+| Holds | `provider:*` scopes, mapped from provider-IdP groups (`PROVIDER_GROUP_SCOPES`) |
+| Never holds | any gateway scope; the two vocabularies are reported separately by `/auth/me` |
+| Tenant data plane (`/api/*`) | **refused** — reaching a tenant needs an "act on tenant" grant (§4), which this build does not yet issue |
+| Standing tenant credential | none. A provider session stores no gateway access token |
+
+`provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
+membership at all — mapping a group to one is refused at startup. They are time-boxed,
+individually justified, separately audited grants (§5a/§8), landing in a later slice.
+
+`PROVIDER_GROUP_SCOPES` has **no fallback**: an unmapped group grants nothing. Kept as a
+shared or defaulting table it would be an escalation primitive — the same reason the gateway
+made `group_roles` per-issuer (§6a).
 
 ## Endpoint fingerprint — three dimensions, never one badge
 
