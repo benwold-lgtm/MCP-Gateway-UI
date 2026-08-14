@@ -134,27 +134,54 @@ class OIDCClient:
             self._jwks = jwt.PyJWKClient(meta["jwks_uri"])
         return self._meta
 
-    async def authorization_url(self, *, state: str, nonce: str, challenge: str) -> str:
+    async def authorization_url(
+        self,
+        *,
+        state: str,
+        nonce: str,
+        challenge: str,
+        acr_values: str | None = None,
+        max_age: int | None = None,
+        redirect_uri: str | None = None,
+    ) -> str:
+        """Build the authorization request.
+
+        ``acr_values`` and ``max_age`` carry a **step-up** (ADR-0013 §8): the first names
+        the authentication context required, the second (``0``) forces the IdP to
+        re-authenticate rather than reuse a live session. Both are *requests* — an IdP may
+        decline either and issue anyway, which is why the caller verifies the resulting
+        ``acr`` and ``auth_time`` rather than assuming them (§11b constraint 2).
+
+        ``redirect_uri`` lets the step-up use its own callback, so a step-up in flight
+        cannot be completed by a login callback or the reverse.
+        """
         meta = await self._discover()
         params = {
             "response_type": "code",
             "client_id": self._s.oidc_client_id,
-            "redirect_uri": self._s.oidc_redirect_url,
+            "redirect_uri": redirect_uri or self._s.oidc_redirect_url,
             "scope": self._s.oidc_scopes,
             "state": state,
             "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
+        if acr_values:
+            params["acr_values"] = acr_values
+        if max_age is not None:
+            params["max_age"] = str(max_age)
         return f"{meta['authorization_endpoint']}?{urlencode(params)}"
 
-    async def exchange_code(self, *, code: str, verifier: str) -> dict:
-        """Exchange the authorization code for tokens at the token endpoint."""
+    async def exchange_code(self, *, code: str, verifier: str, redirect_uri: str | None = None) -> dict:
+        """Exchange the authorization code for tokens at the token endpoint.
+
+        ``redirect_uri`` must match the one the code was issued against, so the step-up's
+        separate callback has to be passed back through here."""
         meta = await self._discover()
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": self._s.oidc_redirect_url,
+            "redirect_uri": redirect_uri or self._s.oidc_redirect_url,
             "client_id": self._s.oidc_client_id,
             "code_verifier": verifier,
         }

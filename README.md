@@ -84,6 +84,9 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
 | `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable; the elevated grants are refused here by design |
 | `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
+| `PROVIDER_STEP_UP_ACR` | The authentication context the provider IdP must satisfy before minting an elevated grant (ADR-0013 §8/§11b). Requested as `acr_values` **and** required in the issued token's `acr`. Empty (the default) disables the elevated grants entirely |
+| `PROVIDER_STEP_UP_REDIRECT_URL` | The step-up's own callback (`…/auth/provider/step-up/callback`), registered with the provider IdP. Separate from the login callback so a step-up in flight cannot be completed by a login |
+| `PROVIDER_GRANT_CLAIM` | Claim carrying the IdP-minted grant (default `mcp_grant`). Must match the gateway's per-issuer `grant_claim` |
 | `TENANT_ID` | Which tenant this deployment serves (ADR-0013 §4). Only consulted to decide whether a provider session's **act-on-tenant** grant names *this* stack — so empty (the default) admits no provider session at all. Deliberately the same name the gateway uses for the same thing (`gateway.tenant_id`) |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
@@ -104,9 +107,9 @@ to the gateway by construction: a **failed login** or a throttle lockout never r
 
 What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain),
 every authentication event (password login success/failure/lockout, OIDC login, logout), and
-every **act-on-tenant** grant — acquired, superseded or released, with its justification, and
-including the ones that were *refused*, since "who was refused what" is the question an audit
-is most often asked. Reads are deliberately **not** recorded — per-user relay means the
+every **act-on-tenant** and **elevated** grant — acquired, superseded or released, with its
+justification, and including the ones that were *refused* (a declined step-up among them),
+since "who was refused what" is the question an audit is most often asked. Reads are deliberately **not** recorded — per-user relay means the
 gateway's own chain already has them, so duplicating would add noise rather than
 accountability. That changes when a provider session's reads reach a tenant (§9).
 
@@ -235,7 +238,7 @@ as the refusal, not instead of it, because it is what still holds if a session d
 
 `provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
 membership at all — mapping a group to one is refused at startup. They are time-boxed,
-individually justified, separately audited grants (§5a/§8), landing in a later slice.
+individually justified, separately audited grants, acquired through a **step-up** — see below.
 
 ### Act on tenant — the grant that opens the data plane
 
@@ -282,6 +285,52 @@ one before admitting the request.
 `PROVIDER_GROUP_SCOPES` has **no fallback**: an unmapped group grants nothing. Kept as a
 shared or defaulting table it would be an escalation primitive — the same reason the gateway
 made `group_roles` per-issuer (§6a).
+
+### The two elevated grants — a step-up, on top of an act
+
+`provider:admin` deliberately reaches neither a customer's live hardware nor their
+credentials. Those are the two points where a compromised provider session converts into
+real damage, so §8 spends a **step-up** on exactly them and nowhere else — putting one on
+the everyday motion would fire often enough to train reflexive approval.
+
+```
+POST   /provider/tenants/{tenant}/elevate   {"scope": "provider:invoke", "justification": "…"}
+   → {"authorization_url": "…"}      the browser follows it; the IdP re-authenticates
+GET    /auth/provider/step-up/callback      the BFF verifies what came back
+DELETE /provider/elevation                  end the elevation, keep the act
+```
+
+| Grant | Reaches | Window | Re-entry |
+|---|---|---|---|
+| `provider:invoke` | `tools:call` on the tenant's gateway | 15 min absolute, replayable within it | step-up |
+| `provider:credentials` | `backup:read` / `backup:write` / `backup:export-portable` | **single use** — one operation | step-up |
+
+**Who mints what.** The **provider IdP** mints the grant claim, not the BFF and not the
+gateway (§11b) — the BFF is already audit writer and credential holder, and making it a
+token issuer too concentrates exactly what [ADR-0012](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0012-federation-credential-model.md)
+argues against. The BFF requests the step-up and **verifies it happened**; the gateway
+independently verifies the claim and is authoritative.
+
+Four things are deliberate:
+
+- **Requesting a step-up is not achieving one.** `acr_values` is a request parameter and an
+  IdP may decline it and issue a perfectly valid token anyway. The `acr` in the **issued**
+  token is checked, and a token without it is refused and audited — no elevation is stored.
+- **The elevation rides on an act.** It requires a live act-on-tenant grant for the same
+  tenant, so it cannot route around that grant's justification, its one-tenant-at-a-time
+  rule or its audit trail. A new act — even for the same tenant — drops any elevation.
+- **The token is the capability, so it lives inside the grant.** Dropping the grant drops
+  the credential; there is no second place to remember to clear. It never reaches the
+  browser.
+- **The window is the BFF's, measured from the token's `auth_time`.** A claim expiry may
+  only shorten it, and an already-expired claim is refused rather than stored — a grant
+  dead on arrival would tell an operator their MFA prompt worked while every later request
+  quietly used their ordinary token.
+
+**The gateway is the other half.** It verifies the same claim independently — window,
+tenant, single-use consumption in its own Redis — and refuses the whole token if anything
+fails. See ADR-0013 §11 and the gateway's `device_mcp_gateway/grants.py`. The provider scope
+vocabulary stops here: what travels is `tools:call` and `backup:*`, never `provider:invoke`.
 
 ## Endpoint fingerprint — three dimensions, never one badge
 

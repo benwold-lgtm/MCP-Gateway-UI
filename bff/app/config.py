@@ -87,6 +87,19 @@ class Settings:
     # are time-boxed audited grants, not group memberships.
     provider_group_scopes: dict = field(default_factory=dict)
     provider_groups_claim: str = "groups"
+    # Step-up (ADR-0013 §8/§11b). The authentication context the provider IdP must satisfy
+    # before it mints an elevated grant claim — requested as `acr_values` AND required in
+    # the issued token's `acr`, because requesting is not achieving. Empty disables the
+    # elevated grants entirely: with no context to verify there is nothing to check, and
+    # offering them unverifiable is the state §11b's constraint exists to prevent.
+    provider_step_up_acr: str = ""
+    # The step-up's own callback, registered with the provider IdP. A separate endpoint
+    # from the login callback rather than one route with a selector — the same reason the
+    # two login routes are structurally separate.
+    provider_step_up_redirect_url: str = ""
+    # Claim carrying the IdP-minted grant. Mirrors the gateway's per-issuer `grant_claim`;
+    # keep the two in step or the gateway will not find what the IdP sent.
+    provider_grant_claim: str = "mcp_grant"
 
     # --- Audit (gateway F-57 model, ADR-0013 §9/§10) --------------------------
     # File the hash-chained audit is appended to. Empty → records still chain and still
@@ -199,6 +212,9 @@ def load_settings() -> Settings:
         provider_oidc_scopes=os.getenv("PROVIDER_OIDC_SCOPES", "openid profile email"),
         provider_group_scopes=_json_map("PROVIDER_GROUP_SCOPES"),
         provider_groups_claim=os.getenv("PROVIDER_GROUPS_CLAIM", "groups"),
+        provider_step_up_acr=os.getenv("PROVIDER_STEP_UP_ACR", "").strip(),
+        provider_step_up_redirect_url=os.getenv("PROVIDER_STEP_UP_REDIRECT_URL", "").strip(),
+        provider_grant_claim=os.getenv("PROVIDER_GRANT_CLAIM", "mcp_grant").strip() or "mcp_grant",
         # Audit. AUDIT_PATH defaults under BFF_STATE_DIR when the lite bootstrap is in
         # play, so a home box gets a durable, re-seedable chain without configuring one.
         audit_path=os.getenv("AUDIT_PATH", ""),

@@ -12,16 +12,21 @@ Two ways in (ADR-0007):
 from __future__ import annotations
 
 import secrets
+import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .. import sessions
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
+from ..grants import GrantError, record_elevated_grant
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import (
+    SCOPE_PROVIDER_ADMIN,
+    _persist_session,
+    require_provider_scope,
     PASSWORD_ROLE_SCOPES,
     PLANE_PROVIDER,
     PLANE_TENANT,
@@ -31,6 +36,7 @@ from ..security import (
     session_plane,
 )
 from ..throttle import client_ip
+from .provider import STEP_UP_TX, step_up_ready
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -347,3 +353,108 @@ async def provider_callback(
     )
     await record_request(request, "auth.provider_login", outcome=OUTCOME_SUCCESS, method="oidc")
     return RedirectResponse(settings.oidc_post_login_redirect or "/", status_code=302)
+
+
+# --- the step-up behind an elevated grant (ADR-0013 §8/§11b) ------------------
+#
+# Lives here, beside the login callback, because every IdP callback belongs under /auth —
+# and *separate from* it, on its own path with its own transaction key, so a step-up in
+# flight cannot be completed by a login callback or the reverse. The elevation is
+# *requested* on the provider plane (`POST /provider/tenants/{t}/elevate`); this is only
+# where what came back is checked.
+
+
+@router.get("/provider/step-up/callback", include_in_schema=False)
+async def step_up_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    session=Depends(require_provider_scope(SCOPE_PROVIDER_ADMIN)),
+) -> dict:
+    """Receive the step-up and, if it really happened, record the elevated grant.
+
+    This is where §11b constraint 2 is enforced: `acr_values` was a *request*, and an IdP
+    may decline it and issue a perfectly valid token anyway. Every signature here can
+    verify while no step-up occurred, so the `acr` in the **issued** token is checked — and
+    it is checked before anything is stored, so a declined step-up leaves no trace of
+    authority behind it.
+    """
+    oidc, settings = step_up_ready(request)
+    tx = request.session.pop(STEP_UP_TX, None)  # single use: a replayed callback finds nothing
+    tenant = tx.get("tenant") if isinstance(tx, dict) else None
+
+    if error or not code or not state or not isinstance(tx, dict):
+        await record_request(
+            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="invalid_callback"
+        )
+        raise HTTPException(status_code=400, detail="Invalid step-up callback")
+    if not secrets.compare_digest(state, tx.get("state", "")):
+        await record_request(
+            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="state_mismatch"
+        )
+        raise HTTPException(status_code=400, detail="Step-up state mismatch")
+
+    try:
+        tokens = await oidc.exchange_code(
+            code=code, verifier=tx["verifier"], redirect_uri=settings.provider_step_up_redirect_url
+        )
+        claims = await oidc.validate_id_token(
+            id_token=tokens["id_token"], nonce=tx["nonce"], access_token=tokens.get("access_token")
+        )
+    except OIDCError as exc:
+        await record_request(
+            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="token_exchange_failed"
+        )
+        raise HTTPException(status_code=401, detail=f"Step-up failed: {exc}")
+
+    acr = claims.get("acr")
+    if not isinstance(acr, str) or acr != settings.provider_step_up_acr:
+        # The check the whole design turns on. A missing `acr` lands here too, and must:
+        # an IdP that declined the step-up and issued anyway produces exactly that.
+        reason = f"acr {acr!r} is not the configured step-up context {settings.provider_step_up_acr!r}"
+        await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=reason)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "The IdP did not perform the required step-up: acr_values was requested but the "
+                "issued token does not carry it (ADR-0013 §11b)."
+            ),
+        )
+
+    try:
+        grant = record_elevated_grant(
+            session,
+            tenant=tx["tenant"],
+            provider_scope=tx["scope"],
+            justification=tx["justification"],
+            claim=claims.get(settings.provider_grant_claim),
+            access_token=tokens.get("access_token"),
+            auth_time=claims.get("auth_time"),
+            now=time.time(),
+        )
+    except GrantError as exc:
+        await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    await _persist_session(request, session)
+    await record_request(
+        request,
+        "provider.elevate",
+        outcome=OUTCOME_SUCCESS,
+        target=grant.tenant,
+        grant=grant.id,
+        scope=grant.provider_scope,
+        justification=grant.justification,
+        expires_at=grant.expires_at,
+        single_use=grant.single_use,
+    )
+    # Never the token. It is the most valuable thing this BFF holds — a bearer that raises
+    # a customer gateway's ceiling — and the browser has no use for it.
+    return {
+        "id": grant.id,
+        "tenant": grant.tenant,
+        "scope": grant.provider_scope,
+        "expires_at": grant.expires_at,
+        "single_use": grant.single_use,
+    }

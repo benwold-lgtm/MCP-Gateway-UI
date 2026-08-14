@@ -39,7 +39,16 @@ import secrets
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from .security import PLANE_PROVIDER, SCOPE_PROVIDER_ADMIN
+from .security import (
+    PLANE_PROVIDER,
+    SCOPE_PROVIDER_ADMIN,
+    SCOPE_PROVIDER_CREDENTIALS,
+    SCOPE_PROVIDER_INVOKE,
+)
+
+#: Where the elevated grant lives. Singular for the same reason act-on-tenant is: one act,
+#: one elevation on top of it.
+SESSION_KEY_ELEVATED = "elevated_grant"
 
 #: Where the single grant lives on the session. Singular, and not keyed by tenant — see
 #: rule 1 above. A test pins the name, because the plural is the shape that permits
@@ -185,6 +194,12 @@ def authorize_act_on_tenant(
         expires_at=float(now) + lifetime,
     )
     session[SESSION_KEY] = grant.as_dict()
+    # A new act is a new act, so it never inherits the previous one's elevation — including
+    # when the tenant is unchanged. Carrying it over would make "renewal is a new act" hold
+    # for the act and quietly fail for the more dangerous thing riding on top of it, and
+    # across a tenant *switch* it would let a `tools:call` grant obtained for one customer
+    # be spent on another.
+    session.pop(SESSION_KEY_ELEVATED, None)
     return grant
 
 
@@ -211,4 +226,273 @@ def release_act_on_tenant(session: dict[str, Any]) -> Optional[ActOnTenant]:
     held = ActOnTenant.from_session(session)
     if isinstance(session, dict):
         session.pop(SESSION_KEY, None)
+        # The elevation cannot outlive the act it was layered on.
+        session.pop(SESSION_KEY_ELEVATED, None)
+    return held
+
+
+# --- the two elevated grants (ADR-0013 §5a/§8/§11b) ---------------------------
+#
+# Layered on top of an act, never instead of one: `provider:admin` plus a live
+# act-on-tenant grant is the floor, and the elevation adds one bounded capability above it
+# for one tenant. §5a's carve-out is what makes provider access everyday debugging, so
+# these two are the points where a compromised provider session converts into real damage —
+# actuating a customer's hardware, or walking off with their credentials — and they are the
+# only places §8 spends a step-up.
+
+
+@dataclass(frozen=True)
+class ElevatedSpec:
+    """One §8 class. Durations are configuration; the relationships are the decision."""
+
+    #: What goes to the gateway. **Gateway** scopes, never provider ones: `provider:invoke`
+    #: is a BFF concept and the gateway has never heard of it (§11). This mapping is the
+    #: line, and it is drawn here because this is the side that does the translating — a
+    #: leak would not be *refused* downstream, it would be silently ignored.
+    gateway_scopes: tuple[str, ...]
+    max_lifetime: int
+    single_use: bool
+
+
+ELEVATED_GRANT_SPECS: dict[str, ElevatedSpec] = {
+    # A short absolute window rather than one call: §8's grant gates *initiation*, and one
+    # debugging session is several calls. Matches the gateway's own 900s for `tools:call`.
+    SCOPE_PROVIDER_INVOKE: ElevatedSpec(gateway_scopes=("tools:call",), max_lifetime=900, single_use=False),
+    # Single use — one operation. The window is a backstop under that, and deliberately no
+    # looser than the invoke one. For the provider, who holds MCP_SECRET_KEY, a ciphertext
+    # archive is a credential dump too (§5b), so all three backup scopes are treated alike.
+    SCOPE_PROVIDER_CREDENTIALS: ElevatedSpec(
+        gateway_scopes=("backup:read", "backup:write", "backup:export-portable"),
+        max_lifetime=300,
+        single_use=True,
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ElevatedGrant:
+    """A verified step-up, and the token it produced.
+
+    The token lives **inside** the grant rather than beside it: the step-up token *is* the
+    capability, so making the record that holds it the same record that expires means there
+    is no second place to remember to clear. Dropping the grant drops the credential.
+    """
+
+    id: str
+    tenant: str
+    provider_scope: str
+    gateway_scopes: tuple[str, ...]
+    justification: str
+    granted_at: float
+    expires_at: float
+    single_use: bool
+    access_token: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "tenant": self.tenant,
+            "provider_scope": self.provider_scope,
+            "gateway_scopes": list(self.gateway_scopes),
+            "justification": self.justification,
+            "granted_at": self.granted_at,
+            "expires_at": self.expires_at,
+            "single_use": self.single_use,
+            "access_token": self.access_token,
+        }
+
+    @classmethod
+    def from_session(cls, session: Any) -> Optional["ElevatedGrant"]:
+        raw = (session or {}).get(SESSION_KEY_ELEVATED) if isinstance(session, dict) else None
+        if not isinstance(raw, dict):
+            return None
+        gid, tenant = raw.get("id"), raw.get("tenant")
+        scope, gscopes = raw.get("provider_scope"), raw.get("gateway_scopes")
+        why, token = raw.get("justification"), raw.get("access_token")
+        granted, expires = raw.get("granted_at"), raw.get("expires_at")
+        if not (isinstance(gid, str) and gid and isinstance(tenant, str) and tenant):
+            return None
+        if scope not in ELEVATED_GRANT_SPECS:
+            return None
+        if not isinstance(gscopes, list) or not gscopes or not all(isinstance(x, str) for x in gscopes):
+            return None
+        if not isinstance(why, str) or not isinstance(token, str) or not token:
+            # An elevation with no token is not a weaker elevation, it is a record with no
+            # capability — and treating it as live would send the *ordinary* operator token
+            # to a route the caller believes is elevated.
+            return None
+        if not _is_number(granted) or not _is_number(expires):
+            return None
+        return cls(
+            id=gid,
+            tenant=tenant,
+            provider_scope=scope,
+            gateway_scopes=tuple(gscopes),
+            justification=why,
+            granted_at=float(granted),
+            expires_at=float(expires),
+            single_use=bool(raw.get("single_use")),
+            access_token=token,
+        )
+
+
+def elevated_spec(provider_scope: Any) -> ElevatedSpec:
+    """The §8 class for a BFF scope, or :class:`GrantError`.
+
+    A closed range. `provider:admin` needs no elevation and `provider:monitor` has no tenant
+    access at all, so asking to elevate either is a misunderstanding of the model rather
+    than a narrower request — and it fails loudly instead of minting something meaningless.
+    """
+    spec = ELEVATED_GRANT_SPECS.get(provider_scope) if isinstance(provider_scope, str) else None
+    if spec is None:
+        raise GrantError(
+            f"{provider_scope!r} is not an elevatable scope. Only {sorted(ELEVATED_GRANT_SPECS)} are "
+            f"elevated grants (ADR-0013 §5a/§8); everything else is either held by group membership "
+            f"or not a provider scope at all."
+        )
+    return spec
+
+
+def _check_claim(claim: Any, *, tenant: str, spec: ElevatedSpec) -> str:
+    """Check the IdP-minted claim is the grant that was asked for, and return its id.
+
+    The gateway verifies its own copy and is authoritative (§11b). This is not that check
+    repeated — it is the BFF confirming that what came back matches what it requested,
+    *before* it writes an audit record saying so. A record asserting a step-up the writer
+    never confirmed is worse than no record.
+    """
+    if not isinstance(claim, dict):
+        raise GrantError("the step-up produced no usable grant claim")
+    gid = claim.get("id")
+    if not isinstance(gid, str) or not gid:
+        raise GrantError("the grant claim has no usable 'id' — nothing to audit or consume against")
+    if claim.get("tenant") != tenant:
+        raise GrantError(f"the grant claim names tenant {claim.get('tenant')!r}, but this act is on {tenant!r}")
+    scopes = claim.get("scopes")
+    if not isinstance(scopes, list) or set(scopes) != set(spec.gateway_scopes):
+        # Refused rather than intersected. Being handed a *different* grant than the one
+        # requested is not a narrower grant, and quietly proceeding with it would make the
+        # audit record describe an act that did not happen.
+        raise GrantError(
+            f"the grant claim carries scopes {scopes!r}, but this elevation requested " f"{list(spec.gateway_scopes)!r}"
+        )
+    return gid
+
+
+def record_elevated_grant(
+    session: dict[str, Any],
+    *,
+    tenant: Any,
+    provider_scope: Any,
+    justification: Any,
+    claim: Any,
+    access_token: Any,
+    auth_time: Any,
+    now: float,
+) -> ElevatedGrant:
+    """Record a verified step-up as an elevated grant on ``session``.
+
+    Called only after the caller has checked the issued token's ``acr`` — that check lives
+    at the callback because it is about the token, not about this record. Everything that
+    is about *this act* is here.
+    """
+    spec = elevated_spec(provider_scope)
+    tenant = _check_tenant(tenant)
+    why = _check_justification(justification)
+
+    act = active_grant(session, now=now)
+    if act is None or act.tenant != tenant:
+        # §4/§8: an elevation rides on an act. Without this it routes around
+        # act-on-tenant's justification, its one-tenant-at-a-time rule and its audit trail
+        # — §4 bypassed by the very mechanism §8 layers on top of it.
+        raise GrantError(
+            f"an elevated grant requires a live act-on-tenant grant for {tenant!r}; "
+            f"authorize the act first (ADR-0013 §4/§8)"
+        )
+
+    if not _is_number(auth_time):
+        raise GrantError("the token carries no usable auth_time, so the step-up cannot be dated")
+    if float(auth_time) > now:
+        # Otherwise the freshness check below is defeated from the same place it is enforced.
+        raise GrantError("the token's auth_time is in the future")
+
+    # One mechanism for two requirements: the window runs from the step-up, so a 15-minute
+    # elevation *is* a 15-minute step-up freshness requirement. Two separate rules would
+    # drift apart; the gateway makes the same choice on its side.
+    deadline = float(auth_time) + spec.max_lifetime
+    if deadline <= now:
+        raise GrantError(
+            f"the step-up is stale: its auth_time is more than {spec.max_lifetime}s old, so it "
+            f"does not satisfy a step-up now (ADR-0013 §8)"
+        )
+
+    gid = _check_claim(claim, tenant=tenant, spec=spec)
+    claim_exp = claim.get("exp")
+    if _is_number(claim_exp) and float(claim_exp) < deadline:
+        # The claim may bring the deadline in — an IdP with a tighter policy is honoured —
+        # but never push it out. The window is computed here, from our clock.
+        deadline = float(claim_exp)
+    if deadline <= now:
+        # Refused rather than stored. Capping can pull the deadline into the past, and a
+        # grant that is dead on arrival is worse than a refusal: the operator has just
+        # completed an MFA prompt, and would be told it succeeded before every subsequent
+        # request quietly used their ordinary token instead.
+        raise GrantError(
+            f"the grant claim expires at {float(claim_exp):.0f}, which is already past — "
+            f"the elevation would be dead on arrival"
+        )
+
+    if not isinstance(access_token, str) or not access_token:
+        raise GrantError("the step-up produced no access token, so there is nothing to present upstream")
+
+    grant = ElevatedGrant(
+        id=gid,
+        tenant=tenant,
+        provider_scope=provider_scope,
+        gateway_scopes=spec.gateway_scopes,
+        justification=why,
+        granted_at=float(now),
+        expires_at=deadline,
+        single_use=spec.single_use,
+        access_token=access_token,
+    )
+    session[SESSION_KEY_ELEVATED] = grant.as_dict()
+    return grant
+
+
+def active_elevated_grant(session: Any, *, tenant: str, now: float) -> Optional[ElevatedGrant]:
+    """The live elevation for ``tenant``, or ``None``. A pure read, like
+    :func:`active_grant` and for the same reason.
+
+    ``tenant`` is required rather than optional: an elevation is authority over one
+    customer's hardware, and a caller that did not have to name which tenant it was asking
+    about is a caller that can be handed the wrong one.
+    """
+    if not isinstance(session, dict) or session.get("plane") != PLANE_PROVIDER:
+        return None
+    grant = ElevatedGrant.from_session(session)
+    if grant is None or grant.tenant != tenant or grant.expires_at <= now:
+        return None
+    return grant
+
+
+def spend_elevated_grant(session: dict[str, Any]) -> Optional[ElevatedGrant]:
+    """Consume one operation's worth of elevation.
+
+    Drops a **single-use** grant and leaves an invoke-class one alone — §8's grant gates
+    initiation, not completion, so one debugging session is several calls inside one
+    window. Returns what was spent, for the caller's audit.
+    """
+    grant = ElevatedGrant.from_session(session)
+    if grant is not None and grant.single_use:
+        session.pop(SESSION_KEY_ELEVATED, None)
+        return grant
+    return None
+
+
+def drop_elevated_grant(session: dict[str, Any]) -> Optional[ElevatedGrant]:
+    """End any elevation. Returns what was held, so the caller can audit the drop."""
+    held = ElevatedGrant.from_session(session)
+    if isinstance(session, dict):
+        session.pop(SESSION_KEY_ELEVATED, None)
     return held
