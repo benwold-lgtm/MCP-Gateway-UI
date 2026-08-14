@@ -37,6 +37,7 @@ Two more the ADR implies rather than states, and which have bitten this project 
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("UI_ADMIN_PASSWORD", "admin-pw")
 os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
@@ -458,28 +459,102 @@ def test_a_tenant_session_cannot_reach_the_authorize_route(console):
 # --- the wall this grant is the key to ----------------------------------------
 
 
+# Every test below seeds a session that already holds a credential, so the ONLY variable
+# is the grant. Without that the credential refusal added alongside these tests answers
+# first, every assertion collapses to "something said 403", and the tenant discriminator
+# stops being tested at all — a downstream backstop masking the control under test. Each
+# one therefore asserts on the *reason*, not on the status code.
+
+
 def test_without_a_grant_a_provider_session_is_still_refused_the_data_plane(console):
     """The state before slice 2 — asserted, not assumed. If this passes only because the
     grant machinery is missing, the tests below prove nothing about the gate."""
     client, app = console
-    _seed_session(client, app, _provider_session())
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
     resp = client.get("/api/devices")
     assert resp.status_code == 403
     assert "act on tenant" in resp.text
 
 
-def test_a_live_grant_for_this_tenant_opens_the_data_plane(console, monkeypatch):
+def test_a_live_grant_for_this_tenant_opens_the_data_plane(console):
+    """A grant plus a credential of the session's own gets through — and the credential
+    that reaches the gateway is **the operator's**, not the stack's admin key.
+
+    The bearer is asserted, not the status. The first version of this test stubbed
+    `gateway.get` and checked for a 200, which passed while the BFF was relaying the tenant
+    stack's admin token: `upstream_bearer` returned `None` for a provider session and the
+    GatewayClient's *default* Authorization header applied. A provider operator arriving at
+    the tenant gateway as gateway `admin` is above the §5a ceiling, carries `tools:call` and
+    every `backup:*` with no step-up, and lands in the tenant's audit as a shared key rather
+    than a human — the exact outcome the second-issuer design exists to replace. Stubbing
+    the call while ignoring its most important argument is what hid it.
+    """
     client, app = console
-    _seed_session(client, app, _provider_session())
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
     client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
 
-    async def _ok(self, path, bearer=None, **kw):
+    seen = {}
+
+    async def _spy(path, bearer=None, **kw):
         import httpx
 
-        return httpx.Response(200, json={"devices": []}, request=httpx.Request("GET", "http://gw" + path))
+        seen["bearer"] = bearer
+        return httpx.Response(200, json={"devices": []})
 
-    monkeypatch.setattr(type(app.state.gateway), "get", _ok, raising=True)
+    app.state.gateway.get = _spy
     assert client.get("/api/devices").status_code == 200
+    assert seen["bearer"] == "provider-operator-token"
+    assert seen["bearer"] != app.state.settings.gateway_token
+
+
+def test_a_provider_session_is_never_relayed_with_the_stacks_admin_key(console):
+    """The defect this pair exists for, stated directly. A provider session with a live
+    grant but no credential of its own must be refused at the gate — because `None` does not
+    mean "no credential" to the GatewayClient, it means "use the admin key"."""
+    client, app = console
+    _seed_session(client, app, _provider_session())  # no access_token
+    client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
+
+    reached = []
+
+    async def _spy(path, bearer=None, **kw):
+        import httpx
+
+        reached.append(bearer)
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _spy
+    resp = client.get("/api/devices")
+    assert resp.status_code == 403
+    # The *gate's* wording, not `upstream_bearer`'s. The two refusals are deliberate
+    # defence in depth and both mention the admin key, so matching the shared phrase would
+    # let either one stand in for the other and neither would be independently tested.
+    assert "holds no credential for this tenant's gateway" in resp.text
+    assert reached == [], "a provider session reached the gateway with the stack's admin key"
+
+
+async def test_upstream_bearer_refuses_a_provider_session_with_no_token():
+    """The second layer, tested at its own level. `require_role` already refuses this case,
+    so a route-level test cannot tell the two apart — and a backstop that hides the control
+    beneath it is how a removed check goes unnoticed. Called directly for that reason.
+
+    What makes `None` dangerous here is that it does not mean "no credential" to the
+    GatewayClient: it means "fall back to the configured admin token".
+    """
+    from fastapi import HTTPException
+
+    from app.security import upstream_bearer
+
+    class _Req:
+        def __init__(self, sess):
+            self.state = SimpleNamespace(_bff_session=sess)
+
+    with pytest.raises(HTTPException) as exc:
+        await upstream_bearer(_Req(_provider_session()))
+    assert exc.value.status_code == 403
+    assert "admin key" in exc.value.detail
+    # ...and the converse, so the guard cannot be "refuse every provider session".
+    assert await upstream_bearer(_Req(_provider_session(access_token="tok"))) == "tok"
 
 
 def test_a_grant_for_a_different_tenant_does_not_open_this_one(console):
@@ -487,20 +562,24 @@ def test_a_grant_for_a_different_tenant_does_not_open_this_one(console):
     this deployment serves exactly one — so a grant naming another opens nothing here. Get
     this wrong and "act on tenant X" becomes "act on any tenant", which is §4 inverted."""
     client, app = console
-    _seed_session(client, app, _provider_session())
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
     client.post("/provider/tenants/globex/authorize", json={"justification": "ticket INC-9"})
-    assert client.get("/api/devices").status_code == 403
+    resp = client.get("/api/devices")
+    assert resp.status_code == 403
+    assert "act on tenant" in resp.text
 
 
 def test_an_expired_grant_closes_the_data_plane_again(console):
     """The window is the control, so it has to bite on the path the authority is used."""
     client, app = console
-    _seed_session(client, app, _provider_session())
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
     client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
 
     stored = _stored(app)
     stored["act_on_tenant"]["expires_at"] = 0.0
-    assert client.get("/api/devices").status_code == 403
+    resp = client.get("/api/devices")
+    assert resp.status_code == 403
+    assert "act on tenant" in resp.text
 
 
 def test_a_deployment_with_no_tenant_id_admits_nobody(monkeypatch, tmp_path):
@@ -515,19 +594,25 @@ def test_a_deployment_with_no_tenant_id_admits_nobody(monkeypatch, tmp_path):
     _console_env(monkeypatch, tmp_path, tenant_id=None)
     app = create_app()
     with TestClient(app) as client:
-        _seed_session(client, app, _provider_session())
+        _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
         assert client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY}).status_code == 200
-        assert client.get("/api/devices").status_code == 403
+        resp = client.get("/api/devices")
+        assert resp.status_code == 403
+        assert "act on tenant" in resp.text
 
 
 def test_the_grant_is_not_a_gateway_credential(console):
-    """§4/§7 again, one layer in: a provider session stores no `access_token`, and holding
-    act-on-tenant must not have quietly created one. The grant opens the BFF's gate; what
-    the BFF then presents upstream is a separate question (slice 3)."""
+    """§4/§7, one layer in: the grant is *authorization to proceed*, not a credential.
+    Minting one must not conjure an upstream token, and must not alter one the session
+    already had — the two are separate facts about a session and the gate checks both."""
     client, app = console
     _seed_session(client, app, _provider_session())
     client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
     assert not _stored(app).get("access_token")
+
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
+    client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
+    assert _stored(app)["access_token"] == "provider-operator-token"
 
 
 def test_the_grant_survives_a_store_round_trip_under_its_own_key(console):
