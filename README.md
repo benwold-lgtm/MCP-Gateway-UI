@@ -230,7 +230,8 @@ as the refusal, not instead of it, because it is what still holds if a session d
 | Holds | `provider:*` scopes, mapped from provider-IdP groups (`PROVIDER_GROUP_SCOPES`) |
 | Never holds | any gateway scope; the two vocabularies are reported separately by `/auth/me` |
 | Tenant data plane (`/api/*`) | **refused** unless the session holds a live **act-on-tenant** grant naming this deployment's `TENANT_ID` (§4) |
-| Standing tenant credential | none. A provider session stores no gateway access token |
+| Tenant credential | the operator's **own** provider-IdP token, kept at login — but relayed **only** while a live act-on-tenant grant names this tenant. Stored is not usable |
+| Never presented | the tenant stack's admin key. A provider session is refused rather than falling back to it |
 
 `provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
 membership at all — mapping a group to one is refused at startup. They are time-boxed,
@@ -266,8 +267,17 @@ Four rules, each of which the obvious implementation breaks:
 admits nobody: a deployment that cannot name the tenant it serves cannot check that a grant
 names *it*. That is also why no existing tenant-stack deployment needs a config change.
 
-The grant opens the *BFF's* gate. What the BFF then presents upstream to a tenant gateway is
-a separate question, and lands with the cross-gateway fan-out.
+**What the BFF presents upstream is the operator's own token**, not the stack's admin key —
+which is exactly what the gateway gained a second trusted issuer for (§6). The gateway's
+server-side plane ceiling then caps it at `devices:read` + `devices:write` + `metrics:read`
+(§5a/§6a), so the two controls are independent: the BFF decides *whether* an act is
+authorised, the gateway decides *how far* it can reach.
+
+Falling back to the admin key would be the worst of both — above the ceiling, carrying
+`tools:call` and every `backup:*` with no step-up, and recorded in the tenant's audit as a
+shared key rather than a human. The BFF refuses instead, in two places: `upstream_bearer`
+will not return "no credential" for a provider session, and the data-plane gate checks for
+one before admitting the request.
 
 `PROVIDER_GROUP_SCOPES` has **no fallback**: an unmapped group grants nothing. Kept as a
 shared or defaulting table it would be an escalation primitive — the same reason the gateway

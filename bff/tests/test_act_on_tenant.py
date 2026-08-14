@@ -604,7 +604,12 @@ def test_a_deployment_with_no_tenant_id_admits_nobody(monkeypatch, tmp_path):
 def test_the_grant_is_not_a_gateway_credential(console):
     """§4/§7, one layer in: the grant is *authorization to proceed*, not a credential.
     Minting one must not conjure an upstream token, and must not alter one the session
-    already had — the two are separate facts about a session and the gate checks both."""
+    already had — the two are separate facts about a session and the gate checks both.
+
+    The converse is the load-bearing half and is tested above: a stored token is not a
+    usable one. A provider session carries its own identity from login, and without a live
+    grant naming this tenant it opens nothing.
+    """
     client, app = console
     _seed_session(client, app, _provider_session())
     client.post(f"/provider/tenants/{TENANT}/authorize", json={"justification": WHY})
@@ -626,3 +631,67 @@ def test_the_grant_survives_a_store_round_trip_under_its_own_key(console):
     assert isinstance(stored["act_on_tenant"], dict)
     assert stored["act_on_tenant"]["tenant"] == TENANT
     assert ActOnTenant.from_session(stored) is not None
+
+
+def test_a_stored_token_without_a_grant_is_not_a_usable_one(console):
+    """The whole point of storing the operator's token: *stored* and *usable* are different
+    facts, and only the grant joins them.
+
+    This is the case that decides whether "the provider session holds its own credential"
+    is a safe design or a standing-access one. A session that has been through login, holds
+    `provider:admin` and carries a token must still reach nothing until it has authorised a
+    named act — and the token must not leak to the gateway on the way to being refused.
+    """
+    client, app = console
+    _seed_session(client, app, _provider_session(access_token="provider-operator-token"))
+
+    reached = []
+
+    async def _spy(path, bearer=None, **kw):
+        import httpx
+
+        reached.append(bearer)
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _spy
+    resp = client.get("/api/devices")
+    assert resp.status_code == 403
+    assert "act on tenant" in resp.text
+    assert reached == []
+
+
+def test_the_provider_login_stores_the_operators_token(console):
+    """The fact every test above *seeds* rather than produces, so nothing else here would
+    notice if the callback stopped storing it.
+
+    Delete that one line and the whole file still passes while a real deployment falls back
+    to the tenant stack's admin key on every provider request — a seeded fixture standing in
+    for the code path that builds it. The login is therefore driven for real, through the
+    router's own transaction handling.
+    """
+    client, app = console
+
+    class _FakeProviderIdP:
+        async def authorization_url(self, *, state, nonce, challenge):
+            return f"https://provider-idp.example.com/authorize?state={state}"
+
+        async def exchange_code(self, *, code, verifier):
+            return {"id_token": "id.tok.sig", "access_token": "operator-access-token"}
+
+        async def validate_id_token(self, *, id_token, nonce, access_token=None):
+            return {"sub": "u-provider-1", "name": "Pat", "groups": ["provider-support"], "nonce": nonce}
+
+    app.state.provider_oidc = _FakeProviderIdP()
+    resp = client.get("/auth/provider/login", follow_redirects=False)
+    assert resp.status_code == 302
+    state = resp.headers["location"].split("state=")[1]
+
+    resp = client.get(f"/auth/provider/callback?code=abc&state={state}", follow_redirects=False)
+    assert resp.status_code == 302, resp.text
+
+    stored = _stored(app)
+    assert stored["plane"] == PLANE_PROVIDER
+    assert stored["access_token"] == "operator-access-token"
+    assert stored["provider_scopes"] == [SCOPE_PROVIDER_ADMIN]
+    # ...and it is still not usable until an act is authorised (the pairing above).
+    assert stored.get("act_on_tenant") is None
