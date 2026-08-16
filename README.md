@@ -357,7 +357,10 @@ Three rules on these routes, none of which is visible from the route list:
   session proxies with the stack's *admin* gateway token, which already holds every
   `backup:*` scope — so admitting one there is a complete credential dump with no step-up
   behind it. Tool invocation stays open to break-glass: repairing a broken fleet is what
-  that login is for.
+  that login is for. **A lite/home deployment therefore has no backup or restore in the
+  console** — it runs SSO off, so a password session is all it has. That is deliberate:
+  lite is a home test bed, and the gateway's own `/v1/admin/backup` is still reachable with
+  the API key.
 
 A restore with no `dry_run` in the body **is** a dry run: the BFF sets it explicitly rather
 than relying on the gateway's default, so the destructive direction is not reachable by

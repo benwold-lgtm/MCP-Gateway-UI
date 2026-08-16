@@ -251,6 +251,17 @@ async def deny_password_session(request: Request) -> None:
     several — it is the only one, and admitting `admin` there would produce a complete
     credential dump with no step-up, no elevation and nothing in either audit chain naming a
     grant. Break-glass exists to repair a broken fleet, not to export one.
+
+    **This means a lite/home deployment has no backup or restore in the console, and that is
+    deliberate.** Lite runs the gateway in embedded mode with SSO off, so a password session
+    is the only session it has — and embedded mode refuses every elevated grant anyway
+    (ADR-0013 §11a: no shared store to consume single-use against), so there is no elevated
+    path to fall back to either. Lite is a home tinkerer's test bed; backup is not part of
+    what it is for, and the gateway's own `/v1/admin/backup` is still there for anyone who
+    wants it with the API key. Loosening this gate to give Lite a backup button would hand
+    every tenant-stack break-glass login a credential dump to buy a feature Lite does not
+    need — so if that trade ever looks attractive, condition it on the deployment shape
+    rather than widening the rule.
     """
     sess = await current_session(request)
     if sess and sess.get("kind") == "password":
