@@ -761,22 +761,29 @@ def test_a_successful_elevation_is_audited_with_its_justification(console):
 
 def test_the_step_up_token_is_relayed_upstream_while_the_elevation_is_live(console):
     """What the whole slice is for: the token carrying `mcp_grant` reaches the gateway,
-    which is what raises the ceiling on that side (MCP-Gateway #119)."""
+    which is what raises the ceiling on that side (MCP-Gateway #119).
+
+    Driven through the tool-invocation route rather than an ordinary read. The elevated
+    credential is handed only to routes that declared they need it — a read would (and now
+    does) get the ordinary token, because the gateway consumes a grant on first validation
+    and a routine request must not be what spends it. See `test_elevated_routes.py`.
+    """
     client, app = console
     _seed_session(client, app, _acting_live())
     _elevate(client, app, _FakeIdP())
 
-    seen = {}
+    seen = []
 
-    async def _spy(path, bearer=None, **kw):
+    async def _spy(method, path, json=None, bearer=None, headers=None):
         import httpx
 
-        seen["bearer"] = bearer
-        return httpx.Response(200, json={"devices": []})
+        seen.append(bearer)
+        hdrs = {"Mcp-Session-Id": "s-1"} if (json or {}).get("method") == "initialize" else {}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}}, headers=hdrs)
 
-    app.state.gateway.get = _spy
-    assert client.get("/api/devices").status_code == 200
-    assert seen["bearer"] == STEP_UP_TOKEN
+    app.state.gateway.request = _spy
+    assert client.post("/api/devices/dev1/tools/probe/invoke", json={"arguments": {}}).status_code == 200
+    assert seen and set(seen) == {STEP_UP_TOKEN}
 
 
 def test_an_elevation_with_no_act_underneath_it_is_not_relayed(console):
@@ -826,7 +833,11 @@ async def test_upstream_bearer_will_not_present_an_elevation_with_no_act():
 
     class _Req:
         def __init__(self, sess):
-            self.state = SimpleNamespace(_bff_session=sess)
+            # `elevated_scope` is what a route's `require_elevated` dependency sets, and
+            # without it `upstream_bearer` hands over the ordinary token by design. Set here
+            # so this test exercises the act check rather than passing because the credential
+            # was never going to be offered in the first place.
+            self.state = SimpleNamespace(_bff_session=sess, elevated_scope=SCOPE_PROVIDER_INVOKE)
 
     now = _t.time()
     sess = _acting_live()
@@ -1017,7 +1028,14 @@ def test_releasing_the_act_drops_the_elevation_through_the_route(console):
 def test_a_credentials_elevation_is_spent_by_one_relayed_request(console):
     """End to end for §8's single-use class: the second request must not carry the elevated
     token. Driven through the relay rather than by calling `spend` directly, because "the
-    helper works" and "the relay calls it" are different facts."""
+    helper works" and "the relay calls it" are different facts.
+
+    The second attempt is now refused *before* anything is relayed: with the credential
+    offered only to routes that ask for it, the route's own `require_elevated` sees the
+    spent elevation and says so. That is a better answer than relaying an ordinary token and
+    collecting a 403 from upstream — but it means the second request has no bearer at all to
+    assert on, so the assertion is on the refusal.
+    """
     client, app = console
     _seed_session(client, app, _acting_live())
     idp = _FakeIdP(
@@ -1038,13 +1056,14 @@ def test_a_credentials_elevation_is_spent_by_one_relayed_request(console):
         import httpx
 
         seen.append(bearer)
-        return httpx.Response(200, json={"devices": []})
+        return httpx.Response(200, json={"envelope": {}})
 
     app.state.gateway.get = _spy
-    client.get("/api/devices")
-    client.get("/api/devices")
-    assert seen[0] == STEP_UP_TOKEN
-    assert seen[1] == OPERATOR_TOKEN, "a single-use elevation was presented twice"
+    assert client.get("/api/admin/backup").status_code == 200
+    second = client.get("/api/admin/backup")
+
+    assert seen == [STEP_UP_TOKEN], "a single-use elevation was presented twice"
+    assert second.status_code == 403 and "elevation" in second.json()["detail"]
 
 
 def test_the_elevated_token_never_reaches_the_browser(console):

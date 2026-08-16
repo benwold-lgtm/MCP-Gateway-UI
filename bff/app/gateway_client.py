@@ -43,9 +43,24 @@ class GatewayClient:
         return {"Authorization": f"Bearer {bearer}"} if bearer else None
 
     async def request(
-        self, method: str, path: str, *, json: Optional[Any] = None, bearer: Optional[str] = None
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[Any] = None,
+        bearer: Optional[str] = None,
+        headers: Optional[dict] = None,
     ) -> httpx.Response:
-        return await self._client.request(method, self._with_prefix(path), json=json, headers=self._auth(bearer))
+        """``headers`` carries transport headers the caller must set — the MCP session id on
+        the tool-invocation path is the only current use. Merged *under* the auth header so
+        a caller cannot substitute its own ``Authorization`` and bypass the bearer choice
+        made in :func:`app.security.upstream_bearer`."""
+        # Compared case-insensitively because HTTP header names are. Popping the two
+        # obvious spellings left `authorization:` — and a dict carrying both spellings does
+        # not overwrite, it produces two headers on the wire.
+        merged = {k: v for k, v in (headers or {}).items() if k.lower() != "authorization"}
+        merged.update(self._auth(bearer) or {})
+        return await self._client.request(method, self._with_prefix(path), json=json, headers=merged or None)
 
     async def get(self, path: str, *, bearer: Optional[str] = None) -> httpx.Response:
         return await self._client.get(self._with_prefix(path), headers=self._auth(bearer))

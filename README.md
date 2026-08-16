@@ -333,6 +333,39 @@ tenant, single-use consumption in its own Redis — and refuses the whole token 
 fails. See ADR-0013 §11 and the gateway's `device_mcp_gateway/grants.py`. The provider scope
 vocabulary stops here: what travels is `tools:call` and `backup:*`, never `provider:invoke`.
 
+#### What an elevation actually reaches
+
+```
+POST /api/devices/{hostname}/tools/{tool}/invoke   {"arguments": {…}}   provider:invoke
+GET  /api/admin/backup                                                  provider:credentials
+POST /api/admin/backup       {"kind": "portable", "passphrase": "…"}    provider:credentials
+POST /api/admin/restore      {"archive": {…}, "dry_run": true}          provider:credentials
+```
+
+Three rules on these routes, none of which is visible from the route list:
+
+- **The step-up credential is relayed only here.** Elsewhere a provider session presents its
+  ordinary token, even while holding a live elevation. The gateway consumes a single-use
+  grant on *first validation of the token*, so a background read carrying it would burn the
+  grant on a device list and leave the operation the operator elevated for refused. The
+  closed list of routes that may receive it is asserted in `tests/test_elevated_routes.py`.
+- **Tool invocation is one blocking call, not an MCP transport.** The route runs
+  `initialize` → `tools/call` → teardown and returns the result. That forecloses incremental
+  progress for a long-running call — an accepted trade, because the gateway's dispatch
+  contract is one request and one response, so no transport can report progress today.
+- **`/api/admin/*` refuses the local break-glass login**, whatever its role. A password
+  session proxies with the stack's *admin* gateway token, which already holds every
+  `backup:*` scope — so admitting one there is a complete credential dump with no step-up
+  behind it. Tool invocation stays open to break-glass: repairing a broken fleet is what
+  that login is for. **A lite/home deployment therefore has no backup or restore in the
+  console** — it runs SSO off, so a password session is all it has. That is deliberate:
+  lite is a home test bed, and the gateway's own `/v1/admin/backup` is still reachable with
+  the API key.
+
+A restore with no `dry_run` in the body **is** a dry run: the BFF sets it explicitly rather
+than relying on the gateway's default, so the destructive direction is not reachable by
+omission through two layers.
+
 ## Endpoint fingerprint — three dimensions, never one badge
 
 The gateway pins what a device *is* along three dimensions, and the UI is required to keep
