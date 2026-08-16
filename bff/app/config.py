@@ -100,6 +100,19 @@ class Settings:
     # Claim carrying the IdP-minted grant. Mirrors the gateway's per-issuer `grant_claim`;
     # keep the two in step or the gateway will not find what the IdP sent.
     provider_grant_claim: str = "mcp_grant"
+    # Scopes the step-up must request so the IdP knows WHICH grant to mint (ADR-0013 §11c).
+    # A template over `{tenant}` and `{grant_class}`, producing one or more space-separated
+    # scopes — e.g. "mcp:tenant:{tenant} mcp:grant:{grant_class}", which needs one
+    # registered scope per tenant plus one per class rather than one per combination.
+    #
+    # This exists because measurement killed the assumption behind §11b: no IdP will mint a
+    # grant from an authorization request that never said what to mint. The request has to
+    # name it, and a scope is the only carrier that survives to issuance.
+    #
+    # Empty disables the elevated grants, like `provider_step_up_acr` above: a step-up that
+    # cannot say what it is for comes back with no grant claim, and failing at the point of
+    # request beats failing after sending an operator through a second factor for nothing.
+    provider_step_up_scope_template: str = ""
 
     # --- Audit (gateway F-57 model, ADR-0013 §9/§10) --------------------------
     # File the hash-chained audit is appended to. Empty → records still chain and still
@@ -215,6 +228,7 @@ def load_settings() -> Settings:
         provider_step_up_acr=os.getenv("PROVIDER_STEP_UP_ACR", "").strip(),
         provider_step_up_redirect_url=os.getenv("PROVIDER_STEP_UP_REDIRECT_URL", "").strip(),
         provider_grant_claim=os.getenv("PROVIDER_GRANT_CLAIM", "mcp_grant").strip() or "mcp_grant",
+        provider_step_up_scope_template=os.getenv("PROVIDER_STEP_UP_SCOPE_TEMPLATE", "").strip(),
         # Audit. AUDIT_PATH defaults under BFF_STATE_DIR when the lite bootstrap is in
         # play, so a home box gets a durable, re-seedable chain without configuring one.
         audit_path=os.getenv("AUDIT_PATH", ""),

@@ -269,6 +269,58 @@ ELEVATED_GRANT_SPECS: dict[str, ElevatedSpec] = {
 }
 
 
+#: Provider scope → the short class name a scope template interpolates. Explicit rather
+#: than derived by stripping ``provider:``, because the value ends up in an IdP's registered
+#: scope names: it is an external contract, and it should change only on purpose.
+GRANT_CLASS_NAMES: dict[str, str] = {
+    SCOPE_PROVIDER_INVOKE: "invoke",
+    SCOPE_PROVIDER_CREDENTIALS: "credentials",
+}
+
+
+def step_up_scopes(template: str, *, tenant: str, provider_scope: str) -> tuple[str, ...]:
+    """Build the scopes that tell the IdP *which* grant to mint (ADR-0013 §11c).
+
+    §11b assumed the IdP could mint a grant from a request that named neither the tenant nor
+    the class. Measurement against real IdPs killed that: a scope is the only carrier that
+    survives to issuance, so the request has to say it out loud.
+
+    The template is deployment config because scope names are registered in someone else's
+    IdP. Splitting the result on whitespace lets one setting express either factoring — one
+    scope per tenant plus one per class, or a single combined scope — without this code
+    having an opinion about which.
+
+    Note what this does **not** do: it does not authorize anything. The scope selects, and
+    an IdP grants a registered scope to whoever asks. The gateway intersects the resulting
+    tenant against the operator's directory entitlement, and that is the actual bound (§11c).
+    """
+    if not template:
+        raise GrantError(
+            "no step-up scope template is configured, so the authorization request cannot "
+            "tell the IdP which grant to mint and would come back with no grant claim "
+            "(ADR-0013 §11c)"
+        )
+    if not isinstance(tenant, str) or not _TENANT_RE.match(tenant):
+        # Interpolating into a space-delimited scope string: a tenant carrying whitespace
+        # would inject an additional scope. `_TENANT_RE` already forbids it, and this
+        # re-check keeps that guarantee local to the place that depends on it rather than
+        # inherited from a caller that might change.
+        raise GrantError(f"tenant {tenant!r} is not a usable tenant id")
+    grant_class = GRANT_CLASS_NAMES.get(provider_scope)
+    if grant_class is None:
+        raise GrantError(f"{provider_scope!r} is not an elevated grant class")
+    try:
+        rendered = template.format(tenant=tenant, grant_class=grant_class)
+    except (KeyError, IndexError) as exc:
+        raise GrantError(
+            f"the step-up scope template names {exc} — only {{tenant}} and {{grant_class}} " f"are available"
+        ) from None
+    scopes = tuple(rendered.split())
+    if not scopes:
+        raise GrantError("the step-up scope template rendered to nothing")
+    return scopes
+
+
 @dataclass(frozen=True)
 class ElevatedGrant:
     """A verified step-up, and the token it produced.
@@ -360,6 +412,13 @@ def _check_claim(claim: Any, *, tenant: str, spec: ElevatedSpec) -> str:
     repeated — it is the BFF confirming that what came back matches what it requested,
     *before* it writes an audit record saying so. A record asserting a step-up the writer
     never confirmed is worse than no record.
+
+    §11c sharpens what this is *not*. The tenant here was chosen by this process, so the
+    comparison is a round-trip check — "the IdP answered the question I asked" — and it
+    establishes no authority whatsoever. What makes the tenant legitimate is the gateway
+    intersecting it against the operator's directory entitlement, which is deliberately on
+    the other side of the wire: this side picked the value, and a check by the side that
+    picked it proves only that it did not change its mind.
     """
     if not isinstance(claim, dict):
         raise GrantError("the step-up produced no usable grant claim")

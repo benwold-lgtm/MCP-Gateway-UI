@@ -29,6 +29,7 @@ from ..grants import (
     drop_elevated_grant,
     elevated_spec,
     release_act_on_tenant,
+    step_up_scopes,
 )
 from ..oidc import make_pkce_pair
 from ..security import SCOPE_PROVIDER_ADMIN, require_provider_scope
@@ -208,6 +209,10 @@ async def elevate(tenant: str, body: ElevateBody, request: Request, session=_pro
                 f"an elevated grant requires a live act-on-tenant grant for {tenant!r}; "
                 f"authorize the act first (ADR-0013 §4/§8)"
             )
+        # §11c: resolved here rather than at the redirect, so a deployment that has not
+        # configured the template is refused *before* an operator is sent through a second
+        # factor for a step-up that could only ever come back without a grant claim.
+        scopes = step_up_scopes(settings.provider_step_up_scope_template, tenant=tenant, provider_scope=body.scope)
     except GrantError as exc:
         await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
@@ -237,6 +242,7 @@ async def elevate(tenant: str, body: ElevateBody, request: Request, session=_pro
         # out — reusing the session it was stolen with would defeat the point.
         max_age=0,
         redirect_uri=settings.provider_step_up_redirect_url,
+        extra_scopes=scopes,
     )
     _ = spec  # validated above; the spec itself is re-derived from the transaction
     return {"authorization_url": url}

@@ -44,8 +44,10 @@ The hazards, each of which the obvious implementation walks into:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 os.environ.setdefault("UI_ADMIN_PASSWORD", "admin-pw")
 os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
@@ -63,6 +65,7 @@ from app.grants import (  # noqa: E402
     record_elevated_grant,
     release_act_on_tenant,
     spend_elevated_grant,
+    step_up_scopes,
 )
 from app.main import create_app  # noqa: E402
 from app.security import (  # noqa: E402
@@ -438,6 +441,12 @@ def _console_env(monkeypatch, tmp_path, **over) -> None:
         "PROVIDER_STEP_UP_REDIRECT_URL",
         over.get("redirect", "https://console.example.com/auth/provider/step-up/callback"),
     )
+    # §11c: the scopes that tell the IdP which grant to mint. Factored as one scope per
+    # tenant plus one per class, which is the shape that scales.
+    monkeypatch.setenv(
+        "PROVIDER_STEP_UP_SCOPE_TEMPLATE",
+        over.get("scope_template", "mcp:tenant:{tenant} mcp:grant:{grant_class}"),
+    )
 
 
 class _FakeIdP:
@@ -455,8 +464,19 @@ class _FakeIdP:
         self.auth_time = auth_time
         self.asked = {}
 
-    async def authorization_url(self, *, state, nonce, challenge, acr_values=None, max_age=None, redirect_uri=None):
-        self.asked = {"state": state, "acr_values": acr_values, "max_age": max_age, "redirect_uri": redirect_uri}
+    async def authorization_url(
+        self, *, state, nonce, challenge, acr_values=None, max_age=None, redirect_uri=None, extra_scopes=None
+    ):
+        self.asked = {
+            "state": state,
+            "acr_values": acr_values,
+            "max_age": max_age,
+            "redirect_uri": redirect_uri,
+            # §11c: what the request actually told the IdP to mint. Recorded because the
+            # gap this closes was invisible for exactly as long as nothing looked at it —
+            # the double answered with a hardcoded tenant no matter what it was asked.
+            "extra_scopes": tuple(extra_scopes or ()),
+        }
         return f"https://provider-idp.example.com/authorize?state={state}"
 
     async def exchange_code(self, *, code, verifier, redirect_uri=None):
@@ -485,6 +505,15 @@ class _FakeIdP:
         if not self.declines_step_up:
             claims["acr"] = self.acr
         return claims
+
+
+@pytest.fixture
+def console_no_scope_template(monkeypatch, tmp_path):
+    """A BFF configured for step-ups except for the §11c scope template."""
+    _console_env(monkeypatch, tmp_path, scope_template="")
+    app = create_app()
+    with TestClient(app) as c:
+        yield c, app
 
 
 @pytest.fixture
@@ -552,6 +581,139 @@ def test_the_step_up_request_asks_for_the_configured_acr(console):
     _elevate(client, app, idp)
     assert idp.asked["acr_values"] == STEP_UP_ACR
     assert idp.asked["max_age"] == 0
+
+
+# --- §11c: the request has to say WHICH grant to mint --------------------------
+#
+# §11b assumed the IdP could mint a grant from a request naming neither the tenant nor the
+# class. Measurement against two real IdPs killed that: nothing survives to issuance except
+# the requested scopes. The gap was invisible here for as long as this file's double
+# answered with a hardcoded tenant no matter what it was asked — so these tests assert on
+# what the IdP was *told*, which is the only thing a double cannot fake on our behalf.
+
+
+def test_the_step_up_request_names_the_tenant_and_the_class(console):
+    """Without this the IdP is being asked to guess, and a real one returns no claim."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    idp = _FakeIdP()
+    _elevate(client, app, idp)
+    assert idp.asked["extra_scopes"] == ("mcp:tenant:acme", "mcp:grant:invoke")
+
+
+def test_the_requested_class_scope_follows_the_grant_being_asked_for(console):
+    """A credentials elevation must not ask for an invoke grant. Same shape as the
+    gateway-side mapping: the two classes differ in single-use and lifetime, so being
+    handed the wrong one is not a narrower grant, it is a different one."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    idp = _FakeIdP(
+        claim={
+            "id": "g-cred",
+            "tenant": TENANT,
+            "scopes": list(elevated_spec(SCOPE_PROVIDER_CREDENTIALS).gateway_scopes),
+        }
+    )
+    _elevate(client, app, idp, scope=SCOPE_PROVIDER_CREDENTIALS)
+    assert idp.asked["extra_scopes"] == ("mcp:tenant:acme", "mcp:grant:credentials")
+
+
+def test_a_bff_with_no_scope_template_refuses_before_the_round_trip(console_no_scope_template):
+    """Fail closed, and fail *early*. A step-up that cannot name its grant comes back
+    without one, so the alternative is walking an operator through a second factor to
+    reach a refusal that was knowable before the redirect was built."""
+    client, app = console_no_scope_template
+    _seed_session(client, app, _acting_live())
+    idp = _FakeIdP()
+    app.state.provider_oidc = idp
+    resp = client.post(
+        f"/provider/tenants/{TENANT}/elevate",
+        json={"scope": SCOPE_PROVIDER_INVOKE, "justification": WHY},
+    )
+    assert resp.status_code == 400
+    assert "scope template" in resp.json()["detail"]
+    # ...and the IdP was never asked, which is the point of failing early.
+    assert idp.asked == {}
+
+
+def test_the_step_up_scopes_are_added_to_the_configured_ones_not_substituted():
+    """Replacing rather than appending would drop `openid`, and with it the id_token this
+    flow verifies — a step-up that silently stops being verifiable."""
+    from app.oidc import OIDCClient
+
+    class _S:
+        oidc_issuer = "https://idp.example.com"
+        oidc_client_id = "cid"
+        oidc_client_secret = ""
+        oidc_redirect_url = "https://console.example.com/cb"
+        oidc_scopes = "openid profile email"
+
+    client = OIDCClient(_S())
+    client._meta = {
+        "authorization_endpoint": "https://idp.example.com/authorize",
+        "token_endpoint": "https://idp.example.com/token",
+        "jwks_uri": "https://idp.example.com/jwks",
+    }
+    url = asyncio.run(
+        client.authorization_url(state="s", nonce="n", challenge="c", extra_scopes=("mcp:tenant:acme", "openid"))
+    )
+    scope = parse_qs(urlparse(url).query)["scope"][0].split()
+    assert "openid" in scope and "profile" in scope
+    assert "mcp:tenant:acme" in scope
+    assert scope.count("openid") == 1, "a scope already requested must not be repeated"
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        ("mcp:tenant:{tenant} mcp:grant:{grant_class}", ("mcp:tenant:acme", "mcp:grant:invoke")),
+        ("mcp:grant:{tenant}:{grant_class}", ("mcp:grant:acme:invoke",)),
+        ("  spaced:{tenant}   ", ("spaced:acme",)),
+    ],
+)
+def test_the_template_expresses_either_factoring(template, expected):
+    """One scope per tenant plus one per class, or one combined scope. The deployment
+    decides; scope names are registered in someone else's IdP."""
+    assert step_up_scopes(template, tenant=TENANT, provider_scope=SCOPE_PROVIDER_INVOKE) == expected
+
+
+def test_an_unconfigured_template_says_the_deployment_is_not_set_up():
+    """The unset case gets its own message, and it needs asserting: a blank template also
+    renders to nothing, so the later "rendered to nothing" guard catches it too. With a
+    loose assertion the explicit early check could be deleted and nothing would notice —
+    which is what mutation testing showed. Its value is the diagnosis it gives an operator,
+    so the diagnosis is what the test pins."""
+    with pytest.raises(GrantError, match="which grant to mint"):
+        step_up_scopes("", tenant=TENANT, provider_scope=SCOPE_PROVIDER_INVOKE)
+
+
+def test_a_template_of_only_whitespace_is_refused_as_rendering_nothing():
+    """A different fault — a configured template that produces no scopes — and so a
+    different message. Settings strip the env var, so this arrives only from a caller."""
+    with pytest.raises(GrantError, match="rendered to nothing"):
+        step_up_scopes("   ", tenant=TENANT, provider_scope=SCOPE_PROVIDER_INVOKE)
+
+
+def test_a_template_naming_an_unknown_placeholder_is_refused():
+    """Better a refusal naming the placeholder than a KeyError escaping as a 500."""
+    with pytest.raises(GrantError, match="only"):
+        step_up_scopes("mcp:{whatever}", tenant=TENANT, provider_scope=SCOPE_PROVIDER_INVOKE)
+
+
+@pytest.mark.parametrize("bad_tenant", ["a b", "acme other", "", "../etc", "x" * 200])
+def test_a_tenant_that_could_inject_a_second_scope_is_refused(bad_tenant):
+    """Scopes are space-delimited, so a tenant carrying whitespace would append a scope of
+    the caller's choosing to the authorization request. Re-checked here rather than relied
+    on from the caller, because this is the code whose correctness depends on it."""
+    with pytest.raises(GrantError):
+        step_up_scopes("mcp:tenant:{tenant}", tenant=bad_tenant, provider_scope=SCOPE_PROVIDER_INVOKE)
+
+
+def test_a_non_elevated_provider_scope_has_no_class_name():
+    """`provider:admin` is an everyday scope, not a grant class — there is no step-up to
+    request for it, and no class name to interpolate."""
+    with pytest.raises(GrantError, match="not an elevated grant class"):
+        step_up_scopes("mcp:grant:{grant_class}", tenant=TENANT, provider_scope="provider:admin")
 
 
 def test_an_idp_that_declines_the_step_up_gets_no_elevation(console):
