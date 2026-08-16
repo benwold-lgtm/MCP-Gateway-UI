@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hmac
 import time
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 from fastapi import HTTPException, Request
 
@@ -186,6 +186,84 @@ async def _persist_session(request: Request, session: dict) -> None:
     sessions.cache(request, session)
 
 
+#: Where :func:`require_elevated` records the class a route needs. Read by
+#: :func:`upstream_bearer` and by the relay's retry decision, and set nowhere else.
+STATE_ELEVATED_SCOPE = "elevated_scope"
+
+
+def elevated_scope_wanted(request: Any) -> Optional[str]:
+    """The elevated class this request declared it needs, or ``None``.
+
+    ``None`` is the answer for every route that did not ask, which is what keeps the
+    elevated credential off routine traffic. A route that *should* have asked and did not
+    relays the ordinary token and is refused by the gateway — the safe direction, and a
+    loud one.
+    """
+    return getattr(getattr(request, "state", None), STATE_ELEVATED_SCOPE, None)
+
+
+def require_elevated(provider_scope: str):
+    """Dependency for a route whose whole purpose is an elevated capability (§5a/§8/§11).
+
+    Two jobs, and **neither is the authorization boundary** — the gateway verifies the grant
+    claim on the token it is handed, and that check is deliberately not reproducible here
+    (§11c: the side that chooses a value cannot be the side that authorizes it):
+
+    * **Mark the request** so :func:`upstream_bearer` hands over the step-up token. Without
+      a mark the elevated credential is never relayed at all.
+    * **Refuse early** when a provider session holds no matching elevation, so an operator
+      is told to elevate instead of collecting an opaque 401 from upstream — and so a
+      single-use grant is not spent on a request that was going to fail anyway.
+
+    Tenant-plane and password sessions pass straight through: they have no elevation to
+    hold, and their authority on these routes is decided by the gateway and by the role gate
+    beside this dependency respectively.
+    """
+
+    async def _dep(request: Request) -> None:
+        setattr(request.state, STATE_ELEVATED_SCOPE, provider_scope)
+        sess = await current_session(request)
+        if session_plane(sess) != PLANE_PROVIDER:
+            return
+        from .grants import active_elevated_grant, active_grant
+
+        now = time.time()
+        act = active_grant(sess, now=now)
+        held = active_elevated_grant(sess, tenant=act.tenant, now=now) if act is not None else None
+        if held is None or held.provider_scope != provider_scope:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"This operation needs a live {provider_scope!r} elevation for this tenant. "
+                    "Elevations are per-operation and step-up backed (ADR-0013 §8); acquire one "
+                    "and retry."
+                ),
+            )
+
+    return _dep
+
+
+async def deny_password_session(request: Request) -> None:
+    """Refuse the local break-glass login on routes that hand back credentials.
+
+    Password sessions proxy with the stack's **admin** gateway token, which carries every
+    `backup:*` scope. So on a backup route the BFF's role gate is not one control among
+    several — it is the only one, and admitting `admin` there would produce a complete
+    credential dump with no step-up, no elevation and nothing in either audit chain naming a
+    grant. Break-glass exists to repair a broken fleet, not to export one.
+    """
+    sess = await current_session(request)
+    if sess and sess.get("kind") == "password":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "The local break-glass login cannot export or restore backups: it proxies with "
+                "the stack's admin token, so the request would carry every credential scope with "
+                "no step-up behind it. Sign in through the IdP."
+            ),
+        )
+
+
 async def upstream_bearer(request: Request) -> Optional[str]:
     """The token the BFF should present to the gateway for this request.
 
@@ -208,8 +286,24 @@ async def upstream_bearer(request: Request) -> Optional[str]:
         now = time.time()
         act = active_grant(sess, now=now)
         if act is not None:
+            # **Only routes that asked for it get the elevated credential.** Handing it to
+            # every relayed request while an elevation is live looks harmless — the step-up
+            # token is a strict superset — but the gateway consumes a single-use grant on
+            # *first validation of the token*, whatever route it was for. So one background
+            # `GET /api/devices` between the elevation and the operation it was raised for
+            # burns the grant on a device list, and the real call is refused. The mark is
+            # set by `require_elevated`, which is the only thing that can set it.
+            wanted = elevated_scope_wanted(request)
             elevated = active_elevated_grant(sess, tenant=act.tenant, now=now)
-            if elevated is not None:
+            # **One comparison carries both properties.** It has to match the class, because
+            # an invoke elevation cannot pay for a credentials route — the two differ in
+            # lifetime and single-use, so the wrong one is a different grant, not a narrower
+            # one. And a route that never declared a class compares against `None`, which no
+            # real grant equals, so the same test is what keeps the credential off routine
+            # traffic. Written as two guards first; mutation testing showed each one masked
+            # the other, so the defect this exists to prevent could return with every
+            # mutation still killed. Neither was individually falsifiable. This is.
+            if elevated is not None and elevated.provider_scope == wanted:
                 # The step-up token carries the `mcp_grant` claim the gateway verifies, and
                 # the gateway *unions* the granted scopes onto the principal's own — so this
                 # token is a strict superset of the ordinary one and there is no per-route

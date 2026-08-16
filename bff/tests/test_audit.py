@@ -273,7 +273,7 @@ def test_a_mutation_through_the_api_is_recorded(tmp_path, monkeypatch):
 
     app = _wired_app(tmp_path, monkeypatch)
 
-    async def _r(method, path, json=None, bearer=None):
+    async def _r(method, path, json=None, bearer=None, headers=None):
         return httpx.Response(200, json={"status": "removed"})
 
     with TestClient(app) as c:

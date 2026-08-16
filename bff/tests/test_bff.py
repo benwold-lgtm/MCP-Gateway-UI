@@ -32,7 +32,7 @@ def _fake_get(payload, status=200):
 
 
 def _fake_request(payload, status=200):
-    async def _r(method, path, json=None, bearer=None):
+    async def _r(method, path, json=None, bearer=None, headers=None):
         return httpx.Response(status, json=payload)
 
     return _r
@@ -144,7 +144,7 @@ def test_admin_can_register(app_client):
 
 
 def _capture_request(seen, payload, status=200):
-    async def _r(method, path, json=None, bearer=None):
+    async def _r(method, path, json=None, bearer=None, headers=None):
         seen.append((method, path, json))
         return httpx.Response(status, json=payload)
 
@@ -508,7 +508,7 @@ def test_oidc_session_authz_delegated_to_gateway(oidc_client):
     c, app = oidc_client
     seen = []
 
-    async def _r(method, path, json=None, bearer=None):
+    async def _r(method, path, json=None, bearer=None, headers=None):
         seen.append((method, path, bearer))
         return httpx.Response(200, json={"status": "registered"})
 

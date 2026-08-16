@@ -19,12 +19,26 @@ from fastapi.responses import JSONResponse
 
 from ..audit import outcome_for, record_request
 from ..relay import relay_get, relay_request
-from ..security import require_role
+from ..security import (
+    SCOPE_PROVIDER_CREDENTIALS,
+    SCOPE_PROVIDER_INVOKE,
+    deny_password_session,
+    require_elevated,
+    require_role,
+)
 
 router = APIRouter(prefix="/api", tags=["api"])
 
 _any = Depends(require_role())  # any authenticated session
 _admin = Depends(require_role("admin"))
+# Routes whose whole purpose is an elevated capability (ADR-0013 §5a/§8). The dependency
+# marks the request so the elevated credential is relayed *only* here — see
+# `security.require_elevated`. The closed list of routes carrying these is asserted in
+# `tests/test_elevated_routes.py`; adding one to a route that does not need it silently
+# spends single-use grants on routine traffic.
+_needs_invoke = Depends(require_elevated(SCOPE_PROVIDER_INVOKE))
+_needs_credentials = Depends(require_elevated(SCOPE_PROVIDER_CREDENTIALS))
+_no_break_glass = Depends(deny_password_session)
 
 # Upper bound on the recent-logs panel page size. The panel shows a tail, not a bulk
 # export, so cap the caller-supplied limit to keep one request from pulling an unbounded
@@ -216,3 +230,137 @@ async def logs(
     params = {"query": query, "limit": capped, "start": start_ns, "end": end_ns, "direction": "backward"}
     async with httpx.AsyncClient(base_url=settings.loki_url, timeout=10.0) as client:
         return _passthrough(await client.get("/loki/api/v1/query_range", params=params))
+
+
+# --- Tool invocation (ADR-0013 §8 provider:invoke) ----------------------------
+#
+# Not a proxy of `/v1/devices/{h}/mcp`. That path is the full MCP streamable transport:
+# `initialize` mints the session id server-side, and a sessionless call carrying an `id` is
+# refused with 400. A bare `tools/call` cannot be forwarded, so the BFF runs the handshake
+# and hands back the result on its own.
+#
+# **What this shape gives up, deliberately:** collapsing the exchange into one blocking
+# response means no incremental progress for a long-running call. Measured before choosing
+# it — the gateway's dispatch contract is `exchange() -> dict | None`, one request and one
+# response, and inbound `notifications/*` return None. No transport can surface progress
+# today, so the console loses nothing a transparent proxy would have given it. Revisit if
+# the gateway grows a streaming result channel; this route then gains a streaming sibling
+# rather than being replaced.
+
+_MCP_ACCEPT = "application/json, text/event-stream"
+_MCP_SESSION_HEADER = "Mcp-Session-Id"
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+async def _mcp(request: Request, hostname: str, payload: dict, session_id: str | None = None) -> httpx.Response:
+    headers = {"Accept": _MCP_ACCEPT}
+    if session_id:
+        headers[_MCP_SESSION_HEADER] = session_id
+        headers["MCP-Protocol-Version"] = _MCP_PROTOCOL_VERSION
+    return await relay_request(request, "POST", f"/devices/{hostname}/mcp", json=payload, headers=headers)
+
+
+@router.post("/devices/{hostname}/tools/{tool}/invoke", dependencies=[_admin, _needs_invoke])
+async def invoke_tool(hostname: str, tool: str, request: Request) -> JSONResponse:
+    """Call one tool on one device and return its result.
+
+    Three upstream calls — initialize, tools/call, delete — presented as one. The teardown
+    is best effort *and does not need to succeed*: gateway MCP sessions carry their own
+    24-hour expiry in distributed mode, so a BFF that dies mid-sequence leaks one Redis hash
+    for at most a day rather than a session forever.
+    """
+    body = await _optional_body(request)
+    arguments = (body or {}).get("arguments") if isinstance(body, dict) else None
+    if arguments is not None and not isinstance(arguments, dict):
+        return JSONResponse(status_code=400, content={"detail": "'arguments' must be an object"})
+
+    opened = await _mcp(
+        request,
+        hostname,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": _MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "mcp-gateway-console", "version": "1"},
+            },
+        },
+    )
+    if opened.status_code >= 400:
+        # Pass the handshake's own refusal through unchanged. It carries the reason — an
+        # unapproved fingerprint, an inactive pod, a refused elevation — and rewriting it
+        # into "could not invoke" would cost the operator the one useful sentence.
+        return await _audited(request, opened, "tool.invoke", target=f"{hostname}/{tool}")
+
+    session_id = opened.headers.get(_MCP_SESSION_HEADER)
+    if not session_id:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "the gateway accepted the MCP handshake without returning a session id"},
+        )
+
+    try:
+        called = await _mcp(
+            request,
+            hostname,
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments or {}}},
+            session_id=session_id,
+        )
+    finally:
+        try:
+            await relay_request(
+                request,
+                "DELETE",
+                f"/devices/{hostname}/mcp",
+                headers={"Accept": _MCP_ACCEPT, _MCP_SESSION_HEADER: session_id},
+            )
+        except Exception:  # noqa: BLE001 - teardown must never mask the call's own outcome
+            pass
+
+    return await _audited(request, called, "tool.invoke", target=f"{hostname}/{tool}")
+
+
+# --- Backup and restore (ADR-0013 §5b/§8 provider:credentials) ----------------
+#
+# `_no_break_glass` on all three: a password session proxies with the stack's admin token,
+# which holds every `backup:*` scope, so admitting one here is a complete credential dump
+# with no step-up behind it and nothing in either audit chain naming a grant.
+
+
+@router.get("/admin/backup", dependencies=[_any, _no_break_glass, _needs_credentials])
+async def export_backup(request: Request, include_deadletters: bool = False) -> JSONResponse:
+    """The ciphertext archive. No secret in the request, so a GET is safe here."""
+    resp = await relay_get(request, f"/admin/backup?include_deadletters={str(include_deadletters).lower()}")
+    return await _audited(request, resp, "backup.export", target="registry")
+
+
+@router.post("/admin/backup", dependencies=[_any, _no_break_glass, _needs_credentials])
+async def export_backup_with_body(request: Request) -> JSONResponse:
+    """Either archive kind. The passphrase for a portable export travels in the body — never
+    a query string, which would be written to every access log between here and the gateway."""
+    body = await _optional_body(request)
+    resp = await relay_request(request, "POST", "/admin/backup", json=body if isinstance(body, dict) else {})
+    kind = (body or {}).get("kind") if isinstance(body, dict) else None
+    action = "backup.export_portable" if kind == "portable" else "backup.export"
+    # The archive and any passphrase are deliberately absent from the audit detail: this
+    # chain records that an export happened and by whom, never what it contained.
+    return await _audited(request, resp, action, target="registry")
+
+
+@router.post("/admin/restore", dependencies=[_any, _no_break_glass, _needs_credentials])
+async def restore_backup(request: Request) -> JSONResponse:
+    """Replay an archive. **A request that does not say otherwise is a dry run.**
+
+    The gateway defaults `dry_run` to true itself, and this sets it anyway rather than
+    relying on that. The destructive direction must not be reachable by omission through two
+    layers, and a thin proxy quietly behaving differently from the system it wraps is a gap
+    this project has shipped twice before. Divergence here can only fail safe.
+    """
+    body = await _optional_body(request)
+    payload = dict(body) if isinstance(body, dict) else {}
+    payload["dry_run"] = bool(payload.get("dry_run", True))
+    resp = await relay_request(request, "POST", "/admin/restore", json=payload)
+    action = "backup.restore" if not payload["dry_run"] else "backup.restore_preview"
+    return await _audited(request, resp, action, target="registry")
