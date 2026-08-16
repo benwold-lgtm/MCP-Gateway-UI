@@ -169,6 +169,23 @@ async def current_role(request: Request) -> Optional[str]:
     return None
 
 
+async def _persist_session(request: Request, session: dict) -> None:
+    """Write a mutated session back to the store, under the store's own per-session lock.
+
+    Used where a *read* path has a side effect — spending a single-use elevation. Kept
+    small and local rather than shared with the provider router, because the two have
+    different failure expectations: a route that cannot persist should fail, and this one
+    must not turn a data-plane read into a 500 after the grant has already been handed out.
+    """
+    sid = sessions.current_sid(request)
+    store = getattr(getattr(request.app, "state", None), "sessions", None)
+    if not sid or store is None:  # pragma: no cover - a session-gated path always has both
+        return
+    async with store.lock(sid):
+        await store.set(sid, session)
+    sessions.cache(request, session)
+
+
 async def upstream_bearer(request: Request) -> Optional[str]:
     """The token the BFF should present to the gateway for this request.
 
@@ -186,6 +203,27 @@ async def upstream_bearer(request: Request) -> Optional[str]:
     """
     sess = await current_session(request)
     if session_plane(sess) == PLANE_PROVIDER:
+        from .grants import active_elevated_grant, active_grant, spend_elevated_grant
+
+        now = time.time()
+        act = active_grant(sess, now=now)
+        if act is not None:
+            elevated = active_elevated_grant(sess, tenant=act.tenant, now=now)
+            if elevated is not None:
+                # The step-up token carries the `mcp_grant` claim the gateway verifies, and
+                # the gateway *unions* the granted scopes onto the principal's own — so this
+                # token is a strict superset of the ordinary one and there is no per-route
+                # choice to get wrong.
+                #
+                # Spending happens here, at the moment the credential is handed out, because
+                # that is what the gateway's own consumption measures: it consumes on first
+                # validation, so a second request bearing the same token is refused there.
+                # Dropping it here keeps the BFF's audit honest about "one operation"
+                # instead of leaving the bound entirely downstream.
+                spent = spend_elevated_grant(sess)
+                if spent is not None:
+                    await _persist_session(request, sess)
+                return elevated.access_token
         token = sess.get("access_token") if sess else None
         if not token:
             raise HTTPException(

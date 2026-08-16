@@ -19,8 +19,19 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+import secrets
+
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
-from ..grants import GrantError, active_grant, authorize_act_on_tenant, release_act_on_tenant
+from ..grants import (
+    GrantError,
+    active_grant,
+    authorize_act_on_tenant,
+    drop_elevated_grant,
+    elevated_spec,
+    release_act_on_tenant,
+    step_up_scopes,
+)
+from ..oidc import make_pkce_pair
 from ..security import SCOPE_PROVIDER_ADMIN, require_provider_scope
 from .. import sessions
 
@@ -31,6 +42,17 @@ _provider_admin = Depends(require_provider_scope(SCOPE_PROVIDER_ADMIN))
 
 class AuthorizeBody(BaseModel):
     justification: str = ""
+
+
+class ElevateBody(BaseModel):
+    scope: str = ""
+    justification: str = ""
+
+
+#: Where the step-up transaction lives in the signed cookie session. Distinct from the
+#: login transaction key so a step-up in flight cannot be completed by a login callback or
+#: the reverse — the plane's own lesson, applied one level in.
+STEP_UP_TX = "provider_step_up_tx"
 
 
 def _public(grant) -> dict:
@@ -134,3 +156,110 @@ async def release(request: Request, session=_provider_admin) -> dict:
             reason="released",
         )
     return {"released": held.tenant if held else None}
+
+
+# --- the two elevated grants (ADR-0013 §5a/§8/§11b) ---------------------------
+#
+# Two routes, because a step-up is a round trip through the IdP: one to start it, one to
+# receive what came back. The verification that matters happens in the second — the first
+# only *asks*, and asking proves nothing.
+
+
+def step_up_ready(request: Request):
+    """The provider RP and step-up context, or a 404.
+
+    404 rather than 500: with no configured `acr` there is no context to verify, so the
+    elevated grants are not *broken* here, they are not offered. Offering them
+    unverifiable is the state §11b's constraint exists to prevent.
+    """
+    settings = request.app.state.settings
+    oidc = request.app.state.provider_oidc
+    if oidc is None or not settings.provider_step_up_acr or not settings.provider_step_up_redirect_url:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Elevated grants are not available on this BFF: PROVIDER_STEP_UP_ACR and "
+                "PROVIDER_STEP_UP_REDIRECT_URL must both be set so the step-up can be verified "
+                "(ADR-0013 §11b)."
+            ),
+        )
+    return oidc, settings
+
+
+@router.post("/tenants/{tenant}/elevate")
+async def elevate(tenant: str, body: ElevateBody, request: Request, session=_provider_admin) -> dict:
+    """Begin a step-up for one elevated grant on one tenant.
+
+    Everything checkable *before* the round trip is checked here, so an operator is not
+    sent through an MFA prompt only to be refused on the way back — and so a refusal is
+    recorded against the act that prompted it rather than against a returning callback.
+    """
+    oidc, settings = step_up_ready(request)
+    try:
+        spec = elevated_spec(body.scope)
+        justification = body.justification.strip()
+        if not justification:
+            raise GrantError(
+                "an elevated grant requires a justification (ADR-0013 §8) — it is the only record "
+                "of why a customer's hardware or credentials were reached"
+            )
+        act = active_grant(session, now=time.time())
+        if act is None or act.tenant != tenant:
+            raise GrantError(
+                f"an elevated grant requires a live act-on-tenant grant for {tenant!r}; "
+                f"authorize the act first (ADR-0013 §4/§8)"
+            )
+        # §11c: resolved here rather than at the redirect, so a deployment that has not
+        # configured the template is refused *before* an operator is sent through a second
+        # factor for a step-up that could only ever come back without a grant claim.
+        scopes = step_up_scopes(settings.provider_step_up_scope_template, tenant=tenant, provider_scope=body.scope)
+    except GrantError as exc:
+        await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    verifier, challenge = make_pkce_pair()
+    # The tenant, scope and justification ride in the server-side transaction, never in the
+    # URL: they are what the callback will record, and a callback that took them from the
+    # query string would let a redirected round trip re-aim the elevation at another tenant.
+    request.session[STEP_UP_TX] = {
+        "state": state,
+        "nonce": nonce,
+        "verifier": verifier,
+        "tenant": tenant,
+        "scope": body.scope,
+        "justification": justification,
+        "act": act.id,
+    }
+    url = await oidc.authorization_url(
+        state=state,
+        nonce=nonce,
+        challenge=challenge,
+        acr_values=settings.provider_step_up_acr,
+        # `max_age=0` asks the IdP to re-authenticate rather than reuse a live session.
+        # §8 spends a step-up here precisely because this is where a stolen session cashes
+        # out — reusing the session it was stolen with would defeat the point.
+        max_age=0,
+        redirect_uri=settings.provider_step_up_redirect_url,
+        extra_scopes=scopes,
+    )
+    _ = spec  # validated above; the spec itself is re-derived from the transaction
+    return {"authorization_url": url}
+
+
+@router.delete("/elevation")
+async def end_elevation(request: Request, session=_provider_admin) -> dict:
+    """Drop any elevation without ending the act beneath it."""
+    held = drop_elevated_grant(session)
+    await _persist(request, session)
+    if held is not None:
+        await record_request(
+            request,
+            "provider.elevate.release",
+            outcome=OUTCOME_SUCCESS,
+            target=held.tenant,
+            grant=held.id,
+            scope=held.provider_scope,
+        )
+    return {"released": held.id if held else None}
