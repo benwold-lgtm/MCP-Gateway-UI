@@ -61,6 +61,24 @@ def create_app() -> FastAPI:
             "Break-glass password login stays available in both."
         )
 
+    # Per-tenant subdomains are only an isolation boundary while the session cookie is
+    # scoped to the host that set it. A cookie on `.example.com` is sent to every tenant
+    # portal under it, so one tenant's console can carry another's session — and nothing
+    # breaks, which is what makes it worth a startup refusal rather than a warning.
+    #
+    # There is no supported value: the cookie is host-scoped by construction (no `domain` is
+    # passed to SessionMiddleware below), and a value equal to the host is merely redundant.
+    # The setting is read *only* so that the attempt is made here, where it can be refused,
+    # rather than at a reverse proxy where nothing in this process can see it.
+    if settings.cookie_domain:
+        raise RuntimeError(
+            f"COOKIE_DOMAIN is set ({settings.cookie_domain!r}). The BFF session cookie is "
+            "deliberately host-scoped: under per-tenant subdomains a parent-domain cookie is "
+            "sent to every tenant's console, so one tenant's browser session reaches another's "
+            "portal while everything appears to work. Unset it. If you are trying to share a "
+            "session across hostnames, that is the boundary this refuses to cross."
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:

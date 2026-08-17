@@ -72,6 +72,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `SESSION_REDIS_URL` | Shared server-side session store. **Required for >1 BFF replica** (the K8s overlay runs 2 — no session affinity); empty = in-memory store, right for a single replica |
 | `SESSION_TTL_SECONDS` | Server-side session lifetime (default `28800` = 8 h) |
 | `COOKIE_SECURE` | `true` behind TLS |
+| `COOKIE_DOMAIN` | **Refused.** Recognised only so that setting it fails loudly. The session cookie is host-scoped by construction, and per-tenant subdomains are an isolation boundary only while it stays that way — a cookie on `.example.com` is sent to every tenant's console beneath it, so one tenant's browser carries a session into another's portal with nothing appearing to break |
 | `LOGIN_MAX_FAILURES` / `LOGIN_WINDOW_SECONDS` | Break-glass password throttle: after this many failed attempts from one client IP within the window, further attempts get `429` until it rolls off (defaults `5` / `60`) |
 | `TRUST_FORWARDED_FOR` | `true` only when the BFF is behind a proxy that sets `X-Forwarded-For`, so the throttle keys on the real client IP rather than the proxy (default `false` — otherwise the header is spoofable) |
 | `OIDC_ENABLED` | Turn on federated SSO (Authorization Code + PKCE). See **Federated identity** below |
