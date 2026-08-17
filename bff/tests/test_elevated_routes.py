@@ -28,6 +28,7 @@ Three hazards, and none of them fails loudly:
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import time
 
@@ -112,11 +113,36 @@ def test_exactly_these_routes_ask_for_an_elevated_credential():
     assert _elevated_routes() == ELEVATED
 
 
+#: The download leg of the two-step export. Break-glass is refused here — it serves the very
+#: archive a credentials export produced — but it deliberately does **not** demand an
+#: elevation of its own: `provider:credentials` is single-use and was spent preparing the
+#: file, so requiring it again would make the download unreachable by the operator who just
+#: authorized it. Its authorization is the pending record in the session instead.
+#:
+#: Named explicitly rather than folded into a looser rule, so that adding a second
+#: break-glass-denied route without an elevation has to be a decision someone writes down.
+CREDENTIAL_BEARING_WITHOUT_ELEVATION = {("GET", "/api/admin/backup/download")}
+
+
 def test_the_credential_routes_are_the_ones_closed_to_break_glass():
-    """Derived from the same table rather than restated, so the two cannot drift: every
-    `provider:credentials` route refuses a password session, and no other route does."""
+    """Every route that can yield credential material refuses a password session, and no
+    other route does.
+
+    That set is the `provider:credentials` routes *plus* the download leg they produce a file
+    for. Derived from the table rather than restated, so the two cannot drift."""
     expected = {rt for rt, scope in ELEVATED.items() if scope == SCOPE_PROVIDER_CREDENTIALS}
+    expected |= CREDENTIAL_BEARING_WITHOUT_ELEVATION
     assert _password_denied_routes() == expected
+
+
+def test_the_download_leg_does_not_demand_a_second_elevation():
+    """The reason it is on the exception list, asserted rather than trusted.
+
+    A single-use grant is spent by the export. If this route also declared
+    `require_elevated`, every prepared archive would be undownloadable — and the failure
+    would arrive at the worst moment, after the operator had already spent their step-up.
+    """
+    assert ("GET", "/api/admin/backup/download") not in _elevated_routes()
 
 
 # --- rig -----------------------------------------------------------------------
@@ -552,3 +578,120 @@ async def test_relayed_transport_headers_cannot_displace_the_bearer(spelling):
     finally:
         await gw.aclose()
     assert seen["auth"] == ["Bearer THE-CHOSEN-TOKEN"]
+
+
+# --- the two-step export (ADR-0011 §8) -----------------------------------------
+#
+# One request cannot give an operator both the file and the passphrase that opens it: the
+# archive has to arrive as a native browser download, and a download cannot read the header
+# the gateway delivers the passphrase in. So: prepare, then claim.
+
+
+class _ExportUpstream(_Upstream):
+    """A gateway that mints a passphrase, as ADR-0011 has it."""
+
+    MINTED = "minted-passphrase-value-abc123"
+
+    async def request(self, method, path, json=None, bearer=None, headers=None):
+        self.calls.append({"method": method, "path": path, "json": json, "bearer": bearer})
+        return httpx.Response(
+            200, json={"kind": "portable", "devices": []}, headers={"X-Backup-Passphrase": self.MINTED}
+        )
+
+
+def _prepare(client) -> dict:
+    resp = client.post("/api/admin/backup", json={"kind": "portable"})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_preparing_an_export_reveals_the_passphrase_and_withholds_the_archive(console):
+    """The first leg returns no archive at all — only the secret, once, and a token."""
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+
+    body = _prepare(client)
+    assert body["passphrase"] == _ExportUpstream.MINTED
+    assert body["download_token"]
+    assert "devices" not in body and "archive" not in body
+
+
+def test_the_download_serves_a_file_not_a_json_body(console):
+    """§8: a native browser download, not a decoded blob. Content-Disposition is what makes
+    the browser save it rather than render it."""
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+
+    token = _prepare(client)["download_token"]
+    resp = client.get(f"/api/admin/backup/download?token={token}")
+    assert resp.status_code == 200
+    assert resp.headers["content-disposition"].startswith("attachment; filename=")
+    assert "devices" in resp.json()
+
+
+def test_the_archive_is_served_once(console):
+    """Claimed before it is served, so a replayed request finds nothing even if the first
+    response never reached the browser. Losing a download to a flaky network is recoverable
+    by exporting again; serving a credential dump twice is not."""
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+
+    token = _prepare(client)["download_token"]
+    assert client.get(f"/api/admin/backup/download?token={token}").status_code == 200
+    assert client.get(f"/api/admin/backup/download?token={token}").status_code == 404
+
+
+def test_the_passphrase_is_never_stored_beside_the_archive(console):
+    """The pending record is a blob this process cannot open — a portable archive is sealed
+    under the minted passphrase, which goes to the browser and nowhere else. That is what
+    makes parking it in the session for two minutes acceptable rather than a credential cache.
+    """
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+
+    _prepare(client)
+    stored = json.dumps(next(iter(app.state.sessions._data.values()))[1], default=str)
+    assert _ExportUpstream.MINTED not in stored
+
+
+def test_a_download_token_is_worthless_to_another_session(console):
+    """The token travels in a URL, which is logged by every proxy on the way. It is only ever
+    an index into *this* session's pending record, so a leaked one opens nothing."""
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    token = _prepare(client)["download_token"]
+
+    # A different session — same deployment, same everything else.
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    assert client.get(f"/api/admin/backup/download?token={token}").status_code == 404
+
+
+def test_an_expired_preparation_is_refused_and_says_so(console):
+    """410 rather than 404: the archive existed and the operator did nothing wrong, so the
+    console can tell them to export again instead of implying they mistyped something."""
+    client, app = console
+    _attach(app, _ExportUpstream())
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    token = _prepare(client)["download_token"]
+
+    sid, (expires, data) = next(iter(app.state.sessions._data.items()))
+    data["pending_backup"]["expires_at"] = time.time() - 1
+    app.state.sessions._data[sid] = (expires, data)
+
+    assert client.get(f"/api/admin/backup/download?token={token}").status_code == 410
+
+
+def test_a_failed_export_stages_nothing(console):
+    """A refusal upstream must not leave a claimable token behind."""
+    client, app = console
+    _attach(app, _Upstream(status=409, payload={"detail": "no key"}))
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+
+    assert client.post("/api/admin/backup", json={"kind": "portable"}).status_code == 409
+    stored = next(iter(app.state.sessions._data.values()))[1]
+    assert "pending_backup" not in stored

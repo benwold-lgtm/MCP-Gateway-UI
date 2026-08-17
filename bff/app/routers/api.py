@@ -10,18 +10,21 @@ attaches it server-side.
 
 from __future__ import annotations
 
+import secrets
 import time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 
-from ..audit import outcome_for, record_request
+from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, outcome_for, record_request
 from ..relay import relay_get, relay_request
 from ..security import (
     SCOPE_PROVIDER_CREDENTIALS,
     SCOPE_PROVIDER_INVOKE,
+    _persist_session,
+    current_session,
     deny_password_session,
     require_elevated,
     require_role,
@@ -338,15 +341,108 @@ async def export_backup(request: Request, include_deadletters: bool = False) -> 
 
 @router.post("/admin/backup", dependencies=[_any, _no_break_glass, _needs_credentials])
 async def export_backup_with_body(request: Request) -> JSONResponse:
-    """Either archive kind. The passphrase for a portable export travels in the body — never
-    a query string, which would be written to every access log between here and the gateway."""
+    """Prepare an export: mint the archive, reveal the passphrase, hand back a download token.
+
+    The first leg of the two-step. It returns **no archive** — only the passphrase (once) and
+    a token — because the file has to arrive as a native browser download and a download
+    cannot read the header the gateway delivers the passphrase in.
+
+    What the BFF holds between the legs is worth being precise about: the archive body is
+    **ciphertext in both kinds**. A ciphertext archive is sealed under `MCP_SECRET_KEY`, which
+    only the gateway has; a portable one is sealed under the minted passphrase, which is
+    handed to the browser and stored nowhere here. So the pending record is a blob this
+    process cannot open — which is what makes parking it in the session for two minutes an
+    acceptable trade rather than a credential cache.
+    """
     body = await _optional_body(request)
     resp = await relay_request(request, "POST", "/admin/backup", json=body if isinstance(body, dict) else {})
     kind = (body or {}).get("kind") if isinstance(body, dict) else None
     action = "backup.export_portable" if kind == "portable" else "backup.export"
-    # The archive and any passphrase are deliberately absent from the audit detail: this
-    # chain records that an export happened and by whom, never what it contained.
-    return await _audited(request, resp, action, target="registry")
+
+    if resp.status_code != 200:
+        # Nothing was produced, so there is nothing to stage — pass the refusal straight back.
+        return await _audited(request, resp, action, target="registry")
+
+    sess = await current_session(request)
+    token = secrets.token_urlsafe(32)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    pending = {
+        "token": token,
+        "kind": kind or "ciphertext",
+        "filename": f"syncgate-backup-{kind or 'ciphertext'}-{stamp}.json",
+        "body": resp.content.decode("utf-8", "replace"),
+        "expires_at": time.time() + PENDING_BACKUP_TTL,
+    }
+    sess[PENDING_BACKUP] = pending
+    await _persist_session(request, sess)
+
+    # The archive and the passphrase are both absent from the audit detail: this chain records
+    # that an export happened and by whom, never what it contained or what opens it.
+    await record_request(request, action, outcome=outcome_for(resp.status_code), target="registry", staged=True)
+
+    # The passphrase reaches the browser exactly here. The gateway mints it per export and
+    # keeps no copy, and neither does this — so an operator who does not capture it now has
+    # an archive nobody can open (ADR-0011, accepted).
+    return JSONResponse(
+        {
+            "download_token": token,
+            "filename": pending["filename"],
+            "expires_at": pending["expires_at"],
+            "passphrase": resp.headers.get("X-Backup-Passphrase"),
+        }
+    )
+
+
+#: Where a prepared archive waits between the two legs of a download, and how long for.
+#: Short because it is the whole window in which a token is worth stealing.
+PENDING_BACKUP = "pending_backup"
+PENDING_BACKUP_TTL = 120.0
+
+
+@router.get("/admin/backup/download", dependencies=[_any, _no_break_glass])
+async def download_backup(request: Request, token: str = ""):
+    """Hand over the prepared archive as a file, once.
+
+    The second leg of the two-step export. It exists because a native browser download cannot
+    read a response header, and the passphrase is delivered in one — so a single request
+    cannot give the operator both the file and the secret that opens it.
+
+    Note what this route deliberately does **not** require: a live `provider:credentials`
+    elevation. That grant is single-use and was spent preparing the archive; demanding it
+    again would make the file unreachable by the operator who just authorized it. The
+    authorization is carried instead by the pending record, which lives **in the session** —
+    so the token is worthless to anyone else's browser, and the archive cannot be fetched by
+    a leaked URL alone.
+
+    What it still requires is the same gate as the export itself: never a break-glass session
+    (`_no_break_glass`), because handing over this file is handing over the fleet.
+    """
+    sess = await current_session(request)
+    pending = (sess or {}).get(PENDING_BACKUP)
+    now = time.time()
+
+    if not isinstance(pending, dict) or not token or not secrets.compare_digest(token, pending.get("token", "")):
+        await record_request(request, "backup.download", outcome=OUTCOME_DENIED, reason="no_such_download")
+        raise HTTPException(status_code=404, detail="No prepared archive for this session, or it has been claimed")
+    if float(pending.get("expires_at", 0)) <= now:
+        sess.pop(PENDING_BACKUP, None)
+        await _persist_session(request, sess)
+        await record_request(request, "backup.download", outcome=OUTCOME_DENIED, reason="expired")
+        raise HTTPException(status_code=410, detail="The prepared archive expired; export again")
+
+    # Single use: claimed before it is served, so a retried or replayed request finds nothing
+    # even if the response never reaches the browser. Losing a download to a flaky network is
+    # recoverable by exporting again; serving a credential dump twice is not.
+    sess.pop(PENDING_BACKUP, None)
+    await _persist_session(request, sess)
+    await record_request(
+        request, "backup.download", outcome=OUTCOME_SUCCESS, target="registry", kind=pending.get("kind")
+    )
+    return Response(
+        content=pending["body"],
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{pending["filename"]}"'},
+    )
 
 
 @router.post("/admin/restore", dependencies=[_any, _no_break_glass, _needs_credentials])
