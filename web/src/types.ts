@@ -190,3 +190,45 @@ export type DeadLetterEntry = {
   session_id: string;
 };
 export type DeadLetterList = { hostname: string; count: number; entries: DeadLetterEntry[] };
+
+// --- Backup and restore (ADR-0011, ADR-0013 §5b/§8) ---------------------------
+
+/** `ciphertext` restores into this stack or any sharing its `MCP_SECRET_KEY`; `portable`
+ *  crosses key generations and is sealed under a passphrase instead. Both are complete
+ *  credential dumps for anyone holding the corresponding secret — the console says so. */
+export type ArchiveKind = "ciphertext" | "portable";
+
+/** What a restore does with a hostname that is already registered. */
+export type OnConflict = "skip" | "overwrite" | "fail";
+
+/** First leg of the two-step export. Carries **no archive** — a native browser download
+ *  cannot read the header the passphrase arrives in, so the file is fetched separately with
+ *  `download_token`. `passphrase` is non-null only when the gateway minted one, and this is
+ *  the only time it is ever sent. */
+export type BackupPrepared = {
+  download_token: string;
+  filename: string;
+  expires_at: number;
+  passphrase: string | null;
+};
+
+/** One device's predicted or actual fate. `would_restore` appears only in a dry run. */
+export type RestoreDeviceResult = {
+  hostname: string;
+  outcome: "restored" | "would_restore" | "skipped" | "failed";
+  reason?: string;
+  /** Set when the restore would discard an archived fingerprint pin or leave a device to
+   *  trust-on-first-use. Surfaced by the gateway at the top level too, because on a large
+   *  fleet this is exactly what gets missed inside a per-device list. */
+  fingerprint_warning?: string;
+};
+
+export type RestoreReport = {
+  dry_run: boolean;
+  kind: ArchiveKind | string;
+  on_conflict: OnConflict | string;
+  created_at?: string | null;
+  counts: Record<string, number>;
+  fingerprint_warnings: number;
+  devices: RestoreDeviceResult[];
+};

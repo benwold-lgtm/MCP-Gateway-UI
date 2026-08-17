@@ -3,6 +3,8 @@
 // dev, so the session cookie is sent automatically with credentials: "include".
 import type {
   ActGrant,
+  ArchiveKind,
+  BackupPrepared,
   ActGrantResponse,
   AuthConfig,
   Elevation,
@@ -14,7 +16,9 @@ import type {
   DevicePayload,
   Diagnostics,
   InvokeEnvelope,
+  OnConflict,
   Overview,
+  RestoreReport,
   Role,
   Session,
   ToolsDiff,
@@ -55,6 +59,25 @@ export const api = {
   diagnostics: (hostname: string) => req<Diagnostics>("GET", `/api/devices/${hostname}/diagnostics`),
   tools: (hostname: string) => req<ToolsResponse>("GET", `/api/devices/${hostname}/tools`),
   toolsDiff: (hostname: string) => req<ToolsDiff>("GET", `/api/devices/${hostname}/tools/diff`),
+  // --- backup / restore (ADR-0011) -------------------------------------------
+  // Step one of two. Mints the archive, stages it on the session for 120s and returns the
+  // passphrase once. Deliberately not the file: see `downloadBackupUrl`.
+  prepareBackup: (body: { kind: ArchiveKind; passphrase?: string; include_deadletters?: boolean }) =>
+    req<BackupPrepared>("POST", "/api/admin/backup", body),
+  // Step two, and NOT a `req` call: the browser must fetch this itself so the response
+  // becomes a native download. Same-origin and cookie-authenticated, so a plain navigation
+  // carries the session. The token is claimed before the body is served, so this works once.
+  downloadBackupUrl: (token: string) => `/api/admin/backup/download?token=${encodeURIComponent(token)}`,
+  // `dry_run` is required rather than defaulted here even though the BFF and the gateway both
+  // default it to true. Three layers each quietly defaulting is how the destructive direction
+  // eventually becomes reachable by omission; at the call site it has to be typed out.
+  restore: (body: {
+    archive: unknown;
+    passphrase?: string;
+    dry_run: boolean;
+    on_conflict: OnConflict;
+    include_deadletters?: boolean;
+  }) => req<RestoreReport>("POST", "/api/admin/restore", body),
   // One call, three upstream hops (initialize / tools/call / delete) that the BFF runs on our
   // behalf — a bare `tools/call` cannot be forwarded through the MCP transport. Resolves with
   // the JSON-RPC envelope on HTTP 200 whether the call succeeded or was refused; it rejects

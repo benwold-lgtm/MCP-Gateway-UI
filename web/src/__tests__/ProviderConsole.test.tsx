@@ -525,4 +525,45 @@ describe("the console shell", () => {
     await openTool(userEvent.setup());
     expect(screen.queryByRole("button", { name: /^run /i })).not.toBeInTheDocument();
   });
+
+  // --- W6: backup/restore is tier 2 ------------------------------------------
+
+  it("shows Backup in the rail but needs an act to reach it", async () => {
+    // Visible-but-disabled, like the other tier-1 entries: a rail that hid what you cannot
+    // yet reach would teach nothing about why, and the why is the whole design.
+    renderConsole();
+    const backup = await screen.findByRole("button", { name: /^backup/i });
+    expect(backup).toBeDisabled();
+    expect(backup).toHaveTextContent(/needs a live act/i);
+  });
+
+  it("explains the credentials elevation rather than hiding the panel", async () => {
+    // An operator with an act but no step-up should learn what would change that. Hiding it
+    // until they already held the grant would make the tier invisible.
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    renderConsole();
+    await openRail(userEvent.setup(), /^backup$/i);
+    expect(await screen.findByText(/provider:credentials/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /prepare export/i })).toBeInTheDocument();
+  });
+
+  it("says the credentials elevation is single use once it is held", async () => {
+    // The property that makes this grant different from the invoke one: the next operation
+    // spends it, so an operator gets one of export-or-restore per step-up. Discovering that
+    // by finding the second refused is the outcome this sentence prevents.
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    elevation.mockResolvedValue({
+      id: "e1",
+      tenant: "acme",
+      scope: "provider:credentials",
+      granted_at: soon(0),
+      expires_at: soon(300),
+      single_use: true,
+    });
+    renderConsole();
+    await openRail(userEvent.setup(), /^backup$/i);
+    // Scoped to the sentence, not the words: the status strip's badge also reads "single
+    // use", and matching that would pass without the panel ever explaining anything.
+    expect(await screen.findByText(/the next export or restore spends it/i)).toBeInTheDocument();
+  });
 });

@@ -12,6 +12,8 @@ import { ElevationPanel } from "./ElevationPanel";
 import { DeviceList } from "./DeviceList";
 import { DeviceDetail } from "./DeviceDetail";
 import { Dashboard } from "./Dashboard";
+import { BackupExport } from "./BackupExport";
+import { BackupRestore } from "./BackupRestore";
 
 /** The provider plane's shell (ADR-0013 §4/§8).
  *
@@ -20,7 +22,7 @@ import { Dashboard } from "./Dashboard";
  * component while another believed a different tenant was live would be the console disagreeing
  * with itself about whose estate is open.
  */
-type View = "access" | "devices" | "monitoring";
+type View = "access" | "devices" | "monitoring" | "backup";
 
 export function ProviderConsole({
   session,
@@ -89,6 +91,16 @@ export function ProviderConsole({
         hint={!act ? "needs a live act" : undefined}
         onClick={() => setView("monitoring")}
       />
+      {/* Tier 2. Gated on the act like the others rather than on the elevation, deliberately:
+          the panel itself explains what a step-up buys, and a rail entry that vanished until
+          you already held the grant would teach nothing about why it exists. */}
+      <RailItem
+        label="Backup"
+        active={view === "backup"}
+        disabled={!act}
+        hint={!act ? "needs a live act" : undefined}
+        onClick={() => setView("backup")}
+      />
     </>
   );
 
@@ -137,7 +149,10 @@ export function ProviderConsole({
       {/* Tier 1 views are gated on the act, not the plane. When the act ends they unmount —
           a screen of a customer's data that outlives the authority to see it is
           indistinguishable from a live one. */}
-      {view !== "access" && act && <TenantViews tenant={act.tenant} view={view} elevation={elevation} />}
+      {view === "backup" && act && <BackupViews tenant={act.tenant} elevation={elevation} />}
+      {(view === "devices" || view === "monitoring") && act && (
+        <TenantViews tenant={act.tenant} view={view} elevation={elevation} />
+      )}
     </Shell>
   );
 }
@@ -220,6 +235,40 @@ function TenantViews({
           )}
         </>
       )}
+    </section>
+  );
+}
+
+/** Export and restore, behind the credentials elevation (W6, ADR-0013 §5b/§8).
+ *
+ * The single-use grant is the whole shape of this screen. `provider:credentials` is spent by
+ * the next operation, so an operator gets **one** of export-or-restore per step-up — and the
+ * panel says which one they are about to spend it on rather than letting them discover it by
+ * finding the second refused.
+ *
+ * Both halves stay mounted after the grant is spent: an export's passphrase is shown once and
+ * is the archive's only key, so unmounting the panel the moment the elevation lapsed would
+ * destroy it. What the elevation gates is *starting* an operation, not reading its result.
+ */
+function BackupViews({ tenant, elevation }: { tenant: string; elevation: Elevation | null }) {
+  const held = elevation?.scope === "provider:credentials";
+  return (
+    <section style={{ display: "grid", gap: 4, maxWidth: 760 }}>
+      <h2 style={{ margin: 0, fontSize: "1.15em", color: ui.ink }}>Backup and restore · {tenant}</h2>
+      {held ? (
+        <p style={{ margin: "0 0 8px", color: ui.muted, fontSize: 13 }}>
+          This elevation is <strong>single use</strong> — the next export or restore spends it, and the other
+          will need a fresh step-up.
+        </p>
+      ) : (
+        <p style={{ margin: "0 0 8px", color: ui.muted, fontSize: 13 }}>
+          Reading a customer&rsquo;s registry out, or writing one back, needs a live{" "}
+          <strong>provider:credentials</strong> elevation — acquire one from Access. Everything below will
+          refuse without it.
+        </p>
+      )}
+      <BackupExport />
+      <BackupRestore />
     </section>
   );
 }
