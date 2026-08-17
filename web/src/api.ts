@@ -2,7 +2,12 @@
 // Typed client to the BFF. Same-origin in production (nginx) and via Vite proxy in
 // dev, so the session cookie is sent automatically with credentials: "include".
 import type {
+  ActGrant,
+  ActGrantResponse,
   AuthConfig,
+  Elevation,
+  ElevationResponse,
+  ProviderScope,
   DeviceFull,
   DeviceMutation,
   DevicePayload,
@@ -71,4 +76,31 @@ export const api = {
   prometheusQuery: (query: string) =>
     req<PromQueryResponse>("GET", `/api/prometheus/query?query=${encodeURIComponent(query)}`),
   logs: (limit = 100) => req<LokiResponse>("GET", `/api/logs?limit=${limit}`),
+
+  // --- provider plane (ADR-0013 §4/§8) ---------------------------------------
+  // These live under /provider, not /api: a different plane with a different session
+  // vocabulary, and the BFF refuses them outright for a tenant session.
+  provider: {
+    // §8's "renewal is a new act, not an extension" — this always mints, so the UI must
+    // never call it to top up a countdown. Re-authorizing is a fresh act with a fresh
+    // justification and its own audit record.
+    authorize: (tenant: string, justification: string) =>
+      req<ActGrant>("POST", `/provider/tenants/${encodeURIComponent(tenant)}/authorize`, { justification }),
+    actOnTenant: () => req<ActGrantResponse>("GET", "/provider/act-on-tenant"),
+    release: () => req<{ released: string | null }>("DELETE", "/provider/act-on-tenant"),
+    // Returns the IdP URL to navigate to — not a grant. Nothing is authorized until the
+    // browser comes back through the step-up callback and the `acr` is verified there.
+    elevate: (tenant: string, scope: ProviderScope, justification: string) =>
+      req<{ authorization_url: string }>("POST", `/provider/tenants/${encodeURIComponent(tenant)}/elevate`, {
+        scope,
+        justification,
+      }),
+    elevation: () => req<ElevationResponse>("GET", "/provider/elevation"),
+    endElevation: () => req<{ released: string | null }>("DELETE", "/provider/elevation"),
+  },
 };
+
+// Narrowing helpers for the two null-sentinel responses, so views read a grant or `null`
+// rather than repeating the shape check.
+export const asGrant = (r: ActGrantResponse): ActGrant | null => ("grant" in r ? null : r);
+export const asElevation = (r: ElevationResponse): Elevation | null => ("elevation" in r ? null : r);

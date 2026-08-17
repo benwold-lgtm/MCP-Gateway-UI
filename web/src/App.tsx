@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import type { Overview, Session } from "./types";
+import type { AuthConfig, Overview, Session } from "./types";
 import { Login } from "./components/Login";
+import { ProviderLogin } from "./components/ProviderLogin";
+import { ProviderConsole } from "./components/ProviderConsole";
 import { DeviceList } from "./components/DeviceList";
 import { DeviceDetail } from "./components/DeviceDetail";
 import { DeviceForm } from "./components/DeviceForm";
@@ -19,10 +21,20 @@ export function App() {
   const [view, setView] = useState<View>("devices");
   const [booting, setBooting] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Which console this deployment IS (ADR-0013 §2/§5). Fetched once at boot rather than by
+  // each login component, because the answer also decides which shell a *signed-in* session
+  // renders — and the two must not be able to disagree.
+  const [config, setConfig] = useState<AuthConfig | null>(null);
 
   // The UI gates on the gateway's scopes, not a role string (ADR-0007), so password and
   // OIDC sessions are treated uniformly.
   const canWrite = session?.scopes.includes("devices:write") ?? false;
+
+  // Provider sessions don't load the overview *here* — but not because the plane may not
+  // read it. A live act-on-tenant admits them to the tenant data plane, capped by the
+  // gateway (§5a), so ProviderConsole loads that tenant's fleet itself once an act exists.
+  // What this avoids is a fleet poll running with no act, which would 403 on every tick.
+  const isProvider = session?.plane === "provider";
 
   const refresh = useCallback(async () => {
     try {
@@ -36,19 +48,43 @@ export function App() {
 
   // Resume an existing session on first load (also how the SSO redirect lands back in).
   useEffect(() => {
-    api
-      .me()
-      .then(setSession)
-      .catch(() => setSession(null))
+    Promise.all([api.me().catch(() => null), api.authConfig().catch(() => null)])
+      .then(([me, cfg]) => {
+        setSession(me);
+        setConfig(cfg);
+      })
       .finally(() => setBooting(false));
   }, []);
 
   useEffect(() => {
-    if (session) void refresh();
-  }, [session, refresh]);
+    if (session && !isProvider) void refresh();
+  }, [session, isProvider, refresh]);
+
+  const signOut = useCallback(async () => {
+    const res = await api.logout();
+    // For an OIDC session the IdP may hand back a single-logout URL — navigate there so
+    // the IdP session ends too (otherwise SSO logs straight back in).
+    if (res?.end_session_url) {
+      window.location.assign(res.end_session_url);
+      return;
+    }
+    setSession(null);
+    setOverview(null);
+  }, []);
 
   if (booting) return <p style={{ margin: "10vh auto", textAlign: "center" }}>Loading…</p>;
-  if (!session) return <Login onAuthed={setSession} />;
+  if (!session) {
+    // Not a selector — the deployment carries exactly one IdP (`create_app` refuses both),
+    // so this reads which console the browser reached rather than offering a choice.
+    return config?.provider_enabled ? (
+      <ProviderLogin config={config} onAuthed={setSession} />
+    ) : (
+      <Login onAuthed={setSession} />
+    );
+  }
+  // The plane of the *session* decides the shell, not the deployment: break-glass on a
+  // provider console is tenant-plane by construction and belongs in the device console.
+  if (isProvider) return <ProviderConsole session={session} config={config} onSignOut={signOut} />;
 
   return (
     <main style={{ maxWidth: 900, margin: "2rem auto", fontFamily: "system-ui, sans-serif" }}>
@@ -56,21 +92,7 @@ export function App() {
         <h1>Device MCP Gateway</h1>
         <span>
           <span title={`${session.kind} session`}>{session.name || session.subject}</span>{" "}
-          <button
-            onClick={async () => {
-              const res = await api.logout();
-              // For an OIDC session the IdP may hand back a single-logout URL — navigate
-              // there so the IdP session ends too (otherwise SSO logs straight back in).
-              if (res?.end_session_url) {
-                window.location.assign(res.end_session_url);
-                return;
-              }
-              setSession(null);
-              setOverview(null);
-            }}
-          >
-            Sign out
-          </button>
+          <button onClick={signOut}>Sign out</button>
         </span>
       </header>
 

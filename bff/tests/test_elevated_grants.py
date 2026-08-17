@@ -1095,3 +1095,294 @@ def test_the_step_up_uses_its_own_transaction_key(console):
     resp = client.get("/auth/provider/callback?code=abc&state=whatever", follow_redirects=False)
     assert resp.status_code >= 400
     assert _stored(app).get("elevated_grant") is None
+
+
+# --- what the console reads (the browser half of §4/§8) -----------------------
+#
+# The mechanism above was API-only until the console existed. These cover the three
+# surfaces a browser needs and nothing else did: a *read* of the live elevation, the
+# deployment's own answer to "which console am I", and the fact that a step-up returns by
+# **navigation** — so its outcome has to arrive somewhere a browser can act on.
+
+
+def _credentials_idp() -> "_FakeIdP":
+    """A fake whose claim carries the credentials class's gateway scopes.
+
+    The default claim is an *invoke* one, so a credentials elevation driven with it is
+    refused for the right reason — which would make a single-use assertion pass vacuously
+    by never producing a grant at all.
+    """
+    return _FakeIdP(
+        claim={
+            "id": "g-cred",
+            "tenant": TENANT,
+            "scopes": list(elevated_spec(SCOPE_PROVIDER_CREDENTIALS).gateway_scopes),
+        }
+    )
+
+
+def test_the_console_can_read_the_live_elevation(console):
+    """Without a read there is no countdown, and no way to show single-use as a state."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    _elevate(client, app, _credentials_idp(), scope=SCOPE_PROVIDER_CREDENTIALS)
+
+    body = client.get("/provider/elevation").json()
+    assert body["tenant"] == TENANT
+    assert body["scope"] == SCOPE_PROVIDER_CREDENTIALS
+    # The field that makes the credentials grant render differently from an invoke one.
+    assert body["single_use"] is True
+    assert body["expires_at"] > body["granted_at"]
+
+
+def test_reading_the_elevation_never_hands_back_the_token_or_the_justification(console):
+    """The step-up token is the most valuable thing this BFF holds. A read route added for a
+    countdown is exactly where it would leak by being copied from `as_dict()`."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    _elevate(client, app, _FakeIdP())
+
+    body = client.get("/provider/elevation").json()
+    assert "access_token" not in body
+    assert "justification" not in body
+    # And the value is genuinely held — otherwise the assertions above pass vacuously.
+    assert _stored(app)["elevated_grant"]["access_token"]
+
+
+def test_no_act_means_no_elevation_is_reported(console):
+    """An elevation is authority over one tenant. With no live act there is no tenant being
+    acted on, so there is nothing to report — even though the session still holds the
+    record. Reporting it would show the operator an elevation no route would honour."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    _elevate(client, app, _FakeIdP())
+    assert client.get("/provider/elevation").json()["tenant"] == TENANT
+
+    client.delete("/provider/act-on-tenant")
+    assert client.get("/provider/elevation").json() == {"elevation": None}
+
+
+def test_reading_the_elevation_does_not_spend_or_renew_it(console):
+    """A console polls this once a second. If the read consumed or extended anything, the
+    countdown would be the thing destroying what it displays."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    _elevate(client, app, _credentials_idp(), scope=SCOPE_PROVIDER_CREDENTIALS)
+
+    first = client.get("/provider/elevation").json()
+    for _ in range(3):
+        again = client.get("/provider/elevation").json()
+    assert again == first  # same id, same deadline — no spend, no extension
+    assert _stored(app).get("elevated_grant") is not None
+
+
+def test_a_tenant_session_cannot_read_the_elevation(console):
+    """The plane wall, on the route added last. Every provider route is checked in both
+    directions; a read route is the easy one to add outside the gate."""
+    client, app = console
+    resp = client.post("/auth/login", json={"password": "admin-pw"})  # password ⇒ tenant plane
+    assert resp.status_code == 200
+    assert client.get("/provider/elevation").status_code == 403
+
+
+def test_the_config_tells_the_spa_which_console_this_is(console):
+    """The SPA renders the provider login from this and nothing else. It is not a selector:
+    `create_app` refuses to start with both IdPs, so these two are mutually exclusive."""
+    client, _ = console
+    body = client.get("/auth/config").json()
+    assert body["provider_enabled"] is True
+    assert body["oidc_enabled"] is False
+    assert body["step_up_enabled"] is True
+
+
+def test_step_up_is_reported_unavailable_when_it_cannot_be_verified(monkeypatch, tmp_path):
+    """A provider console with no `acr` configured is correctly configured and simply does
+    not offer elevated grants. The console must be able to hide the affordance rather than
+    find out by clicking it and collecting a 404."""
+    _console_env(monkeypatch, tmp_path, acr="")
+    app = create_app()
+    with TestClient(app) as client:
+        body = client.get("/auth/config").json()
+        assert body["provider_enabled"] is True
+        assert body["step_up_enabled"] is False
+
+
+# --- the callback is reached by navigation ------------------------------------
+
+
+def _browser_elevate(client, app, idp, *, scope=SCOPE_PROVIDER_INVOKE):
+    """`_elevate`, but with the callback fetched the way a browser fetches it."""
+    app.state.provider_oidc = idp
+    resp = client.post(f"/provider/tenants/{TENANT}/elevate", json={"scope": scope, "justification": WHY})
+    state = resp.json()["authorization_url"].split("state=")[1]
+    return client.get(
+        f"/auth/provider/step-up/callback?code=abc&state={state}",
+        headers={"accept": "text/html,application/xhtml+xml"},
+        follow_redirects=False,
+    )
+
+
+def test_a_browser_step_up_lands_back_in_the_console(console):
+    """The IdP sends the operator's *browser* here. A JSON body is not an outcome a browser
+    can act on — the operator would be looking at raw text where the console should be."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    resp = _browser_elevate(client, app, _FakeIdP())
+    assert resp.status_code == 302
+    assert "elevation=granted" in resp.headers["location"]
+    # And the grant is real, not merely announced.
+    assert _stored(app)["elevated_grant"]["tenant"] == TENANT
+
+
+def test_a_declined_step_up_lands_back_saying_so(console):
+    """§11b constraint 2 through the browser. This is the case a real IdP produces — a
+    perfectly valid token with no step-up performed — so it has to arrive as a stated
+    outcome the console can name, not as an error page."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    resp = _browser_elevate(client, app, _FakeIdP(declines_step_up=True))
+    assert resp.status_code == 302
+    assert "elevation=denied" in resp.headers["location"]
+    assert "reason=step_up_declined" in resp.headers["location"]
+    # Refused, and refused *before* anything was stored.
+    assert _stored(app).get("elevated_grant") is None
+    denied = [r for r in _audited(app, "provider.elevate") if r["outcome"] == "denied"]
+    assert denied and "acr" in denied[-1]["detail"]["reason"]
+
+
+def test_the_landing_never_carries_the_refusal_text(console):
+    """The outcome travels in a URL, and a URL is logged by every proxy on the way. The
+    exception's own text names the tenant and quotes the configured `acr`; the closed
+    vocabulary is what keeps that in the audit record and out of access logs."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    resp = _browser_elevate(client, app, _FakeIdP(declines_step_up=True))
+    location = resp.headers["location"]
+    assert STEP_UP_ACR not in location
+    assert TENANT not in location
+
+
+def test_an_api_client_still_gets_the_status_code_it_checks_for(console):
+    """The browser affordance must not soften a refusal for a caller that was checking for
+    one. Same declined step-up, a client that did not ask for HTML: still a 403."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    resp = _elevate(client, app, _FakeIdP(declines_step_up=True))
+    assert resp.status_code == 403
+
+
+def test_an_idp_refusal_is_not_reported_as_a_broken_callback(console):
+    """Found in a browser, not here: an unattached client scope made Keycloak refuse with
+    `error=invalid_scope`, and the console said "the step-up came back incomplete" — true of
+    nothing that happened, and it points the reader at the transport instead of at the
+    directory config that was actually wrong.
+
+    The two failures share a shape and nothing else. One is unactionable; the other names a
+    deployment fault someone can go and fix.
+    """
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    app.state.provider_oidc = _FakeIdP()
+    resp = client.post(
+        f"/provider/tenants/{TENANT}/elevate",
+        json={"scope": SCOPE_PROVIDER_INVOKE, "justification": WHY},
+    )
+    state = resp.json()["authorization_url"].split("state=")[1]
+
+    cb = client.get(
+        f"/auth/provider/step-up/callback?error=invalid_scope&state={state}",
+        headers={"accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert cb.status_code == 302
+    assert "reason=idp_refused" in cb.headers["location"]
+    assert "invalid_callback" not in cb.headers["location"]
+
+    denied = [r for r in _audited(app, "provider.elevate") if r["outcome"] == "denied"]
+    # The IdP's own code is what makes the record actionable.
+    assert denied[-1]["detail"]["reason"] == "idp_refused"
+    assert denied[-1]["detail"]["idp_error"] == "invalid_scope"
+    assert _stored(app).get("elevated_grant") is None
+
+
+def test_the_idp_error_text_is_bounded_before_it_enters_the_chain(console):
+    """`error` is unbounded input from another system landing in an append-only record that
+    nothing can later edit. The code is what identifies the fault; the essay is not."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    app.state.provider_oidc = _FakeIdP()
+    resp = client.post(
+        f"/provider/tenants/{TENANT}/elevate",
+        json={"scope": SCOPE_PROVIDER_INVOKE, "justification": WHY},
+    )
+    state = resp.json()["authorization_url"].split("state=")[1]
+    client.get(f"/auth/provider/step-up/callback?error={'x' * 500}&state={state}", follow_redirects=False)
+
+    denied = [r for r in _audited(app, "provider.elevate") if r["outcome"] == "denied"]
+    assert len(denied[-1]["detail"]["idp_error"]) <= 64
+
+
+def test_a_truncated_callback_is_still_reported_as_one(console):
+    """The other half of the split. Without this, "distinguish them" could be satisfied by
+    relabelling *everything* as an IdP refusal, which is the same defect facing the other way."""
+    client, app = console
+    _seed_session(client, app, _acting_live())
+    app.state.provider_oidc = _FakeIdP()
+    resp = client.post(
+        f"/provider/tenants/{TENANT}/elevate",
+        json={"scope": SCOPE_PROVIDER_INVOKE, "justification": WHY},
+    )
+    state = resp.json()["authorization_url"].split("state=")[1]
+
+    # No `code`, and no `error` either — the redirect simply arrived incomplete.
+    cb = client.get(
+        f"/auth/provider/step-up/callback?state={state}",
+        headers={"accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert "reason=invalid_callback" in cb.headers["location"]
+    denied = [r for r in _audited(app, "provider.elevate") if r["outcome"] == "denied"]
+    assert denied[-1]["detail"]["reason"] == "invalid_callback"
+    assert "idp_error" not in denied[-1]["detail"]
+
+
+# --- signing out of the provider console (found in a browser) ------------------
+
+
+class _LogoutIdP(_FakeIdP):
+    """A provider RP that exposes RP-initiated logout, which `_FakeIdP` does not."""
+
+    async def end_session_url(self, *, id_token_hint, post_logout_redirect_uri=None):
+        return f"https://provider-idp.example/logout?id_token_hint={id_token_hint}"
+
+
+def test_signing_out_of_the_provider_console_ends_the_idp_session_too(console):
+    """The defect: `logout` read `state.oidc` — the *tenant* RP — which is `None` on a
+    provider console by construction (§2/§5). So no logout URL was ever returned, the
+    provider IdP's cookie survived, and the next "Sign in with the provider directory" was
+    **silent SSO with no prompt** — handing the next person at that browser cross-tenant
+    authority behind a sign-out that looked like it worked.
+
+    Every existing logout test passed the whole time. They only drove the tenant plane, and
+    the one line that chose the RP was the one thing they could not see.
+    """
+    client, app = console
+    app.state.provider_oidc = _LogoutIdP()
+    _seed_session(client, app, {**_provider_session(), "kind": "oidc", "id_token": "prov.id.tok"})
+
+    body = client.post("/auth/logout").json()
+    assert body["end_session_url"], "a provider session must be able to end its IdP session"
+    assert "prov.id.tok" in body["end_session_url"]
+
+
+def test_the_tenant_plane_still_logs_out_against_the_tenant_rp(console):
+    """The other half. Selecting by plane must not send a tenant session to the provider
+    IdP — that would be the same defect pointing the other way, and it would leak which
+    provider IdP a tenant stack is adjacent to."""
+    client, app = console
+    app.state.provider_oidc = _LogoutIdP()
+    app.state.oidc = None  # a provider console has no tenant RP
+    client.post("/auth/login", json={"password": "admin-pw"})  # password ⇒ tenant plane
+
+    body = client.post("/auth/logout").json()
+    assert body["end_session_url"] is None

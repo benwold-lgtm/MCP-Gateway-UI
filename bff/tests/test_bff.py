@@ -427,9 +427,18 @@ def _do_oidc_login(c):
 
 
 def test_auth_config_reports_methods(app_client):
+    """Exact equality on purpose: this is what the SPA branches its whole shell on, so a
+    field appearing or vanishing should fail here rather than change a console silently."""
     c, _ = app_client
     body = c.get("/auth/config").json()
-    assert body == {"oidc_enabled": False, "password_login": True}
+    assert body == {
+        "oidc_enabled": False,
+        "password_login": True,
+        # A plain tenant-stack BFF. `provider_enabled` false is what makes the SPA render
+        # the tenant login rather than the provider one (ADR-0013 §2/§5).
+        "provider_enabled": False,
+        "step_up_enabled": False,
+    }
 
 
 def test_oidc_config_enabled_when_rp_present(oidc_client):

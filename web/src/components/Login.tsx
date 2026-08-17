@@ -13,7 +13,18 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
     api
       .authConfig()
       .then(setConfig)
-      .catch(() => setConfig({ oidc_enabled: false, password_login: true }));
+      // Fallback when /auth/config is unreachable: offer the local password and nothing
+      // else. `provider_enabled: false` is the honest value here rather than a guess —
+      // App already decided this is a tenant console before rendering Login at all, and a
+      // provider console that failed to say so must not be inferred into existence.
+      .catch(() =>
+        setConfig({
+          oidc_enabled: false,
+          password_login: true,
+          provider_enabled: false,
+          step_up_enabled: false,
+        }),
+      );
   }, []);
 
   async function submit(e: React.FormEvent) {
