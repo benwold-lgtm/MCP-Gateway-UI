@@ -141,6 +141,51 @@ def _check_tenant(tenant: Any) -> str:
     return tenant.strip()
 
 
+def entitled_tenants(raw: Any) -> Optional[list[str]]:
+    """The tenants the directory says this operator may act on — **for navigation only**.
+
+    ADR-0013 §11c puts the entitlement intersection on the *gateway*, and the reasoning is
+    explicit: the tenant in a grant is chosen by whoever built the authorization request, so
+    a check on the side that chose the value would be the caller validating its own request.
+    Nothing here narrows that. This exists so the console can offer the estate as a list
+    instead of a blank text box, and every tenant it returns is still refused end-to-end
+    unless the gateway's own intersection agrees.
+
+    The three-way return is the point, because the two failure modes need different fixes
+    and a single empty list would hide which one the operator is in:
+
+    * ``None`` — the claim is absent or of an unusable type. The IdP is not publishing an
+      estate on this login. The remedy is a mapper, so the console must not say "you are
+      entitled to nothing"; it says it does not know and keeps free entry.
+    * ``[]`` — the claim is present and names nobody. The directory has answered, and the
+      answer is none. The remedy is an entitlement grant in the directory.
+    * a non-empty list — the estate, deduplicated and order-preserved.
+
+    Names that cannot pass :func:`_check_tenant` are dropped rather than listed: the
+    authorize route would refuse them anyway, so offering one is offering a dead control.
+    That narrowing is safe *because* this is navigation — it can only ever hide an option,
+    never create authority — and it is the one place where dropping beats surfacing.
+    """
+    if isinstance(raw, str):  # a single entitlement may arrive as a bare string
+        items: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        # Includes the absent case (`None`) and anything structurally unexpected: both mean
+        # "this login did not tell us", which is not the same as "entitled to none".
+        return None
+
+    out: list[str] = []
+    for item in items:
+        try:
+            tenant = _check_tenant(item)
+        except GrantError:
+            continue
+        if tenant not in out:
+            out.append(tenant)
+    return out
+
+
 def _check_justification(justification: Any) -> str:
     text = justification.strip() if isinstance(justification, str) else ""
     if not text:

@@ -12,18 +12,21 @@ import { ProviderConsole } from "../components/ProviderConsole";
 import { readStepUpOutcome } from "../stepUpOutcome";
 import type { AuthConfig, Session } from "../types";
 
-const { authorize, actOnTenant, release, elevate, elevation, endElevation, overview } = vi.hoisted(() => ({
-  overview: vi.fn(),
-  authorize: vi.fn(),
-  actOnTenant: vi.fn(),
-  release: vi.fn(),
-  elevate: vi.fn(),
-  elevation: vi.fn(),
-  endElevation: vi.fn(),
-}));
+const { authorize, actOnTenant, release, elevate, elevation, endElevation, overview, tenants } = vi.hoisted(
+  () => ({
+    overview: vi.fn(),
+    tenants: vi.fn(),
+    authorize: vi.fn(),
+    actOnTenant: vi.fn(),
+    release: vi.fn(),
+    elevate: vi.fn(),
+    elevation: vi.fn(),
+    endElevation: vi.fn(),
+  }),
+);
 
 vi.mock("../api", () => ({
-  api: { provider: { authorize, actOnTenant, release, elevate, elevation, endElevation }, overview },
+  api: { provider: { authorize, actOnTenant, release, elevate, elevation, endElevation, tenants }, overview },
   asGrant: (r: unknown) => (r && "grant" in (r as object) ? null : r),
   asElevation: (r: unknown) => (r && "elevation" in (r as object) ? null : r),
   ApiError: class ApiError extends Error {
@@ -78,8 +81,11 @@ const REAL_LOCATION = window.location;
 
 describe("ProviderConsole", () => {
   beforeEach(() => {
-    for (const fn of [authorize, actOnTenant, release, elevate, elevation, endElevation, overview])
+    for (const fn of [authorize, actOnTenant, release, elevate, elevation, endElevation, overview, tenants])
       fn.mockReset();
+    // No published estate: these tests are about the act, and the free-entry box is what
+    // they drive. The picker has its own file.
+    tenants.mockResolvedValue({ entitled: null, served: null });
     overview.mockResolvedValue({ devices: [], counts: {} });
     actOnTenant.mockResolvedValue({ grant: null });
     elevation.mockResolvedValue({ elevation: null });

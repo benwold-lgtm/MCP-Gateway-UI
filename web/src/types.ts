@@ -114,6 +114,22 @@ export type Elevation = {
   single_use: boolean;
 };
 
+// The estate (GET /provider/tenants). Two facts that must not be merged:
+//
+//   `entitled` — what the directory said at login. `null` means the IdP published no list
+//                (a mapper is missing); `[]` means it published an empty one. Different
+//                situations with different remedies, so the union keeps them apart and the
+//                console renders a different sentence for each.
+//   `served`   — the single tenant this console's gateway *is*. Every other entitled tenant
+//                is a legitimate act that currently reaches no devices (slice 3).
+//
+// Neither field authorizes anything: ADR-0013 §11c puts the intersection on the gateway,
+// because the console is the side that chose the tenant.
+export type Estate = {
+  entitled: string[] | null;
+  served: string | null;
+};
+
 // The two endpoints above answer with a null sentinel rather than 404 when nothing is
 // held, so "no grant" is a value the caller reads instead of an error it has to catch.
 export type ActGrantResponse = ActGrant | { grant: null };

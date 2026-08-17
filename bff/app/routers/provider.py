@@ -141,6 +141,42 @@ async def current(request: Request, session=_provider_admin) -> dict:
     return _public(grant) if grant else {"grant": None}
 
 
+@router.get("/tenants")
+async def tenants(request: Request, session=_provider_admin) -> dict:
+    """The estate this operator may act on, and which of it this console can reach.
+
+    Read-only and unaudited, like the other two reads here: an operator looking at a list of
+    tenants has not touched any of them, and a route that wrote to the chain on every render
+    would bury the acts that matter under navigation.
+
+    **Two independent facts, reported separately rather than resolved into one list**, because
+    each is invisible on its own and an operator who cannot see them will assume the opposite:
+
+    * ``entitled`` — what the *directory* said at login. `null` means the IdP published no
+      estate (a mapper is missing); `[]` means it published an empty one. Different problems,
+      different fixes, so they are not collapsed.
+    * ``served`` — the single tenant this BFF's gateway *is*. Today a deployment serves one
+      tenant (`settings.tenant_id`), so every other entitled tenant is a legitimate act that
+      currently reaches no devices: `require_tenant_plane` refuses the relay when the grant
+      names anything else. Reaching N gateways is slice 3.
+
+    Deliberately **not** filtered to the intersection. Hiding the unreachable tenants would
+    make the console look like it disagreed with the directory, and would teach an operator
+    that their estate is one tenant when it is not. The console shows both and says which is
+    which; the refusal stays where it can be enforced.
+
+    Nothing here authorizes anything. §11c is explicit that the tenant intersection belongs
+    to the gateway, so this list can only ever change what is *offered*, never what is
+    *accepted* — a caller that ignores it entirely and posts a tenant by hand gets exactly
+    the same answer from `authorize` and from the gateway.
+    """
+    settings = request.app.state.settings
+    return {
+        "entitled": session.get("entitled_tenants"),
+        "served": getattr(settings, "tenant_id", "") or None,
+    }
+
+
 @router.delete("/act-on-tenant")
 async def release(request: Request, session=_provider_admin) -> dict:
     """End the act. The cheap half of §4: an operator who has finished should not carry the
