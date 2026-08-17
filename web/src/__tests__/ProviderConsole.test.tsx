@@ -190,10 +190,16 @@ describe("ProviderConsole", () => {
     renderConsole();
     // Both the panel and the strip report it — the strip so it survives navigating away,
     // the panel because that is where the operator acquired it. Assert on the panel.
-    const panel = (await screen.findAllByText(/single use/i))
-      .map((el) => el.closest("section"))
-      .find(Boolean);
-    expect(panel?.textContent).toMatch(/expires in \d+:\d\d/);
+    // The countdown's first value arrives from an effect, so it must be waited for and the
+    // panel re-queried each attempt. Asserting synchronously catches the tick before it —
+    // which passed locally and failed in CI, the worst way for this to be wrong.
+    await waitFor(() => {
+      const panel = screen
+        .getAllByText(/single use/i)
+        .map((el) => el.closest("section"))
+        .find(Boolean);
+      expect(panel?.textContent).toMatch(/expires in \d+:\d\d/);
+    });
     expect(stripText()).toMatch(/single use/i);
   });
 
