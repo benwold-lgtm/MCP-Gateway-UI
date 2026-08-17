@@ -22,9 +22,10 @@ export function HealthDot({ state, title }: { state: HealthState; title?: string
       <span aria-hidden="true" style={{ color: mark.color, fontSize: "0.95em", lineHeight: 1 }}>
         {mark.glyph}
       </span>
-      <span style={{ color: state === "online" ? ui.inkSoft : mark.color, fontSize: "0.88em" }}>
-        {mark.label}
-      </span>
+      {/* The label is ink, never the state colour. Two of the three status colours sit below
+          4.5:1 on this canvas — they are fine as *marks* (WCAG's 3:1 non-text threshold) and
+          would fail as *text*. Colour carries the glyph; the words carry themselves. */}
+      <span style={{ color: ui.inkSoft, fontSize: "0.88em" }}>{mark.label}</span>
     </span>
   );
 }

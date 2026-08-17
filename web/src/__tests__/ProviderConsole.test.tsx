@@ -8,7 +8,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ProviderConsole, readStepUpOutcome } from "../components/ProviderConsole";
+import { ProviderConsole } from "../components/ProviderConsole";
+import { readStepUpOutcome } from "../stepUpOutcome";
 import type { AuthConfig, Session } from "../types";
 
 const { authorize, actOnTenant, release, elevate, elevation, endElevation, overview } = vi.hoisted(() => ({

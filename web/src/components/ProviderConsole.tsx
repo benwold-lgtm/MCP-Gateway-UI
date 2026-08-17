@@ -4,6 +4,7 @@ import { api, ApiError, asElevation, asGrant } from "../api";
 import type { ActGrant, AuthConfig, Elevation, Overview, Session, StepUpOutcome } from "../types";
 import { formatCountdown, useCountdown } from "../useCountdown";
 import { health, sans, ui } from "../tokens";
+import { readStepUpOutcome } from "../stepUpOutcome";
 import { ActOnTenant } from "./ActOnTenant";
 import { ElevationPanel } from "./ElevationPanel";
 import { DeviceList } from "./DeviceList";
@@ -231,15 +232,6 @@ function ActBar({ act, onChanged }: { act: ActGrant; onChanged: () => void | Pro
       </span>
     </div>
   );
-}
-
-/** Reads what the step-up callback redirected back with. */
-export function readStepUpOutcome(search = window.location.search): StepUpOutcome | null {
-  const params = new URLSearchParams(search);
-  const status = params.get("elevation");
-  if (status === "granted") return { status: "granted" };
-  if (status === "denied") return { status: "denied", reason: params.get("reason") ?? "unknown" };
-  return null;
 }
 
 function Shell({
