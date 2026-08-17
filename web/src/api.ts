@@ -13,6 +13,7 @@ import type {
   DeviceMutation,
   DevicePayload,
   Diagnostics,
+  InvokeEnvelope,
   Overview,
   Role,
   Session,
@@ -54,6 +55,15 @@ export const api = {
   diagnostics: (hostname: string) => req<Diagnostics>("GET", `/api/devices/${hostname}/diagnostics`),
   tools: (hostname: string) => req<ToolsResponse>("GET", `/api/devices/${hostname}/tools`),
   toolsDiff: (hostname: string) => req<ToolsDiff>("GET", `/api/devices/${hostname}/tools/diff`),
+  // One call, three upstream hops (initialize / tools/call / delete) that the BFF runs on our
+  // behalf — a bare `tools/call` cannot be forwarded through the MCP transport. Resolves with
+  // the JSON-RPC envelope on HTTP 200 whether the call succeeded or was refused; it rejects
+  // only for transport- and authorization-level failures (403 without a live elevation, 409
+  // with no active pod).
+  invokeTool: (hostname: string, tool: string, args: Record<string, unknown>) =>
+    req<InvokeEnvelope>("POST", `/api/devices/${hostname}/tools/${encodeURIComponent(tool)}/invoke`, {
+      arguments: args,
+    }),
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),

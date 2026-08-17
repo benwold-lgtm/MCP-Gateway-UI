@@ -4,17 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Hoisted mocks so the api module factory can reference them.
-const { diagnostics, getDevice, tools, toolsDiff, deadLetters, approveFingerprint } = vi.hoisted(() => ({
-  diagnostics: vi.fn(),
-  getDevice: vi.fn(),
-  tools: vi.fn(),
-  toolsDiff: vi.fn(),
-  deadLetters: vi.fn(),
-  approveFingerprint: vi.fn(),
-}));
+const { diagnostics, getDevice, tools, toolsDiff, deadLetters, approveFingerprint, invokeTool } = vi.hoisted(
+  () => ({
+    invokeTool: vi.fn(),
+    diagnostics: vi.fn(),
+    getDevice: vi.fn(),
+    tools: vi.fn(),
+    toolsDiff: vi.fn(),
+    deadLetters: vi.fn(),
+    approveFingerprint: vi.fn(),
+  }),
+);
 
 vi.mock("../api", () => ({
-  api: { diagnostics, getDevice, tools, toolsDiff, deadLetters, approveFingerprint },
+  api: { diagnostics, getDevice, tools, toolsDiff, deadLetters, approveFingerprint, invokeTool },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -84,6 +87,7 @@ describe("DeviceDetail", () => {
     toolsDiff.mockReset();
     deadLetters.mockReset();
     approveFingerprint.mockReset();
+    invokeTool.mockReset();
     getDevice.mockResolvedValue(DEVICE);
     // Default: no recorded tool-set change (panel hidden). Individual tests override.
     toolsDiff.mockResolvedValue({ hostname: "sensor-1", tools_revision: 3, last_change: null });
@@ -208,5 +212,29 @@ describe("DeviceDetail", () => {
     render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
 
     expect(await screen.findByText(/No tool-set changes since registration/)).toBeInTheDocument();
+  });
+
+  it("offers no Run control without the authority to invoke", async () => {
+    // `canInvoke` defaults to false, so a caller that never thought about tool invocation
+    // cannot hand one out by omission — the direction a default should fail in.
+    diagnostics.mockResolvedValue(DIAG);
+    getDevice.mockResolvedValue(null);
+    toolsDiff.mockResolvedValue(null);
+    tools.mockResolvedValue(TOOLS);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} onClose={vi.fn()} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: /get_readings/ }));
+    expect(screen.queryByRole("button", { name: /^run /i })).not.toBeInTheDocument();
+  });
+
+  it("offers Run once the caller says the session may invoke", async () => {
+    diagnostics.mockResolvedValue(DIAG);
+    getDevice.mockResolvedValue(null);
+    toolsDiff.mockResolvedValue(null);
+    tools.mockResolvedValue(TOOLS);
+    render(<DeviceDetail hostname="sensor-1" canWrite={true} canInvoke onClose={vi.fn()} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: /get_readings/ }));
+    expect(screen.getByRole("button", { name: /run get_readings/i })).toBeInTheDocument();
   });
 });

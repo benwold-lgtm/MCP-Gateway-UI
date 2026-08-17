@@ -354,7 +354,15 @@ Three rules on these routes, none of which is visible from the route list:
 - **Tool invocation is one blocking call, not an MCP transport.** The route runs
   `initialize` → `tools/call` → teardown and returns the result. That forecloses incremental
   progress for a long-running call — an accepted trade, because the gateway's dispatch
-  contract is one request and one response, so no transport can report progress today.
+  contract is one request and one response, so no transport can report progress today. In the
+  console it is a form generated from the tool's own JSON Schema, on the device's tool list.
+  Two things it does that a plain "run" button would not: it **converts each value to its
+  declared type** (an HTML input yields a string, and `{"a": "2"}` against `type: integer` is
+  refused upstream with `-32602`), and it **omits an argument the operator did not supply**
+  rather than sending `""`, because a schema default applies only to an absent key. A JSON-RPC
+  error arrives over HTTP 200, so the console reads the envelope rather than the status — and
+  reports a refused call and a tool that ran and failed as different things, since one means
+  fix the arguments and the other means go and look at the device.
 - **`/api/admin/*` refuses the local break-glass login**, whatever its role. A password
   session proxies with the stack's *admin* gateway token, which already holds every
   `backup:*` scope — so admitting one there is a complete credential dump with no step-up

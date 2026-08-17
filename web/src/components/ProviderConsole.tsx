@@ -137,7 +137,7 @@ export function ProviderConsole({
       {/* Tier 1 views are gated on the act, not the plane. When the act ends they unmount —
           a screen of a customer's data that outlives the authority to see it is
           indistinguishable from a live one. */}
-      {view !== "access" && act && <TenantViews tenant={act.tenant} view={view} />}
+      {view !== "access" && act && <TenantViews tenant={act.tenant} view={view} elevation={elevation} />}
     </Shell>
   );
 }
@@ -153,8 +153,22 @@ export function ProviderConsole({
  * refusing — it is the console declining to hand someone a Delete button for a customer's
  * hardware while that question is open. A ceiling is what the plane may do; a console is what
  * we put a button on, and they need not match.
+ *
+ * `canInvoke` is the opposite case, and the contrast is the point: `tools:call` is **outside**
+ * the provider ceiling, reachable only through a live, step-up-backed `provider:invoke`
+ * elevation (§5a/§8). So the Run button appears exactly while that elevation is held — which
+ * is the design being visible, not a permission being computed here. The BFF refuses without
+ * it, and the gateway refuses again on the token it is handed.
  */
-function TenantViews({ tenant, view }: { tenant: string; view: "devices" | "monitoring" }) {
+function TenantViews({
+  tenant,
+  view,
+  elevation,
+}: {
+  tenant: string;
+  view: "devices" | "monitoring";
+  elevation: Elevation | null;
+}) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -185,7 +199,13 @@ function TenantViews({ tenant, view }: { tenant: string; view: "devices" | "moni
       ) : (
         <>
           {selected && (
-            <DeviceDetail hostname={selected} canWrite={false} onClose={() => setSelected(null)} />
+            <DeviceDetail
+              hostname={selected}
+              canWrite={false}
+              canInvoke={elevation?.scope === "provider:invoke"}
+              invokeReason="Running a tool on a customer's device needs a live 'provider:invoke' elevation — acquire one from Access."
+              onClose={() => setSelected(null)}
+            />
           )}
           {overview ? (
             <DeviceList
@@ -234,6 +254,15 @@ function StatusStrip({
   useEffect(() => {
     if (expired) void onChanged();
   }, [expired, onChanged]);
+
+  // The same treatment for the elevation, which needs it for a second reason: an elevation is
+  // what puts a Run button on a customer's device, so an expired one left on screen is an
+  // affordance the operator no longer has. Re-read rather than hide it locally — the BFF owns
+  // the state, and a console that quietly dropped it would be guessing.
+  const elevExpired = elevLeft === 0;
+  useEffect(() => {
+    if (elevExpired) void onChanged();
+  }, [elevExpired, onChanged]);
 
   const urgent = left != null && left < 60;
 
