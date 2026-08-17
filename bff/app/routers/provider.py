@@ -24,6 +24,7 @@ import secrets
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
 from ..grants import (
     GrantError,
+    active_elevated_grant,
     active_grant,
     authorize_act_on_tenant,
     drop_elevated_grant,
@@ -246,6 +247,41 @@ async def elevate(tenant: str, body: ElevateBody, request: Request, session=_pro
     )
     _ = spec  # validated above; the spec itself is re-derived from the transaction
     return {"authorization_url": url}
+
+
+@router.get("/elevation")
+async def current_elevation(request: Request, session=_provider_admin) -> dict:
+    """The live elevation, or ``{"elevation": None}``.
+
+    Read-only and unaudited, for the same reason :func:`current` is: a console polling a
+    countdown must not write to the chain, and must not renew what it is displaying.
+
+    An elevation is authority over one tenant, so it is only ever reported *for the tenant
+    currently being acted on* — with no live act there is nothing to report even if the
+    session still holds a grant record. That mirrors :func:`grants.active_elevated_grant`,
+    which refuses to answer without being told which tenant is being asked about, and it
+    keeps the console from showing an elevation that no route would honour.
+
+    ``single_use`` is in the payload because it is the field that makes this state visibly
+    different from an invoke elevation: one spends on the next operation, the other lasts
+    its window. A console that rendered both as "elevated until 12:04" would be describing
+    the credentials grant wrongly.
+    """
+    now = time.time()
+    act = active_grant(session, now=now)
+    grant = active_elevated_grant(session, tenant=act.tenant, now=now) if act is not None else None
+    if grant is None:
+        return {"elevation": None}
+    # Same omissions as the step-up callback's own response: never the token, never the
+    # justification. Both are already recorded; neither is something a view needs.
+    return {
+        "id": grant.id,
+        "tenant": grant.tenant,
+        "scope": grant.provider_scope,
+        "granted_at": grant.granted_at,
+        "expires_at": grant.expires_at,
+        "single_use": grant.single_use,
+    }
 
 
 @router.delete("/elevation")
