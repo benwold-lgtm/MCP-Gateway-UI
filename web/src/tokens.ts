@@ -17,9 +17,13 @@ export const health = {
   ok: "#2F8F5B",
   fail: "#C4453E",
   /** Unknown / stale — metrics too old to trust, *not* "offline".
-   *  ⚠️ Provisional: the spec leaves the exact hex open (§11). It only has to be a neutral
-   *  gray-amber that is clearly not `priv`, so the two channels stay legible side by side. */
-  stale: "#8A7A4E",
+   *
+   *  Still provisional (the spec leaves the hex open, §11), but no longer arbitrary. The
+   *  first pick, `#8A7A4E`, sat within 0.011 relative luminance of `ok` — a hair apart in
+   *  greyscale, so a printed or screenshotted fleet list showed healthy and unknown as the
+   *  same shade. This one clears both `ok` and `fail` by >0.04 and reaches 5.9:1 on canvas,
+   *  which is comfortably readable rather than merely a legal mark. */
+  stale: "#6E5F35",
 } as const;
 
 /** State of privilege. Used for elevation and step-up ONLY (§9) — never for chrome, never
