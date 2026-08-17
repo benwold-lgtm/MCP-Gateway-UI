@@ -5,6 +5,7 @@ import type { ActGrant, AuthConfig, Elevation, Overview, Session, StepUpOutcome 
 import { formatCountdown, useCountdown } from "../useCountdown";
 import { health, priv, ui } from "../tokens";
 import { Shell, RailItem, StatusItem } from "./Shell";
+import { Gate } from "./Gate";
 import { readStepUpOutcome } from "../stepUpOutcome";
 import { ActOnTenant } from "./ActOnTenant";
 import { ElevationPanel } from "./ElevationPanel";
@@ -239,7 +240,12 @@ function StatusStrip({
   // Nothing held: say so in the strip rather than leaving it blank. An empty strip reads as
   // "not loaded yet"; this reads as "you currently reach nothing", which is the true state.
   if (!act) {
-    return <StatusItem label="ACCESS">no live act — no tenant reachable</StatusItem>;
+    return (
+      <>
+        <Gate open={false} />
+        <StatusItem label="ACCESS">no live act — no tenant reachable</StatusItem>
+      </>
+    );
   }
 
   return (
@@ -252,6 +258,10 @@ function StatusStrip({
           {left != null ? formatCountdown(left) : "…"}
         </span>
       </StatusItem>
+      {/* The gate is always mounted so it can be *seen* closing. A badge that unmounts on
+          expiry shows nothing at the one moment worth showing — and a single-use grant is
+          spent by the next operation, whether or not anyone was watching the panel. */}
+      <Gate open={elevation != null} />
       {/* The only indigo in the console, and only while an elevation is actually live. Its
           scarcity is its meaning: if it is on screen, you are holding elevated authority. */}
       {elevation && (

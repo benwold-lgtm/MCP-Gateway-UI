@@ -104,3 +104,15 @@ a {
   color: var(--ink);
   text-underline-offset: 2px;
 }
+
+/* The gate is the product's one orchestrated motion. Someone who has asked for less motion
+   has asked for less motion — and both gate states are legible without it, because open and
+   closed differ in shape rather than only in having moved. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -4,6 +4,7 @@ import { api, ApiError } from "../api";
 import type { ActGrant, Elevation, ProviderScope, StepUpOutcome } from "../types";
 import { formatCountdown, useCountdown } from "../useCountdown";
 import { health, priv, ui } from "../tokens";
+import { Gate } from "./Gate";
 
 /** The two elevated grants and the step-up behind them (ADR-0013 §5a/§8/§11).
  *
@@ -101,7 +102,19 @@ export function ElevationPanel({
   if (!stepUpEnabled) {
     return (
       <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
-        <h2 style={{ marginTop: 0, fontSize: "1.05em", color: ui.ink }}>Elevated access</h2>
+        <h2
+          style={{
+            marginTop: 0,
+            fontSize: "1.05em",
+            color: ui.ink,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <Gate open={elevation != null} size={20} />
+          Elevated access
+        </h2>
         <p style={{ margin: 0, color: ui.muted }}>
           Not offered on this deployment: no step-up context is configured, so an elevation could not be
           verified even if it were requested.
@@ -114,7 +127,19 @@ export function ElevationPanel({
 
   return (
     <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
-      <h2 style={{ marginTop: 0, fontSize: "1.05em", color: ui.ink }}>Elevated access</h2>
+      <h2
+        style={{
+          marginTop: 0,
+          fontSize: "1.05em",
+          color: ui.ink,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <Gate open={elevation != null} size={20} />
+        Elevated access
+      </h2>
 
       {outcome?.status === "denied" && (
         <div
