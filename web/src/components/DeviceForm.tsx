@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { DevicePayload } from "../types";
+import { health, ui } from "../tokens";
 
 // Register (POST) or edit (PUT) a device, including auth — so an *authenticated*
 // device can be onboarded from the UI. On edit, fields are pre-filled from the
@@ -119,7 +120,7 @@ export function DeviceForm({
     <form
       onSubmit={submit}
       style={{
-        border: "1px solid #ccc",
+        border: `1px solid ${ui.rule}`,
         borderRadius: 8,
         padding: "12px 16px",
         margin: "12px 0",
@@ -272,7 +273,7 @@ export function DeviceForm({
         <button type="button" onClick={onCancel} disabled={submitting}>
           Cancel
         </button>
-        {error && <span style={{ color: "crimson" }}>{error}</span>}
+        {error && <span style={{ color: health.fail }}>{error}</span>}
       </div>
     </form>
   );
@@ -281,7 +282,7 @@ export function DeviceForm({
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: React.ReactNode }) {
   return (
     <>
-      <label htmlFor={htmlFor} style={{ color: "#555", fontSize: 14 }}>
+      <label htmlFor={htmlFor} style={{ color: ui.inkSoft, fontSize: 14 }}>
         {label}
       </label>
       {children}

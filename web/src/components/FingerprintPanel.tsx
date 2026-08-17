@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { api, ApiError } from "../api";
 import type { DeviceFull, Diagnostics } from "../types";
+import { health, ui } from "../tokens";
 
 // Endpoint fingerprint (gateway ADR-0015, F-69) — what a device *is*.
 //
@@ -54,13 +55,13 @@ export function FingerprintPanel({
       <h3 style={{ marginBottom: 2 }}>
         Endpoint fingerprint <StateChip state={state} />
       </h3>
-      <p style={{ color: "#666", fontSize: 13, margin: "2px 0 8px" }}>
+      <p style={{ color: ui.inkSoft, fontSize: 13, margin: "2px 0 8px" }}>
         Three independent dimensions, kept separate on purpose — they answer different questions and carry
         different weight.
       </p>
 
       {pending && <PendingApproval device={device} canWrite={canWrite} busy={busy} onApprove={approve} />}
-      {error && <p style={{ color: "crimson", fontSize: 13 }}>{error}</p>}
+      {error && <p style={{ color: health.fail, fontSize: 13 }}>{error}</p>}
 
       <Group
         title="Authenticated"
@@ -93,7 +94,7 @@ export function FingerprintPanel({
       <table cellPadding={4} style={{ borderCollapse: "collapse", marginTop: 8 }}>
         <tbody>
           <tr>
-            <td style={{ color: "#666", paddingRight: 16, verticalAlign: "top" }}>Policy</td>
+            <td style={{ color: ui.inkSoft, paddingRight: 16, verticalAlign: "top" }}>Policy</td>
             <td style={{ fontSize: 13 }}>{policyText(device.fingerprint_policy)}</td>
           </tr>
         </tbody>
@@ -144,7 +145,7 @@ function PendingApproval({
           {busy ? "Approving…" : "Approve new key"}
         </button>
       ) : (
-        <p style={{ fontSize: 13, color: "#666", margin: "6px 0 0" }}>
+        <p style={{ fontSize: 13, color: ui.inkSoft, margin: "6px 0 0" }}>
           Approval needs an admin session (the gateway requires <code>devices:write</code>).
         </p>
       )}
@@ -202,7 +203,7 @@ function Group({ title, caption, children }: { title: string; caption: string; c
   return (
     <div style={{ marginTop: 10 }}>
       <div style={{ fontWeight: 600, fontSize: 13 }}>{title}</div>
-      <div style={{ color: "#777", fontSize: 12, maxWidth: 620 }}>{caption}</div>
+      <div style={{ color: ui.muted, fontSize: 12, maxWidth: 620 }}>{caption}</div>
       <table cellPadding={4} style={{ borderCollapse: "collapse", marginTop: 2 }}>
         <tbody>{children}</tbody>
       </table>
@@ -223,7 +224,9 @@ function Row({
 }) {
   return (
     <tr>
-      <td style={{ color: "#666", paddingRight: 16, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
+      <td style={{ color: ui.inkSoft, paddingRight: 16, verticalAlign: "top", whiteSpace: "nowrap" }}>
+        {label}
+      </td>
       <td
         style={{
           color: danger ? "crimson" : muted ? "#888" : "inherit",

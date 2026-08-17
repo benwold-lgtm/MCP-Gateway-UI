@@ -3,6 +3,7 @@ import { useState } from "react";
 import { api, ApiError } from "../api";
 import type { ActGrant, Elevation, ProviderScope, StepUpOutcome } from "../types";
 import { formatCountdown, useCountdown } from "../useCountdown";
+import { health, priv, ui } from "../tokens";
 
 /** The two elevated grants and the step-up behind them (ADR-0013 §5a/§8/§11).
  *
@@ -99,9 +100,9 @@ export function ElevationPanel({
 
   if (!stepUpEnabled) {
     return (
-      <section style={{ border: "1px solid #ddd", borderRadius: 6, padding: "12px 16px" }}>
-        <h2 style={{ marginTop: 0, fontSize: "1.05em" }}>Elevated access</h2>
-        <p style={{ margin: 0, color: "#555" }}>
+      <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
+        <h2 style={{ marginTop: 0, fontSize: "1.05em", color: ui.ink }}>Elevated access</h2>
+        <p style={{ margin: 0, color: ui.muted }}>
           Not offered on this deployment: no step-up context is configured, so an elevation could not be
           verified even if it were requested.
         </p>
@@ -112,13 +113,18 @@ export function ElevationPanel({
   const selected = CLASSES.find((c) => c.scope === scope);
 
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 6, padding: "12px 16px" }}>
-      <h2 style={{ marginTop: 0, fontSize: "1.05em" }}>Elevated access</h2>
+    <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
+      <h2 style={{ marginTop: 0, fontSize: "1.05em", color: ui.ink }}>Elevated access</h2>
 
       {outcome?.status === "denied" && (
         <div
           role="alert"
-          style={{ border: "1px solid crimson", borderRadius: 4, padding: "8px 12px", marginBottom: 12 }}
+          style={{
+            border: `1px solid ${health.fail}`,
+            borderRadius: 4,
+            padding: "8px 12px",
+            marginBottom: 12,
+          }}
         >
           <strong>No elevation was granted.</strong>{" "}
           {DENIED_REASONS[outcome.reason] ?? "The step-up did not complete."}{" "}
@@ -136,12 +142,12 @@ export function ElevationPanel({
         <div style={{ display: "grid", gap: 8 }}>
           <p style={{ margin: 0 }}>
             <strong>{elevation.scope}</strong> on <strong>{elevation.tenant}</strong>
-            <span aria-live="polite" style={{ color: left != null && left < 60 ? "crimson" : "#555" }}>
+            <span aria-live="polite" style={{ color: left != null && left < 60 ? health.fail : priv.ink }}>
               {" "}
               — expires in {left != null ? formatCountdown(left) : "…"}
             </span>
           </p>
-          <p style={{ margin: 0, fontSize: "0.85em", color: elevation.single_use ? "#a15c00" : "#555" }}>
+          <p style={{ margin: 0, fontSize: "0.85em", color: elevation.single_use ? priv.base : ui.muted }}>
             {elevation.single_use
               ? "Single use — the next operation spends it. Re-entering needs another step-up."
               : "Usable for the rest of this window."}
@@ -153,16 +159,16 @@ export function ElevationPanel({
           </div>
         </div>
       ) : !act ? (
-        <p style={{ margin: 0, color: "#555" }}>
+        <p style={{ margin: 0, color: ui.muted }}>
           Authorize an act on a tenant first — an elevation sits on top of one.
         </p>
       ) : (
         <form onSubmit={elevate} style={{ display: "grid", gap: 8 }}>
-          <p style={{ margin: 0, color: "#555", fontSize: "0.9em" }}>
+          <p style={{ margin: 0, color: ui.muted, fontSize: "0.9em" }}>
             Requires re-authentication with your directory. On <strong>{act.tenant}</strong>.
           </p>
           <label style={{ display: "grid", gap: 4 }}>
-            <span style={{ fontSize: "0.85em" }}>What for</span>
+            <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>What for</span>
             <select value={scope} onChange={(e) => setScope(e.target.value as ProviderScope)}>
               {CLASSES.map((c) => (
                 <option key={c.scope} value={c.scope}>
@@ -171,9 +177,9 @@ export function ElevationPanel({
               ))}
             </select>
           </label>
-          <p style={{ margin: 0, fontSize: "0.85em", color: "#555" }}>{selected?.what}</p>
+          <p style={{ margin: 0, fontSize: "0.85em", color: ui.muted }}>{selected?.what}</p>
           <label style={{ display: "grid", gap: 4 }}>
-            <span style={{ fontSize: "0.85em" }}>Why (recorded)</span>
+            <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Why (recorded)</span>
             <textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}
@@ -189,7 +195,7 @@ export function ElevationPanel({
         </form>
       )}
 
-      {error && <p style={{ color: "crimson", marginBottom: 0 }}>{error}</p>}
+      {error && <p style={{ color: health.fail, marginBottom: 0 }}>{error}</p>}
     </section>
   );
 }

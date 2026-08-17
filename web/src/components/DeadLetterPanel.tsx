@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { DeadLetterList } from "../types";
+import { health, ui } from "../tokens";
 
 // Per-device dead-letter queue (gateway F-10). Inspect is a read (any session);
 // replay/drain mutate and need devices:write. The gateway returns 400 in embedded mode
@@ -67,7 +68,7 @@ export function DeadLetterPanel({ hostname, canWrite }: { hostname: string; canW
     return (
       <div style={{ marginTop: 16 }}>
         <h3>Dead-letter queue</h3>
-        <p style={{ color: "#888", fontSize: 13 }}>Available in distributed mode only.</p>
+        <p style={{ color: ui.muted, fontSize: 13 }}>Available in distributed mode only.</p>
       </div>
     );
   }
@@ -75,10 +76,10 @@ export function DeadLetterPanel({ hostname, canWrite }: { hostname: string; canW
   return (
     <div style={{ marginTop: 16 }}>
       <h3 style={{ marginBottom: 4 }}>Dead-letter queue {list ? `(${list.count})` : ""}</h3>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {error && <p style={{ color: health.fail }}>{error}</p>}
       {notice && <p style={{ color: "#2a7", fontSize: 13 }}>{notice}</p>}
       {!list && !error && <p>Loading…</p>}
-      {list && list.entries.length === 0 && <p style={{ color: "#888", fontSize: 13 }}>Empty.</p>}
+      {list && list.entries.length === 0 && <p style={{ color: ui.muted, fontSize: 13 }}>Empty.</p>}
       {list && list.entries.length > 0 && (
         <>
           {isAdmin && (
@@ -103,14 +104,14 @@ export function DeadLetterPanel({ hostname, canWrite }: { hostname: string; canW
             </thead>
             <tbody>
               {list.entries.map((e) => (
-                <tr key={e.id} style={{ borderTop: "1px solid #eee" }}>
+                <tr key={e.id} style={{ borderTop: `1px solid ${ui.rule}` }}>
                   <td>
                     <code>{e.method ?? "—"}</code>
                   </td>
                   <td>{e.reason || "—"}</td>
                   <td title={e.ts}>{fmtTs(e.ts)}</td>
                   <td>
-                    <code style={{ color: "#888" }}>{e.request_id || e.rid || e.id}</code>
+                    <code style={{ color: ui.muted }}>{e.request_id || e.rid || e.id}</code>
                   </td>
                   {isAdmin && (
                     <td align="right" style={{ whiteSpace: "nowrap" }}>
