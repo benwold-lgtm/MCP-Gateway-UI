@@ -29,6 +29,10 @@ export function App() {
   // The UI gates on the gateway's scopes, not a role string (ADR-0007), so password and
   // OIDC sessions are treated uniformly.
   const canWrite = session?.scopes.includes("devices:write") ?? false;
+  // A separate scope from `devices:write`, and deliberately read separately: editing a device
+  // record and running a tool against the live device are different authorities, and the
+  // gateway grants them independently.
+  const canInvoke = session?.scopes.includes("tools:call") ?? false;
 
   // Provider sessions don't load the overview *here* — but not because the plane may not
   // read it. A live act-on-tenant admits them to the tenant data plane, capped by the
@@ -125,7 +129,13 @@ export function App() {
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}
           {selected && (
-            <DeviceDetail hostname={selected} canWrite={canWrite} onClose={() => setSelected(null)} />
+            <DeviceDetail
+              hostname={selected}
+              canWrite={canWrite}
+              canInvoke={canInvoke}
+              invokeReason="Running tools needs the 'tools:call' scope, which your role does not carry."
+              onClose={() => setSelected(null)}
+            />
           )}
           {overview ? (
             <DeviceList

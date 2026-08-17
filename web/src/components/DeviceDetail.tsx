@@ -4,6 +4,7 @@ import { api, ApiError } from "../api";
 import type { DeviceFull, Diagnostics, Tool, ToolsDiff } from "../types";
 import { DeadLetterPanel } from "./DeadLetterPanel";
 import { FingerprintPanel } from "./FingerprintPanel";
+import { ToolInvoke } from "./ToolInvoke";
 import { health, ui } from "../tokens";
 
 // Per-device detail: the gateway's diagnostics ("why is my device down?"), the endpoint
@@ -16,10 +17,19 @@ import { health, ui } from "../tokens";
 export function DeviceDetail({
   hostname,
   canWrite,
+  canInvoke = false,
+  invokeReason,
   onClose,
 }: {
   hostname: string;
   canWrite: boolean;
+  /** Whether this session may *call* a tool, which is a different authority from writing a
+   *  device record: a tenant admin holds `tools:call` as an ordinary scope, a provider
+   *  operator needs a live `provider:invoke` elevation (ADR-0013 §8). Defaults to false so
+   *  a caller that has not thought about it does not hand out a Run button. */
+  canInvoke?: boolean;
+  /** Shown in the tool panel when `canInvoke` is false — what would change that. */
+  invokeReason?: string;
   onClose: () => void;
 }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
@@ -180,17 +190,26 @@ export function DeviceDetail({
                   </button>
                   {t.description && <div style={{ color: ui.inkSoft, fontSize: 13 }}>{t.description}</div>}
                   {openTool === t.name && (
-                    <pre
-                      style={{
-                        background: "#fff",
-                        border: `1px solid ${ui.rule}`,
-                        padding: 8,
-                        overflowX: "auto",
-                        fontSize: 12,
-                      }}
-                    >
-                      {JSON.stringify(t.schema, null, 2)}
-                    </pre>
+                    <>
+                      <ToolInvoke hostname={hostname} tool={t} canInvoke={canInvoke} reason={invokeReason} />
+                      <details style={{ marginTop: 8 }}>
+                        <summary style={{ cursor: "pointer", fontSize: 12, color: ui.inkSoft }}>
+                          Schema
+                        </summary>
+                        <pre
+                          style={{
+                            background: "#fff",
+                            border: `1px solid ${ui.rule}`,
+                            padding: 8,
+                            overflowX: "auto",
+                            fontSize: 12,
+                            margin: "4px 0 0",
+                          }}
+                        >
+                          {JSON.stringify(t.schema, null, 2)}
+                        </pre>
+                      </details>
+                    </>
                   )}
                 </li>
               ))}

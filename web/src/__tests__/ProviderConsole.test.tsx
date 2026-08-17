@@ -12,21 +12,47 @@ import { ProviderConsole } from "../components/ProviderConsole";
 import { readStepUpOutcome } from "../stepUpOutcome";
 import type { AuthConfig, Session } from "../types";
 
-const { authorize, actOnTenant, release, elevate, elevation, endElevation, overview, tenants } = vi.hoisted(
-  () => ({
-    overview: vi.fn(),
-    tenants: vi.fn(),
-    authorize: vi.fn(),
-    actOnTenant: vi.fn(),
-    release: vi.fn(),
-    elevate: vi.fn(),
-    elevation: vi.fn(),
-    endElevation: vi.fn(),
-  }),
-);
+const {
+  authorize,
+  actOnTenant,
+  release,
+  elevate,
+  elevation,
+  endElevation,
+  overview,
+  tenants,
+  diagnostics,
+  getDevice,
+  tools,
+  toolsDiff,
+  deadLetters,
+} = vi.hoisted(() => ({
+  overview: vi.fn(),
+  tenants: vi.fn(),
+  authorize: vi.fn(),
+  actOnTenant: vi.fn(),
+  release: vi.fn(),
+  elevate: vi.fn(),
+  elevation: vi.fn(),
+  endElevation: vi.fn(),
+  // DeviceDetail's own reads, needed only by the invoke-gating tests at the end.
+  diagnostics: vi.fn(),
+  getDevice: vi.fn(),
+  tools: vi.fn(),
+  toolsDiff: vi.fn(),
+  deadLetters: vi.fn(),
+}));
 
 vi.mock("../api", () => ({
-  api: { provider: { authorize, actOnTenant, release, elevate, elevation, endElevation, tenants }, overview },
+  api: {
+    provider: { authorize, actOnTenant, release, elevate, elevation, endElevation, tenants },
+    overview,
+    diagnostics,
+    getDevice,
+    tools,
+    toolsDiff,
+    deadLetters,
+  },
   asGrant: (r: unknown) => (r && "grant" in (r as object) ? null : r),
   asElevation: (r: unknown) => (r && "elevation" in (r as object) ? null : r),
   ApiError: class ApiError extends Error {
@@ -81,7 +107,21 @@ const REAL_LOCATION = window.location;
 
 describe("ProviderConsole", () => {
   beforeEach(() => {
-    for (const fn of [authorize, actOnTenant, release, elevate, elevation, endElevation, overview, tenants])
+    for (const fn of [
+      authorize,
+      actOnTenant,
+      release,
+      elevate,
+      elevation,
+      endElevation,
+      overview,
+      tenants,
+      diagnostics,
+      getDevice,
+      tools,
+      toolsDiff,
+      deadLetters,
+    ])
       fn.mockReset();
     // No published estate: these tests are about the act, and the free-entry box is what
     // they drive. The picker has its own file.
@@ -381,5 +421,108 @@ describe("the console shell", () => {
     renderConsole();
     await waitFor(() => expect(stripText()).toContain("acme"));
     expect(stripText().toLowerCase()).not.toContain("elevated");
+  });
+
+  // --- W5: the Run button is the elevation being visible ----------------------
+  //
+  // `tools:call` is OUTSIDE the provider ceiling (§5a), so unlike the device list this is not
+  // the console declining — it is the only tier that a step-up actually buys. The wiring is
+  // one expression (`elevation?.scope === "provider:invoke"`), and hardcoding it true would
+  // put a Run button on a customer's live hardware for any operator holding only an act.
+
+  const DEVICE = {
+    hostname: "sensor-1",
+    base_url: "http://sensor-1.local",
+    reachable: true,
+    pod_active: true,
+  };
+
+  function seedFleet() {
+    overview.mockResolvedValue({ devices: [DEVICE], counts: { total: 1, reachable: 1 } });
+    diagnostics.mockResolvedValue({
+      hostname: "sensor-1",
+      mode: "distributed",
+      base_url: "http://sensor-1.local",
+      spec_url: null,
+      reachable: true,
+      pod_active: true,
+      worker_id: null,
+      last_check_age_seconds: 3,
+      spec_hash: "abc",
+      has_manifest: true,
+      tool_count: 1,
+      tools_revision: 1,
+      spawn_error: null,
+      upstream_kind: "mcp",
+      breaker: { available: false, note: "not readable here" },
+      tls: null,
+    });
+    getDevice.mockResolvedValue(null);
+    toolsDiff.mockResolvedValue(null);
+    deadLetters.mockResolvedValue({ hostname: "sensor-1", entries: [], count: 0 });
+    tools.mockResolvedValue({
+      hostname: "sensor-1",
+      count: 1,
+      tools: [
+        {
+          name: "get_readings",
+          description: "",
+          method: "GET",
+          path: "/r",
+          schema: { type: "object", properties: {} },
+        },
+      ],
+    });
+  }
+
+  async function openTool(user: ReturnType<typeof userEvent.setup>) {
+    await openRail(user, /^devices$/i);
+    // The fleet table selects through a link, not a button.
+    await user.click(await screen.findByRole("link", { name: /sensor-1/ }));
+    await user.click(await screen.findByRole("button", { name: /get_readings/ }));
+  }
+
+  it("withholds Run while the operator holds only an act", async () => {
+    seedFleet();
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    renderConsole();
+    await openTool(userEvent.setup());
+    expect(screen.queryByRole("button", { name: /^run /i })).not.toBeInTheDocument();
+    // ...and says what would change it, rather than leaving the control silently absent.
+    expect(screen.getByText(/provider:invoke/)).toBeInTheDocument();
+  });
+
+  it("offers Run while a provider:invoke elevation is live", async () => {
+    seedFleet();
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    elevation.mockResolvedValue({
+      id: "e1",
+      tenant: "acme",
+      scope: "provider:invoke",
+      granted_at: soon(0),
+      expires_at: soon(900),
+      single_use: false,
+    });
+    renderConsole();
+    await openTool(userEvent.setup());
+    expect(screen.getByRole("button", { name: /run get_readings/i })).toBeInTheDocument();
+  });
+
+  it("does not accept the credentials elevation as authority to invoke", async () => {
+    // The two grants are separate acts (§8). A single-use credentials grant standing in for
+    // an invoke one would let a backup step-up buy tool execution on live hardware.
+    seedFleet();
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    elevation.mockResolvedValue({
+      id: "e2",
+      tenant: "acme",
+      scope: "provider:credentials",
+      granted_at: soon(0),
+      expires_at: soon(300),
+      single_use: true,
+    });
+    renderConsole();
+    await openTool(userEvent.setup());
+    expect(screen.queryByRole("button", { name: /^run /i })).not.toBeInTheDocument();
   });
 });

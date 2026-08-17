@@ -46,6 +46,21 @@ export type Tool = {
 };
 export type ToolsResponse = { hostname: string; tools: Tool[]; count: number };
 
+// What `POST /api/devices/{h}/tools/{t}/invoke` answers with: the gateway's JSON-RPC envelope,
+// passed through untouched. Note it arrives over **HTTP 200 even when the call was refused** —
+// a JSON-RPC error is a body, not a status — so callers must read the envelope rather than the
+// response code. `readOutcome` in `toolArgs.ts` is the only place that should do that.
+export type InvokeEnvelope = {
+  jsonrpc?: string;
+  id?: number | string;
+  result?: {
+    content?: { type?: string; text?: string }[];
+    structuredContent?: unknown;
+    isError?: boolean;
+  };
+  error?: { code?: number; message?: string; data?: unknown };
+};
+
 // UI-local — the role comes from the BFF session, not the gateway response contract.
 export type Role = "admin" | "viewer";
 
