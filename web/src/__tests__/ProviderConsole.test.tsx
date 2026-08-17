@@ -55,20 +55,15 @@ const CONFIG: AuthConfig = {
 
 const soon = (secs: number) => Date.now() / 1000 + secs;
 
-/** Text of the panel containing `match`.
- *
- * A countdown renders as several text nodes — a label and a value — so `getByText` cannot
- * match it as one string, and asserting the exact remaining second is a race. Reading the
- * whole panel tests what a reader actually sees.
- */
-function panelText(match: RegExp): string {
-  return screen.getByText(match).closest("section")?.textContent ?? "";
+/** Text of the status strip — the shell's persistent footer, which owns the live grant. */
+function stripText(): string {
+  return document.querySelector("footer")?.textContent ?? "";
 }
 
-/** Text of the persistent act bar. It lives in the shell rather than a panel (W3), so it has
- *  no enclosing <section> — walk to the flex row that holds the countdown instead. */
-function barText(): string {
-  return screen.getByText(/acting on/i).parentElement?.textContent ?? "";
+/** Navigate the rail the way an operator does. Tier-1 views are not on the landing screen;
+ *  reaching them is the act being spent, which is the behaviour worth testing. */
+async function openRail(user: ReturnType<typeof userEvent.setup>, label: RegExp) {
+  await user.click(await screen.findByRole("button", { name: label }));
 }
 
 function renderConsole(config: AuthConfig = CONFIG) {
@@ -127,8 +122,9 @@ describe("ProviderConsole", () => {
     await user.click(screen.getByRole("button", { name: /^authorize$/i }));
 
     expect(authorize).toHaveBeenCalledWith("acme", "INC-4471");
-    expect(await screen.findByText(/acting on/i)).toHaveTextContent("acme");
-    await waitFor(() => expect(barText()).toMatch(/ends in \d+:\d\d/));
+    await waitFor(() => expect(stripText()).toContain("acme"));
+    // The countdown is in the strip now, visible from every view rather than only this one.
+    await waitFor(() => expect(stripText()).toMatch(/\d+:\d\d/));
   });
 
   it("warns that authorizing another tenant ends the current act", async () => {
@@ -192,8 +188,19 @@ describe("ProviderConsole", () => {
       single_use: true,
     });
     renderConsole();
-    expect(await screen.findByText(/single use/i)).toBeInTheDocument();
-    await waitFor(() => expect(panelText(/single use/i)).toMatch(/expires in \d+:\d\d/));
+    // Both the panel and the strip report it — the strip so it survives navigating away,
+    // the panel because that is where the operator acquired it. Assert on the panel.
+    // The countdown's first value arrives from an effect, so it must be waited for and the
+    // panel re-queried each attempt. Asserting synchronously catches the tick before it —
+    // which passed locally and failed in CI, the worst way for this to be wrong.
+    await waitFor(() => {
+      const panel = screen
+        .getAllByText(/single use/i)
+        .map((el) => el.closest("section"))
+        .find(Boolean);
+      expect(panel?.textContent).toMatch(/expires in \d+:\d\d/);
+    });
+    expect(stripText()).toMatch(/single use/i);
   });
 
   it("describes an invoke elevation as lasting its window", async () => {
@@ -284,8 +291,8 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
   it("loads the acted-on tenant's devices once an act is live", async () => {
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
+    await openRail(userEvent.setup(), /^devices$/i);
     await waitFor(() => expect(overview).toHaveBeenCalled());
-    expect(await screen.findByRole("heading", { name: "acme" })).toBeInTheDocument();
   });
 
   it("names whose estate is on screen", async () => {
@@ -293,7 +300,9 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     // remember which customer's hardware they are looking at.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
-    expect(await screen.findByText(/everything below is that customer/i)).toBeInTheDocument();
+    // The strip answers "whose estate is this" from every view, not just the landing one.
+    await waitFor(() => expect(stripText()).toContain("acme"));
+    expect(stripText().toLowerCase()).toContain("acting on");
   });
 
   it("withholds write affordances while D2 is open", async () => {
@@ -302,7 +311,8 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     // put a button on.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
-    await screen.findByRole("heading", { name: "acme" });
+    await openRail(userEvent.setup(), /^devices$/i);
+    await waitFor(() => expect(overview).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /delete|register device/i })).not.toBeInTheDocument();
   });
 
@@ -311,6 +321,59 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     // If this ever required a step-up, the tier model would have drifted.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
-    expect(await screen.findByRole("button", { name: /monitoring/i })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: /^monitoring$/i })).toBeEnabled();
+  });
+});
+
+describe("the console shell", () => {
+  beforeEach(() => {
+    for (const fn of [actOnTenant, elevation, overview, release]) fn.mockReset();
+    elevation.mockResolvedValue({ elevation: null });
+    overview.mockResolvedValue({ devices: [], counts: {} });
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("keeps tier-1 destinations visible but disabled without an act", async () => {
+    // Hiding them would teach nothing about why they are out of reach, and the "why" is the
+    // whole design: signing in reaches no customer stack.
+    actOnTenant.mockResolvedValue({ grant: null });
+    renderConsole();
+    const devices = await screen.findByRole("button", { name: /^devices/i });
+    expect(devices).toBeDisabled();
+    expect(devices).toHaveTextContent(/needs a live act/i);
+  });
+
+  it("says in the strip that nothing is reachable, rather than leaving it blank", async () => {
+    // An empty strip reads as "not loaded yet". This reads as the true state.
+    actOnTenant.mockResolvedValue({ grant: null });
+    renderConsole();
+    await waitFor(() => expect(stripText()).toMatch(/no live act/i));
+  });
+
+  it("ejects from a tenant view when the act goes away", async () => {
+    // §4's point: a screen of a customer's data that outlives the authority to see it is
+    // indistinguishable from a live one, so it must not survive the grant.
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    renderConsole();
+    const user = userEvent.setup();
+    await openRail(user, /^devices$/i);
+    await waitFor(() => expect(overview).toHaveBeenCalled());
+
+    // The act ends — from the strip, from expiry, or from another tab. Any of them.
+    release.mockResolvedValue({ released: "acme" });
+    actOnTenant.mockResolvedValue({ grant: null });
+    await user.click(screen.getByRole("button", { name: /end act/i }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^devices/i })).toBeDisabled());
+    expect(stripText()).toMatch(/no live act/i);
+  });
+
+  it("shows indigo only while an elevation is actually live", async () => {
+    // The privilege channel's scarcity is its meaning. If it is on screen at all, the
+    // operator is holding elevated authority right now.
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    renderConsole();
+    await waitFor(() => expect(stripText()).toContain("acme"));
+    expect(stripText().toLowerCase()).not.toContain("elevated");
   });
 });

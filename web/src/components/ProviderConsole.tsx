@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, asElevation, asGrant } from "../api";
 import type { ActGrant, AuthConfig, Elevation, Overview, Session, StepUpOutcome } from "../types";
 import { formatCountdown, useCountdown } from "../useCountdown";
-import { health, sans, ui } from "../tokens";
+import { health, priv, ui } from "../tokens";
+import { Shell, RailItem, StatusItem } from "./Shell";
 import { readStepUpOutcome } from "../stepUpOutcome";
 import { ActOnTenant } from "./ActOnTenant";
 import { ElevationPanel } from "./ElevationPanel";
@@ -18,6 +19,8 @@ import { Dashboard } from "./Dashboard";
  * component while another believed a different tenant was live would be the console disagreeing
  * with itself about whose estate is open.
  */
+type View = "access" | "devices" | "monitoring";
+
 export function ProviderConsole({
   session,
   config,
@@ -31,6 +34,7 @@ export function ProviderConsole({
   const [elevation, setElevation] = useState<Elevation | null>(null);
   const [outcome, setOutcome] = useState<StepUpOutcome | null>(() => readStepUpOutcome());
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("access");
 
   const refresh = useCallback(async () => {
     try {
@@ -47,6 +51,13 @@ export function ProviderConsole({
     void refresh();
   }, [refresh]);
 
+  // Losing the act ejects you from anything it was holding open. Leaving a customer's device
+  // list on screen after the authority to see it expired is the state ADR-0013 §4 exists to
+  // prevent, and a stale view is indistinguishable from a live one.
+  useEffect(() => {
+    if (!act) setView("access");
+  }, [act]);
+
   // A step-up lands back here by full-page navigation, so the outcome arrives in the URL rather
   // than in a response. Strip it once read: it should not survive a reload, be bookmarked, or
   // reappear as a stale "granted" beside an elevation that has since been spent.
@@ -56,9 +67,42 @@ export function ProviderConsole({
 
   // Signed in but mapped to nothing: saying so beats every route answering 403.
   const scopes = session.provider_scopes ?? [];
+
+  // The rail *is* the tier model. Everything behind an act stays visible but disabled, with
+  // the reason attached — a console that hid what you cannot yet reach would teach nothing
+  // about why, and the "why" here is the whole design.
+  const rail = (
+    <>
+      <RailItem label="Access" active={view === "access"} onClick={() => setView("access")} />
+      <RailItem
+        label="Devices"
+        active={view === "devices"}
+        disabled={!act}
+        hint={!act ? "needs a live act" : undefined}
+        onClick={() => setView("devices")}
+      />
+      <RailItem
+        label="Monitoring"
+        active={view === "monitoring"}
+        disabled={!act}
+        hint={!act ? "needs a live act" : undefined}
+        onClick={() => setView("monitoring")}
+      />
+    </>
+  );
+
+  const identity = (
+    <div style={{ display: "grid", gap: 5 }}>
+      <span>{session.name || session.subject}</span>
+      <button onClick={onSignOut} style={{ justifySelf: "start" }}>
+        Sign out
+      </button>
+    </div>
+  );
+
   if (scopes.length === 0) {
     return (
-      <Shell session={session} onSignOut={onSignOut}>
+      <Shell brand="SyncGate" eyebrow="PROVIDER CONSOLE" rail={null} identity={identity}>
         <p style={{ color: health.fail }}>
           You are signed in, but your directory groups grant no provider access on this console. Nothing here
           is available until that mapping is in place.
@@ -68,23 +112,31 @@ export function ProviderConsole({
   }
 
   return (
-    <Shell session={session} onSignOut={onSignOut} act={act} onChanged={refresh}>
+    <Shell
+      brand="SyncGate"
+      eyebrow="PROVIDER CONSOLE"
+      rail={rail}
+      identity={identity}
+      status={<StatusStrip act={act} elevation={elevation} onChanged={refresh} />}
+    >
       {error && <p style={{ color: health.fail }}>{error}</p>}
-      <div style={{ display: "grid", gap: 16 }}>
-        <ActOnTenant grant={act} onChanged={refresh} />
-        <ElevationPanel
-          act={act}
-          elevation={elevation}
-          outcome={outcome}
-          stepUpEnabled={config?.step_up_enabled ?? false}
-          onChanged={refresh}
-          onDismissOutcome={() => setOutcome(null)}
-        />
-        {/* Tier 1: the tenant's own estate, reached *through* the act and gated on it rather
-            than on the plane. When the act ends this unmounts — a screen of a customer's data
-            that outlives the authority to see it is indistinguishable from a live one. */}
-        {act ? <TenantViews tenant={act.tenant} /> : null}
-      </div>
+      {view === "access" && (
+        <div style={{ display: "grid", gap: 16, maxWidth: 640 }}>
+          <ActOnTenant grant={act} onChanged={refresh} />
+          <ElevationPanel
+            act={act}
+            elevation={elevation}
+            outcome={outcome}
+            stepUpEnabled={config?.step_up_enabled ?? false}
+            onChanged={refresh}
+            onDismissOutcome={() => setOutcome(null)}
+          />
+        </div>
+      )}
+      {/* Tier 1 views are gated on the act, not the plane. When the act ends they unmount —
+          a screen of a customer's data that outlives the authority to see it is
+          indistinguishable from a live one. */}
+      {view !== "access" && act && <TenantViews tenant={act.tenant} view={view} />}
     </Shell>
   );
 }
@@ -101,8 +153,7 @@ export function ProviderConsole({
  * hardware while that question is open. A ceiling is what the plane may do; a console is what
  * we put a button on, and they need not match.
  */
-function TenantViews({ tenant }: { tenant: string }) {
-  const [tab, setTab] = useState<"devices" | "monitoring">("devices");
+function TenantViews({ tenant, view }: { tenant: string; view: "devices" | "monitoring" }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -121,29 +172,14 @@ function TenantViews({ tenant }: { tenant: string }) {
   useEffect(() => {
     setOverview(null);
     setSelected(null);
-    setTab("devices");
     void load();
   }, [tenant, load]);
 
   return (
-    <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 10 }}>
-        <h2 style={{ margin: 0, fontSize: "1.05em", color: ui.ink }}>{tenant}</h2>
-        <nav style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setTab("devices")} disabled={tab === "devices"}>
-            Devices
-          </button>
-          {/* metrics:read is already inside the provider ceiling, so monitoring needs no
-              elevation — it is the same tier as the device list. */}
-          <button onClick={() => setTab("monitoring")} disabled={tab === "monitoring"}>
-            Monitoring
-          </button>
-        </nav>
-      </div>
-
+    <section>
       {error && <p style={{ color: health.fail }}>{error}</p>}
 
-      {tab === "monitoring" ? (
+      {view === "monitoring" ? (
         <Dashboard />
       ) : (
         <>
@@ -167,7 +203,7 @@ function TenantViews({ tenant }: { tenant: string }) {
   );
 }
 
-/** The persistent act bar (W3).
+/** The status strip's contents (W3).
  *
  * The live grant's home. It carries the countdown and the End act control on every view
  * reached through the act, because an operator three screens into a device list needs both and
@@ -177,8 +213,17 @@ function TenantViews({ tenant }: { tenant: string }) {
  * elevation and step-up, and spending it here would stop it meaning "you are holding elevated
  * authority right now".
  */
-function ActBar({ act, onChanged }: { act: ActGrant; onChanged: () => void | Promise<void> }) {
-  const left = useCountdown(act.expires_at);
+function StatusStrip({
+  act,
+  elevation,
+  onChanged,
+}: {
+  act: ActGrant | null;
+  elevation: Elevation | null;
+  onChanged: () => void | Promise<void>;
+}) {
+  const left = useCountdown(act?.expires_at);
+  const elevLeft = useCountdown(elevation?.expires_at);
   const [busy, setBusy] = useState(false);
 
   // The countdown renders from the server's `expires_at`, but the *authority* is the server's
@@ -191,79 +236,48 @@ function ActBar({ act, onChanged }: { act: ActGrant; onChanged: () => void | Pro
 
   const urgent = left != null && left < 60;
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        flexWrap: "wrap",
-        margin: "10px 0 0",
-        padding: "6px 12px",
-        background: ui.actSoft,
-        border: `1px solid ${ui.act}`,
-        borderRadius: 4,
-        fontSize: "0.87em",
-        color: ui.ink,
-      }}
-    >
-      <span>
-        Acting on <strong>{act.tenant}</strong> — everything below is that customer&apos;s estate.
-      </span>
-      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span aria-live="polite" style={{ color: urgent ? health.fail : ui.inkSoft }}>
-          ends in {left != null ? formatCountdown(left) : "…"}
-        </span>
-        <button
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await api.provider.release();
-              await onChanged();
-            } finally {
-              setBusy(false);
-            }
-          }}
-          disabled={busy}
-        >
-          End act
-        </button>
-      </span>
-    </div>
-  );
-}
+  // Nothing held: say so in the strip rather than leaving it blank. An empty strip reads as
+  // "not loaded yet"; this reads as "you currently reach nothing", which is the true state.
+  if (!act) {
+    return <StatusItem label="ACCESS">no live act — no tenant reachable</StatusItem>;
+  }
 
-function Shell({
-  session,
-  onSignOut,
-  act,
-  onChanged,
-  children,
-}: {
-  session: Session;
-  onSignOut: () => void;
-  act?: ActGrant | null;
-  onChanged?: () => void | Promise<void>;
-  children: React.ReactNode;
-}) {
   return (
-    <main style={{ maxWidth: 760, margin: "2rem auto", fontFamily: sans, color: ui.ink }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <div>
-          {/* Chrome, not privilege — so it takes the structural colour. Indigo here would
-              dilute the one signal the spec reserves for holding elevated authority. */}
-          <p style={{ margin: 0, letterSpacing: "0.08em", fontSize: "0.7em", color: ui.muted }}>
-            PROVIDER CONSOLE
-          </p>
-          <h1 style={{ margin: 0, fontSize: "1.3em" }}>SyncGate</h1>
-        </div>
-        <span>
-          <span>{session.name || session.subject}</span> <button onClick={onSignOut}>Sign out</button>
+    <>
+      <StatusItem label="ACTING ON">
+        <strong>{act.tenant}</strong>
+      </StatusItem>
+      <StatusItem label="ENDS IN">
+        <span aria-live="polite" style={{ color: urgent ? health.fail : ui.inkSoft }}>
+          {left != null ? formatCountdown(left) : "…"}
         </span>
-      </header>
-      {act && onChanged && <ActBar act={act} onChanged={onChanged} />}
-      <div style={{ marginTop: 20 }}>{children}</div>
-    </main>
+      </StatusItem>
+      {/* The only indigo in the console, and only while an elevation is actually live. Its
+          scarcity is its meaning: if it is on screen, you are holding elevated authority. */}
+      {elevation && (
+        <StatusItem label="ELEVATED">
+          <span style={{ color: priv.base, fontWeight: 600 }}>
+            {elevation.scope.replace("provider:", "")}
+            {elevation.single_use ? " · single use" : ""}
+            {elevLeft != null ? ` · ${formatCountdown(elevLeft)}` : ""}
+          </span>
+        </StatusItem>
+      )}
+      <button
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.provider.release();
+            await onChanged();
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={busy}
+        style={{ marginLeft: "auto" }}
+      >
+        End act
+      </button>
+    </>
   );
 }
