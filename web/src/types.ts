@@ -53,19 +53,86 @@ export type Role = "admin" | "viewer";
 // tracks the gateway's authorization for both password and OIDC sessions.
 export type Scope = "devices:read" | "devices:write" | "tools:call" | "metrics:read";
 
+// Provider-plane scopes (ADR-0013 §5). A SEPARATE vocabulary from `Scope` above, and kept
+// separate in the type system for the same reason /auth/me reports them in their own field:
+// they are not gateway scopes, the gateway has never heard of them, and a union of the two
+// would let a view gate a tenant affordance on provider authority or the reverse.
+export type ProviderScope =
+  | "provider:monitor"
+  | "provider:admin"
+  | "provider:invoke"
+  | "provider:credentials";
+
+// Which plane authenticated this session. A fact about which IdP was used, never a
+// selector the browser sends.
+export type Plane = "tenant" | "provider";
+
 // The signed-in session as reported by the BFF /auth/me.
 export type Session = {
   kind: "password" | "oidc";
+  plane: Plane;
   subject: string;
   role: Role | null;
   // For OIDC the BFF relays whatever scopes the gateway grants, which may include strings
   // outside the known union — so accept extra strings rather than over-narrowing.
   scopes: (Scope | string)[];
+  // Always present, always `[]` on the tenant plane — the BFF states it rather than
+  // omitting it so a missing key never has to be read as "unknown".
+  provider_scopes: (ProviderScope | string)[];
   name?: string | null;
 };
 
-// What login methods the BFF offers (GET /auth/config).
-export type AuthConfig = { oidc_enabled: boolean; password_login: boolean };
+// What login methods the BFF offers (GET /auth/config). `provider_enabled` says which
+// console this deployment IS, not which one to offer: the BFF refuses to start carrying
+// both IdPs (§2/§5), so it is never true alongside `oidc_enabled`.
+export type AuthConfig = {
+  oidc_enabled: boolean;
+  password_login: boolean;
+  provider_enabled: boolean;
+  step_up_enabled: boolean;
+};
+
+// --- the provider plane (ADR-0013 §4/§8) -------------------------------------
+
+// A live act-on-tenant grant (GET/POST /provider/...). The justification is deliberately
+// NOT echoed back by the BFF — it is evidence, already in the audit chain.
+export type ActGrant = {
+  id: string;
+  tenant: string;
+  granted_at: number;
+  expires_at: number;
+};
+
+// A live elevation on top of the act. `single_use` is what makes a credentials grant
+// visibly different from an invoke one, so it is rendered, not just carried.
+export type Elevation = {
+  id: string;
+  tenant: string;
+  scope: ProviderScope | string;
+  granted_at: number;
+  expires_at: number;
+  single_use: boolean;
+};
+
+// The two endpoints above answer with a null sentinel rather than 404 when nothing is
+// held, so "no grant" is a value the caller reads instead of an error it has to catch.
+export type ActGrantResponse = ActGrant | { grant: null };
+export type ElevationResponse = Elevation | { elevation: null };
+
+// How a step-up came back, read from the query string the BFF redirected to. The reason
+// vocabulary is closed on the BFF side (STEP_UP_* in routers/auth.py).
+export type StepUpOutcome =
+  | { status: "granted" }
+  | {
+      status: "denied";
+      reason:
+        | "invalid_callback"
+        | "state_mismatch"
+        | "token_exchange_failed"
+        | "step_up_declined"
+        | "grant_refused"
+        | string;
+    };
 
 // Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
 // No gateway OpenAPI schema backs these (they describe external systems), so they
