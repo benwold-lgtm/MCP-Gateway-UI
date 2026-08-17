@@ -87,6 +87,13 @@ class Settings:
     # are time-boxed audited grants, not group memberships.
     provider_group_scopes: dict = field(default_factory=dict)
     provider_groups_claim: str = "groups"
+    # The claim naming the tenants this operator may act on at all (ADR-0013 §11c). Read
+    # here for **navigation only** — so the console can offer the estate as a list instead
+    # of a blank text box. It is never an authorization input on this side: §11c is explicit
+    # that the intersection belongs to the gateway, because a check on the side that chose
+    # the value is the caller validating its own request. Same default name the gateway
+    # uses (`grants.ENTITLEMENT_CLAIM_DEFAULT`) so one mapper feeds both.
+    provider_entitlement_claim: str = "mcp_allowed_tenants"
     # Step-up (ADR-0013 §8/§11b). The authentication context the provider IdP must satisfy
     # before it mints an elevated grant claim — requested as `acr_values` AND required in
     # the issued token's `acr`, because requesting is not achieving. Empty disables the
@@ -225,6 +232,7 @@ def load_settings() -> Settings:
         provider_oidc_scopes=os.getenv("PROVIDER_OIDC_SCOPES", "openid profile email"),
         provider_group_scopes=_json_map("PROVIDER_GROUP_SCOPES"),
         provider_groups_claim=os.getenv("PROVIDER_GROUPS_CLAIM", "groups"),
+        provider_entitlement_claim=os.getenv("PROVIDER_ENTITLEMENT_CLAIM", "mcp_allowed_tenants").strip(),
         provider_step_up_acr=os.getenv("PROVIDER_STEP_UP_ACR", "").strip(),
         provider_step_up_redirect_url=os.getenv("PROVIDER_STEP_UP_REDIRECT_URL", "").strip(),
         provider_grant_claim=os.getenv("PROVIDER_GRANT_CLAIM", "mcp_grant").strip() or "mcp_grant",

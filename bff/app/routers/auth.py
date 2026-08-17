@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from .. import sessions
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
-from ..grants import GrantError, record_elevated_grant
+from ..grants import GrantError, entitled_tenants, record_elevated_grant
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import (
@@ -339,6 +339,10 @@ async def provider_callback(
     # Mapped here, on the provider-plane path only. There is no shared table a tenant
     # login could reach by naming a group after the provider mapping (§6a's rule, this side).
     scopes = provider_scopes_for_groups(groups, settings.provider_group_scopes)
+    # The estate, as the directory stated it at login. Navigation only — see
+    # `grants.entitled_tenants`; the gateway still runs §11c's intersection on every
+    # elevated grant, and this list never widens what that will accept.
+    estate = entitled_tenants(claims.get(settings.provider_entitlement_claim))
     if not scopes:
         # Authenticated but unmapped: a session with no provider authority. Every provider
         # route then 403s and the audit names who was refused — better than a blank 401
@@ -356,6 +360,11 @@ async def provider_callback(
             "sub": claims.get("sub"),
             "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
             "provider_scopes": sorted(scopes),
+            # `None` (claim absent) and `[]` (directory named nobody) are stored distinctly
+            # and must stay that way: they are different operator situations with different
+            # remedies, and collapsing them is how a console ends up telling someone they
+            # have no entitlement when really nothing asked.
+            "entitled_tenants": estate,
             # The operator's own token, kept so the BFF has an accountable identity to
             # present to a tenant's gateway — which is exactly what ADR-0013 §6 added a
             # second trusted issuer for. Two things bound it, and neither is optional:

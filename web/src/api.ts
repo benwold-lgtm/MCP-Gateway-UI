@@ -7,6 +7,7 @@ import type {
   AuthConfig,
   Elevation,
   ElevationResponse,
+  Estate,
   ProviderScope,
   DeviceFull,
   DeviceMutation,
@@ -86,6 +87,9 @@ export const api = {
     // justification and its own audit record.
     authorize: (tenant: string, justification: string) =>
       req<ActGrant>("POST", `/provider/tenants/${encodeURIComponent(tenant)}/authorize`, { justification }),
+    // The estate + what this console serves. Navigation only — posting a tenant that is
+    // not in the list is still accepted here and still judged by the gateway (§11c).
+    tenants: () => req<Estate>("GET", "/provider/tenants"),
     actOnTenant: () => req<ActGrantResponse>("GET", "/provider/act-on-tenant"),
     release: () => req<{ released: string | null }>("DELETE", "/provider/act-on-tenant"),
     // Returns the IdP URL to navigate to — not a grant. Nothing is authorized until the

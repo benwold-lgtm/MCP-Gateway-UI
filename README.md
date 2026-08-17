@@ -84,6 +84,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
 | `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable; the elevated grants are refused here by design |
 | `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
+| `PROVIDER_ENTITLEMENT_CLAIM` | Claim naming the tenants this operator may act on (default `mcp_allowed_tenants`; match the gateway's per-issuer `entitlement_claim`). Read for **navigation only** — it turns the tenant box into a list of the operator's estate. It authorizes nothing: ADR-0013 §11c puts the intersection on the gateway, because the console is the side that *chose* the tenant, so a tenant absent from the list is still accepted here and still judged there. Absent claim ⇒ the console offers free entry and says the directory published no list; an empty claim ⇒ it says the directory named nobody |
 | `PROVIDER_STEP_UP_ACR` | The authentication context the provider IdP must satisfy before minting an elevated grant (ADR-0013 §8/§11b). Requested as `acr_values` **and** required in the issued token's `acr`. Empty (the default) disables the elevated grants entirely |
 | `PROVIDER_STEP_UP_REDIRECT_URL` | The step-up's own callback (`…/auth/provider/step-up/callback`), registered with the provider IdP. Separate from the login callback so a step-up in flight cannot be completed by a login |
 | `PROVIDER_GRANT_CLAIM` | Claim carrying the IdP-minted grant (default `mcp_grant`). Must match the gateway's per-issuer `grant_claim` |
@@ -236,6 +237,7 @@ as the refusal, not instead of it, because it is what still holds if a session d
 | Tenant data plane (`/api/*`) | **refused** unless the session holds a live **act-on-tenant** grant naming this deployment's `TENANT_ID` (§4) |
 | Tenant credential | the operator's **own** provider-IdP token, kept at login — but relayed **only** while a live act-on-tenant grant names this tenant. Stored is not usable |
 | Never presented | the tenant stack's admin key. A provider session is refused rather than falling back to it |
+| Sees | its **estate** — the tenants named by `PROVIDER_ENTITLEMENT_CLAIM` at login — offered as a list, each marked as served here or not. Navigation only: one deployment serves one tenant, so an act on any other is granted and audited yet reaches no devices, and free entry stays available because §11c leaves the decision with the gateway |
 
 `provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
 membership at all — mapping a group to one is refused at startup. They are time-boxed,
