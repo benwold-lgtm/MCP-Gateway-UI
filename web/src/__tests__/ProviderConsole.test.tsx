@@ -64,6 +64,12 @@ function panelText(match: RegExp): string {
   return screen.getByText(match).closest("section")?.textContent ?? "";
 }
 
+/** Text of the persistent act bar. It lives in the shell rather than a panel (W3), so it has
+ *  no enclosing <section> — walk to the flex row that holds the countdown instead. */
+function barText(): string {
+  return screen.getByText(/acting on/i).parentElement?.textContent ?? "";
+}
+
 function renderConsole(config: AuthConfig = CONFIG) {
   return render(<ProviderConsole session={SESSION} config={config} onSignOut={vi.fn()} />);
 }
@@ -121,7 +127,7 @@ describe("ProviderConsole", () => {
 
     expect(authorize).toHaveBeenCalledWith("acme", "INC-4471");
     expect(await screen.findByText(/acting on/i)).toHaveTextContent("acme");
-    await waitFor(() => expect(panelText(/acting on/i)).toMatch(/ends in \d+:\d\d/));
+    await waitFor(() => expect(barText()).toMatch(/ends in \d+:\d\d/));
   });
 
   it("warns that authorizing another tenant ends the current act", async () => {
@@ -278,7 +284,7 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
     await waitFor(() => expect(overview).toHaveBeenCalled());
-    expect(await screen.findByText(/acme — devices/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "acme" })).toBeInTheDocument();
   });
 
   it("names whose estate is on screen", async () => {
@@ -286,7 +292,7 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     // remember which customer's hardware they are looking at.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
-    expect(await screen.findByText(/everything below belongs to/i)).toBeInTheDocument();
+    expect(await screen.findByText(/everything below is that customer/i)).toBeInTheDocument();
   });
 
   it("withholds write affordances while D2 is open", async () => {
@@ -295,7 +301,15 @@ describe("the tenant's fleet, reached through the act (W1)", () => {
     // put a button on.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
-    await screen.findByText(/acme — devices/i);
+    await screen.findByRole("heading", { name: "acme" });
     expect(screen.queryByRole("button", { name: /delete|register device/i })).not.toBeInTheDocument();
+  });
+
+  it("offers monitoring at the same tier as the device list (W2)", async () => {
+    // metrics:read is already inside the provider ceiling, so monitoring needs no elevation.
+    // If this ever required a step-up, the tier model would have drifted.
+    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
+    renderConsole();
+    expect(await screen.findByRole("button", { name: /monitoring/i })).toBeEnabled();
   });
 });

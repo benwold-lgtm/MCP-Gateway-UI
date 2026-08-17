@@ -1748,6 +1748,17 @@
                         },
                         "type": "array",
                         "title": "Devices"
+                    },
+                    "stale_after_seconds": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stale After Seconds"
                     }
                 },
                 "type": "object",

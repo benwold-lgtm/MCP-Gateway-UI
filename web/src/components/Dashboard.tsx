@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { LokiResponse, MonitoringMeta, PromQueryResponse } from "../types";
+import { health, ui } from "../tokens";
 
 // A deliberately small monitoring view: a handful of critical at-a-glance metrics
 // and recent logs. Full dashboards belong in central monitoring — this view points
@@ -60,7 +61,7 @@ export function Dashboard() {
   return (
     <section>
       <h2>Monitoring</h2>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {error && <p style={{ color: health.fail }}>{error}</p>}
       {!meta && !error && <p>Loading…</p>}
 
       {meta && (
@@ -73,14 +74,14 @@ export function Dashboard() {
               ))}
             </div>
           ) : (
-            <p style={{ color: "#888" }}>
+            <p style={{ color: ui.muted }}>
               Prometheus is not configured (set <code>PROMETHEUS_URL</code> on the BFF). Use central
               monitoring below.
             </p>
           )}
 
           <h3 style={{ marginTop: 20 }}>Central monitoring</h3>
-          <p style={{ color: "#444", maxWidth: 640 }}>
+          <p style={{ color: ui.inkSoft, maxWidth: 640 }}>
             This view shows only critical metrics at a glance. Run full dashboards in your central monitoring:
             the gateway and workers expose Prometheus metrics on <code>:9100/metrics</code> — point your
             scraper there (see <code>docs/observability.md</code> in the gateway repo).
@@ -97,7 +98,7 @@ export function Dashboard() {
           {meta.loki_enabled ? (
             <LogView logs={logs} />
           ) : (
-            <p style={{ color: "#888" }}>
+            <p style={{ color: ui.muted }}>
               Loki is not configured (set <code>LOKI_URL</code> on the BFF). Logs live in your central logging
               stack.
             </p>
@@ -112,7 +113,7 @@ function Tile({ label, value }: { label: string; value: string }) {
   return (
     <div
       style={{
-        border: "1px solid #ddd",
+        border: `1px solid ${ui.rule}`,
         borderRadius: 8,
         padding: "10px 14px",
         minWidth: 150,
@@ -120,7 +121,7 @@ function Tile({ label, value }: { label: string; value: string }) {
       }}
     >
       <div style={{ fontSize: 24, fontWeight: 600 }}>{value}</div>
-      <div style={{ fontSize: 13, color: "#666" }}>{label}</div>
+      <div style={{ fontSize: 13, color: ui.inkSoft }}>{label}</div>
     </div>
   );
 }
@@ -131,12 +132,12 @@ function LogView({ logs }: { logs: LokiResponse | null }) {
     .flatMap((s) => s.values.map(([ts, line]) => ({ ts: Number(ts), line })))
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 100);
-  if (lines.length === 0) return <p style={{ color: "#888" }}>No recent log lines.</p>;
+  if (lines.length === 0) return <p style={{ color: ui.muted }}>No recent log lines.</p>;
   return (
     <pre
       style={{
         background: "#fff",
-        border: "1px solid #eee",
+        border: `1px solid ${ui.rule}`,
         padding: 8,
         maxHeight: 360,
         overflow: "auto",
@@ -147,7 +148,7 @@ function LogView({ logs }: { logs: LokiResponse | null }) {
     >
       {lines.map((l, i) => (
         <div key={i}>
-          <span style={{ color: "#999" }}>{new Date(l.ts / 1_000_000).toLocaleTimeString()}</span> {l.line}
+          <span style={{ color: ui.muted }}>{new Date(l.ts / 1_000_000).toLocaleTimeString()}</span> {l.line}
         </div>
       ))}
     </pre>

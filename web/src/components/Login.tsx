@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { AuthConfig, Session } from "../types";
+import { health, ui } from "../tokens";
 
 export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
   const [password, setPassword] = useState("");
@@ -58,7 +59,7 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
       )}
 
       {showSso && showPassword && (
-        <div style={{ textAlign: "center", color: "#888", fontSize: "0.85em" }}>or sign in locally</div>
+        <div style={{ textAlign: "center", color: ui.muted, fontSize: "0.85em" }}>or sign in locally</div>
       )}
 
       {showPassword && (
@@ -74,7 +75,7 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
         </form>
       )}
 
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {error && <p style={{ color: health.fail }}>{error}</p>}
     </div>
   );
 }

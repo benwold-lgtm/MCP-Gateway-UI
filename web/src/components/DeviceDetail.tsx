@@ -4,6 +4,7 @@ import { api, ApiError } from "../api";
 import type { DeviceFull, Diagnostics, Tool, ToolsDiff } from "../types";
 import { DeadLetterPanel } from "./DeadLetterPanel";
 import { FingerprintPanel } from "./FingerprintPanel";
+import { health, ui } from "../tokens";
 
 // Per-device detail: the gateway's diagnostics ("why is my device down?"), the endpoint
 // fingerprint (what the device *is*), and a tool explorer. Diagnostics is the source of
@@ -77,7 +78,7 @@ export function DeviceDetail({
     <section
       aria-label={`Device detail: ${hostname}`}
       style={{
-        border: "1px solid #ddd",
+        border: `1px solid ${ui.rule}`,
         borderRadius: 8,
         padding: "12px 16px",
         margin: "12px 0",
@@ -89,7 +90,7 @@ export function DeviceDetail({
         <button onClick={onClose}>Close</button>
       </header>
 
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {error && <p style={{ color: health.fail }}>{error}</p>}
       {!diag && !error && <p>Loading…</p>}
 
       {diag && (
@@ -139,28 +140,28 @@ export function DeviceDetail({
           ) : (
             // Don't leave a security panel silently absent — an operator would read a
             // missing fingerprint section as "this device has none".
-            <p style={{ color: "#888", marginTop: 16, fontSize: 13 }}>
+            <p style={{ color: ui.muted, marginTop: 16, fontSize: 13 }}>
               Endpoint fingerprint unavailable — the device record could not be read.
             </p>
           )}
 
           {diff?.last_change && <ToolChanges change={diff.last_change} />}
           {diff && !diff.last_change && (
-            <p style={{ color: "#888", marginTop: 12, fontSize: 13 }}>
+            <p style={{ color: ui.muted, marginTop: 12, fontSize: 13 }}>
               No tool-set changes since registration.
             </p>
           )}
 
           <h3 style={{ marginTop: 16 }}>Tools {tools ? `(${tools.length})` : ""}</h3>
           {tools && tools.length === 0 && (
-            <p style={{ color: "#888" }}>
+            <p style={{ color: ui.muted }}>
               No tools to show — the device has no active pod or cached manifest (see diagnostics above).
             </p>
           )}
           {tools && tools.length > 0 && (
             <ul style={{ listStyle: "none", padding: 0 }}>
               {tools.map((t) => (
-                <li key={t.name} style={{ borderTop: "1px solid #eee", padding: "6px 0" }}>
+                <li key={t.name} style={{ borderTop: `1px solid ${ui.rule}`, padding: "6px 0" }}>
                   <button
                     onClick={() => setOpenTool(openTool === t.name ? null : t.name)}
                     style={{
@@ -173,16 +174,16 @@ export function DeviceDetail({
                     aria-expanded={openTool === t.name}
                   >
                     <code style={{ fontWeight: 600 }}>{t.name}</code>{" "}
-                    <span style={{ color: "#555", fontSize: 13 }}>
+                    <span style={{ color: ui.inkSoft, fontSize: 13 }}>
                       {t.method} {t.path}
                     </span>
                   </button>
-                  {t.description && <div style={{ color: "#444", fontSize: 13 }}>{t.description}</div>}
+                  {t.description && <div style={{ color: ui.inkSoft, fontSize: 13 }}>{t.description}</div>}
                   {openTool === t.name && (
                     <pre
                       style={{
                         background: "#fff",
-                        border: "1px solid #eee",
+                        border: `1px solid ${ui.rule}`,
                         padding: 8,
                         overflowX: "auto",
                         fontSize: 12,
@@ -206,7 +207,7 @@ export function DeviceDetail({
 function Row({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
   return (
     <tr>
-      <td style={{ color: "#666", paddingRight: 16, verticalAlign: "top" }}>{label}</td>
+      <td style={{ color: ui.inkSoft, paddingRight: 16, verticalAlign: "top" }}>{label}</td>
       <td
         style={{ color: danger ? "crimson" : "inherit", fontFamily: "ui-monospace, monospace", fontSize: 13 }}
       >
@@ -234,14 +235,14 @@ function ToolChanges({ change }: { change: NonNullable<ToolsDiff["last_change"]>
           · {change.breaking ? "breaking" : "compatible"}
         </span>
       </h3>
-      <p style={{ color: "#666", fontSize: 13, margin: "2px 0" }}>
+      <p style={{ color: ui.inkSoft, fontSize: 13, margin: "2px 0" }}>
         revision {change.tools_revision} · {new Date(change.at * 1000).toLocaleString()}
       </p>
       <ChangeLine label="Added" names={change.added} />
       <ChangeLine label="Removed" names={change.removed} />
       <ChangeLine label="Changed" names={change.changed} />
       {change.breaking && reasons.length > 0 && (
-        <ul style={{ color: "crimson", fontSize: 13, margin: "4px 0" }}>
+        <ul style={{ color: health.fail, fontSize: 13, margin: "4px 0" }}>
           {reasons.map((r) => (
             <li key={r}>{r}</li>
           ))}

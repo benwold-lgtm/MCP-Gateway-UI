@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { api, ApiError } from "../api";
 import type { AuthConfig, Session } from "../types";
+import { health, sans, ui } from "../tokens";
 
 /** The provider console's way in (ADR-0013 §2/§3).
  *
@@ -43,15 +44,24 @@ export function ProviderLogin({
   }
 
   return (
-    <div style={{ maxWidth: 360, margin: "10vh auto", display: "grid", gap: 12 }}>
+    <div
+      style={{
+        maxWidth: 360,
+        margin: "10vh auto",
+        display: "grid",
+        gap: 12,
+        fontFamily: sans,
+        color: ui.ink,
+      }}
+    >
       <div>
-        <p style={{ margin: 0, letterSpacing: "0.08em", fontSize: "0.75em", color: "#a15c00" }}>
+        <p style={{ margin: 0, letterSpacing: "0.08em", fontSize: "0.75em", color: ui.muted }}>
           PROVIDER CONSOLE
         </p>
-        <h1 style={{ margin: "2px 0 0" }}>Device MCP Gateway</h1>
+        <h1 style={{ margin: "2px 0 0" }}>SyncGate</h1>
       </div>
 
-      <p style={{ margin: 0, fontSize: "0.85em", color: "#555" }}>
+      <p style={{ margin: 0, fontSize: "0.85em", color: ui.inkSoft }}>
         Signing in here does not grant access to any tenant. Acting on a customer is a separate, recorded
         step.
       </p>
@@ -64,7 +74,7 @@ export function ProviderLogin({
 
       {showPassword && (
         <>
-          <div style={{ textAlign: "center", color: "#888", fontSize: "0.85em" }}>
+          <div style={{ textAlign: "center", color: ui.muted, fontSize: "0.85em" }}>
             or use local break-glass access
           </div>
           <form onSubmit={submit} style={{ display: "grid", gap: 8 }}>
@@ -76,14 +86,14 @@ export function ProviderLogin({
             />
             <button type="submit">Sign in</button>
           </form>
-          <p style={{ margin: 0, fontSize: "0.8em", color: "#777" }}>
+          <p style={{ margin: 0, fontSize: "0.8em", color: ui.muted }}>
             Break-glass is a local login for this stack only — it opens the device console, not the provider
             plane.
           </p>
         </>
       )}
 
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
+      {error && <p style={{ color: health.fail }}>{error}</p>}
     </div>
   );
 }
