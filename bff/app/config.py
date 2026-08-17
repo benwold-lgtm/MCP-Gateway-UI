@@ -39,6 +39,10 @@ class Settings:
     session_ttl_seconds: int = 28800  # 8 hours
     cors_origins: list[str] = field(default_factory=list)
     cookie_secure: bool = False
+    # Recognised so it can be REFUSED — see `create_app`. There is no supported way to widen
+    # the session cookie beyond the host that set it, and this exists so the attempt fails
+    # loudly instead of being made at a reverse proxy where nothing can see it.
+    cookie_domain: str = ""
     # Break-glass password login throttle (review #3): after login_max_failures failed
     # attempts from one client IP within login_window_seconds, further attempts get 429.
     login_max_failures: int = 5
@@ -206,6 +210,7 @@ def load_settings() -> Settings:
         grafana_url=os.getenv("GRAFANA_URL", ""),
         cors_origins=_split(os.getenv("CORS_ORIGINS", "")),
         cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes"),
+        cookie_domain=os.getenv("COOKIE_DOMAIN", "").strip(),
         login_max_failures=int(os.getenv("LOGIN_MAX_FAILURES", "5")),
         login_window_seconds=int(os.getenv("LOGIN_WINDOW_SECONDS", "60")),
         trust_forwarded_for=os.getenv("TRUST_FORWARDED_FOR", "false").lower() in ("1", "true", "yes"),
