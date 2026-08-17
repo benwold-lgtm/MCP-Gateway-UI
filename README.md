@@ -363,6 +363,13 @@ Three rules on these routes, none of which is visible from the route list:
   error arrives over HTTP 200, so the console reads the envelope rather than the status — and
   reports a refused call and a tool that ran and failed as different things, since one means
   fix the arguments and the other means go and look at the device.
+- **Export is two requests, and restore is two clicks.** In the console, exporting *prepares*
+  an archive (revealing a generated passphrase once, because nothing keeps a copy of it) and
+  then downloads it — a native download cannot read the header the passphrase arrives in, so
+  one request cannot deliver both. Restoring always previews first, and Apply is bound to a
+  signature of the exact inputs that produced the preview: change the archive, the passphrase,
+  the conflict mode or the dead-letter flag and it is withdrawn until you preview again. A
+  two-step confirm is theatre unless the plan confirmed is the plan that runs.
 - **`/api/admin/*` refuses the local break-glass login**, whatever its role. A password
   session proxies with the stack's *admin* gateway token, which already holds every
   `backup:*` scope — so admitting one there is a complete credential dump with no step-up
