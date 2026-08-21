@@ -13,7 +13,8 @@ Threat-model alignment (docs/threat-model-identity.md):
   * **TM-I-06** — Authorization Code + PKCE (S256); the code is exchanged server-side.
   * **TM-I-01** — ``state`` + ``nonce`` are generated here and verified by the caller
     against the session, defeating login-CSRF and token replay into the session.
-  * **TM-I-05** — discovery/JWKS/token endpoints are the issuer's HTTPS endpoints; the
+  * **TM-I-05** — the discovery document must declare the issuer it was fetched from
+    (checked in ``_discover``); discovery/JWKS/token endpoints are the issuer's endpoints; the
     ID token is signature-checked with an asymmetric-only algorithm allow-list.
 """
 
@@ -129,6 +130,22 @@ class OIDCClient:
                 meta = resp.json()
             if not meta.get("authorization_endpoint") or not meta.get("token_endpoint") or not meta.get("jwks_uri"):
                 raise OIDCError("OIDC discovery document is missing required endpoints")
+            # **Pin the issuer to config, not to the document (TM-I-05).** OIDC Discovery
+            # requires the `issuer` the document declares to be identical to the URL the
+            # document was fetched from, and nothing else here checks that. Without this,
+            # `validate_id_token` below validates against `meta["issuer"]` — whatever the
+            # document said — so the "issuer pinned in config" the threat model calls for
+            # would be pinned to the response instead. `jwks_uri` is trusted on the same
+            # basis, which is why this has to fail closed rather than warn. Trailing slashes
+            # are normalised because that is a config-style difference, not a different
+            # issuer; everything else must match exactly.
+            declared = str(meta.get("issuer") or "")
+            if declared.rstrip("/") != self._s.oidc_issuer.rstrip("/"):
+                raise OIDCError(
+                    f"OIDC discovery issuer mismatch: configured {self._s.oidc_issuer!r}, "
+                    f"document declares {declared!r}. Refusing — the document must be served "
+                    "by the issuer it names (OIDC Discovery 1.0 §4.3)."
+                )
             self._meta = meta
             # PyJWKClient caches keys and refreshes on an unseen kid (sync; we run it in
             # a threadpool from the async callback so the event loop is never blocked).
