@@ -36,6 +36,8 @@ class _S:
     oidc_client_secret: str = ""
     oidc_redirect_url: str = "https://ui.example.com/auth/oidc/callback"
     oidc_scopes: str = "openid profile email"
+    # The stubbed issuers below are https; the real lab Keycloak is not, and says so.
+    oidc_allow_plaintext_issuer: bool = True
 
 
 def _doc(issuer: str) -> dict:
@@ -112,7 +114,35 @@ async def test_real_idp_still_passes():
     issuer = os.getenv("LAB_OIDC_ISSUER")
     if not issuer:
         pytest.skip("LAB_OIDC_ISSUER not set — no real IdP to check the acceptance path against")
-    client = OIDCClient(_S(oidc_issuer=issuer))
+    # The flag is set explicitly rather than exempted implicitly — a plaintext lab IdP is
+    # a recorded exception, which is the whole point of TM-I-05b's design.
+    client = OIDCClient(_S(oidc_issuer=issuer, oidc_allow_plaintext_issuer=True))
     meta = await client._discover()
     assert meta["issuer"].rstrip("/") == issuer.rstrip("/")
     assert client._jwks is not None
+
+
+# --- TM-I-05b: plaintext issuers are refused at construction --------------------
+
+
+def test_plaintext_issuer_is_refused_by_default():
+    with pytest.raises(ValueError) as exc:
+        OIDCClient(_S(oidc_issuer="http://kc.example.com/realms/tenant-a", oidc_allow_plaintext_issuer=False))
+    assert "plaintext http" in str(exc.value)
+    assert "OIDC_ALLOW_PLAINTEXT_ISSUER" in str(exc.value)
+
+
+def test_plaintext_issuer_allowed_when_flag_set():
+    client = OIDCClient(_S(oidc_issuer="http://kc.example.com/realms/tenant-a", oidc_allow_plaintext_issuer=True))
+    assert client._s.oidc_issuer.startswith("http://")
+
+
+def test_loopback_gets_no_exemption():
+    """No silent localhost carve-out: a rule nothing sets is a rule nothing can warn about."""
+    with pytest.raises(ValueError):
+        OIDCClient(_S(oidc_issuer="http://localhost:8080/realms/tenant-a", oidc_allow_plaintext_issuer=False))
+
+
+def test_https_issuer_needs_no_flag():
+    client = OIDCClient(_S(oidc_issuer="https://kc.example.com/realms/tenant-a", oidc_allow_plaintext_issuer=False))
+    assert client._s.oidc_issuer.startswith("https://")

@@ -58,6 +58,8 @@ class Settings:
     oidc_issuer: str = ""
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
+    # TM-I-05: accept a plaintext http:// issuer. Default false; refused at construction.
+    oidc_allow_plaintext_issuer: bool = False
     oidc_redirect_url: str = ""
     oidc_scopes: str = "openid profile email offline_access"
     oidc_post_login_redirect: str = "/"
@@ -220,6 +222,7 @@ def load_settings() -> Settings:
         oidc_issuer=os.getenv("OIDC_ISSUER", ""),
         oidc_client_id=os.getenv("OIDC_CLIENT_ID", ""),
         oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
+        oidc_allow_plaintext_issuer=os.getenv("OIDC_ALLOW_PLAINTEXT_ISSUER", "false").lower() in ("1", "true", "yes"),
         # Must exactly match a redirect URI registered with the IdP, e.g.
         # https://ui.example.com/auth/oidc/callback
         oidc_redirect_url=os.getenv("OIDC_REDIRECT_URL", ""),
