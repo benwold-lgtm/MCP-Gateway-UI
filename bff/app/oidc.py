@@ -13,7 +13,10 @@ Threat-model alignment (docs/threat-model-identity.md):
   * **TM-I-06** — Authorization Code + PKCE (S256); the code is exchanged server-side.
   * **TM-I-01** — ``state`` + ``nonce`` are generated here and verified by the caller
     against the session, defeating login-CSRF and token replay into the session.
-  * **TM-I-05** — discovery/JWKS/token endpoints are the issuer's HTTPS endpoints; the
+  * **TM-I-05** — a plaintext ``http://`` issuer is refused at construction unless
+    ``OIDC_ALLOW_PLAINTEXT_ISSUER`` is set (and warned about when it is); the
+    discovery document must declare the issuer it was fetched from
+    (checked in ``_discover``); discovery/JWKS/token endpoints are the issuer's endpoints; the
     ID token is signature-checked with an asymmetric-only algorithm allow-list.
 """
 
@@ -24,6 +27,7 @@ from dataclasses import dataclass
 
 import base64
 import hashlib
+import logging
 import os
 import secrets
 from urllib.parse import urlencode
@@ -33,6 +37,8 @@ import jwt
 from fastapi.concurrency import run_in_threadpool
 
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 # Asymmetric only — a BFF must never accept an HS*/none-signed ID token (TM-I-05/08).
 _ID_TOKEN_ALGS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
@@ -86,6 +92,7 @@ class _ProviderView:
     oidc_client_secret: str
     oidc_redirect_url: str
     oidc_scopes: str
+    oidc_allow_plaintext_issuer: bool = False
 
 
 class OIDCClient:
@@ -94,6 +101,28 @@ class OIDCClient:
     def __init__(self, settings) -> None:
         if not settings.oidc_issuer or not settings.oidc_client_id or not settings.oidc_redirect_url:
             raise ValueError("OIDC is enabled but OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_REDIRECT_URL must all be set")
+        # **TM-I-05: no plaintext IdP unless it is asked for explicitly.** Refused here, at
+        # construction, rather than at the first login — the issuer is operator config known
+        # at boot, and a request-time version surfaces as an unexplained login failure. There
+        # is no loopback exemption: a silent "localhost is fine" rule cannot be warned about,
+        # because nothing gets set to warn on. One always-explicit flag covers the lab, the
+        # air-gapped install and an acceptance test alike, with no second bypass to audit.
+        if str(settings.oidc_issuer).lower().startswith("http://") and not getattr(
+            settings, "oidc_allow_plaintext_issuer", False
+        ):
+            raise ValueError(
+                f"OIDC_ISSUER is plaintext http ({settings.oidc_issuer!r}) — the authorization code, "
+                "the token exchange and the IdP's signing keys would all cross the network "
+                "unencrypted. Use https, or set OIDC_ALLOW_PLAINTEXT_ISSUER=true to accept that "
+                "risk deliberately (lab and air-gapped deployments)."
+            )
+        if str(settings.oidc_issuer).lower().startswith("http://"):
+            logger.warning(
+                "OIDC_ALLOW_PLAINTEXT_ISSUER is set and %r is plaintext http — tokens and JWKS "
+                "cross the network unencrypted, and an on-path attacker can substitute either. "
+                "Intended for lab and air-gapped deployments; use https anywhere else.",
+                settings.oidc_issuer,
+            )
         self._s = settings
         self._meta: dict | None = None
         self._jwks: jwt.PyJWKClient | None = None
@@ -117,6 +146,7 @@ class OIDCClient:
                 oidc_client_secret=settings.provider_oidc_client_secret,
                 oidc_redirect_url=settings.provider_oidc_redirect_url,
                 oidc_scopes=settings.provider_oidc_scopes,
+                oidc_allow_plaintext_issuer=settings.oidc_allow_plaintext_issuer,
             )
         )
 
@@ -129,6 +159,22 @@ class OIDCClient:
                 meta = resp.json()
             if not meta.get("authorization_endpoint") or not meta.get("token_endpoint") or not meta.get("jwks_uri"):
                 raise OIDCError("OIDC discovery document is missing required endpoints")
+            # **Pin the issuer to config, not to the document (TM-I-05).** OIDC Discovery
+            # requires the `issuer` the document declares to be identical to the URL the
+            # document was fetched from, and nothing else here checks that. Without this,
+            # `validate_id_token` below validates against `meta["issuer"]` — whatever the
+            # document said — so the "issuer pinned in config" the threat model calls for
+            # would be pinned to the response instead. `jwks_uri` is trusted on the same
+            # basis, which is why this has to fail closed rather than warn. Trailing slashes
+            # are normalised because that is a config-style difference, not a different
+            # issuer; everything else must match exactly.
+            declared = str(meta.get("issuer") or "")
+            if declared.rstrip("/") != self._s.oidc_issuer.rstrip("/"):
+                raise OIDCError(
+                    f"OIDC discovery issuer mismatch: configured {self._s.oidc_issuer!r}, "
+                    f"document declares {declared!r}. Refusing — the document must be served "
+                    "by the issuer it names (OIDC Discovery 1.0 §4.3)."
+                )
             self._meta = meta
             # PyJWKClient caches keys and refreshes on an unseen kid (sync; we run it in
             # a threadpool from the async callback so the event loop is never blocked).
