@@ -66,7 +66,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 |-----|---------|
 | `GATEWAY_URL` | Gateway API base URL |
 | `GATEWAY_API_PREFIX` | Gateway management-API version prefix (default `/v1`; change only for a future `/v2`) |
-| `GATEWAY_API_TOKEN` | Admin-role gateway key (server-side only); used for local password sessions and as break-glass |
+| `GATEWAY_API_TOKEN` | The BFF's **own** gateway credential (server-side only), presented when relaying a *password* session — which has no per-user token to pass through. Point it at a named `gateway.rbac` entry with `role: console`, **not** at the gateway's admin key: see the note below |
 | `UI_ADMIN_PASSWORD` / `UI_VIEWER_PASSWORD` | Local break-glass login password → role (empty disables) |
 | `SESSION_SECRET` | Signs the session-id cookie and the OIDC login transaction (`openssl rand -hex 32`). The BFF **refuses to start** with the default value when `COOKIE_SECURE=true` |
 | `SESSION_REDIS_URL` | Shared server-side session store. **Required for >1 BFF replica** (the K8s overlay runs 2 — no session affinity); empty = in-memory store, right for a single replica |
@@ -98,6 +98,39 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `AUDIT_TENANT` | Which tenant this stack serves (default `default`). Stamped on every record in the clear — it is what tells a reader which content key applies |
 | `AUDIT_CONTENT_KEY` | Fernet key encrypting record content, so offboarding a tenant is a key destruction rather than a row deletion. Empty = content in the clear and **no crypto-shredding**; the chain is unaffected either way. Also `AUDIT_CONTENT_KEY_FILE` |
 | `AUDIT_PSEUDONYM_KEY` | HMAC key producing stable, non-reversible handles for cross-plane (provider) actors. Empty = the writer emits an opaque constant rather than a real identity, because an unkeyed pseudonym is reversible by dictionary attack. Also `AUDIT_PSEUDONYM_KEY_FILE` |
+
+> **`GATEWAY_API_TOKEN` is the console's identity, not the gateway's break-glass key — and
+> conflating the two is what ADR-0023 slice 4 separates.** They used to be the same value,
+> which had two consequences. Every console password login authenticated to the gateway as
+> `key:legacy`, indistinguishable from any other holder of that key; and once
+> `gateway.api_key` becomes break-glass in an OIDC deployment, ordinary console traffic would
+> fire a high-severity audit event and inherit a 90-day expiry on the login path.
+>
+> Give the BFF its own named entry instead. On the gateway:
+>
+> ```yaml
+> gateway:
+>   rbac:
+>     - name: bff-password-sessions
+>       key: "secret://console/bff#token"   # a reference, never a literal - config.yaml is a ConfigMap
+>       role: console
+> ```
+>
+> `console` is `operator` + `caller` — device management, metrics and tool invocation — and
+> deliberately carries **no `backup:*` scope**. The BFF already refuses password sessions on
+> all four backup/restore routes, because the admin token it proxied with held every backup
+> scope and admitting one there "is a complete credential dump". The role moves that
+> guarantee into the gateway, where a bug on this side cannot undo it.
+>
+> The entry is **unflagged** on purpose. This is continuous machine traffic, not break-glass;
+> flagging it would page on every quiet-gap boundary and expire the console's login path.
+>
+> Cutover order matters: create the entry, point this variable at it, **verify no request
+> still audits as `key:legacy`**, and only then flag `gateway.api_key`. See
+> `deploy/kubernetes/configmap.yaml` in the gateway repo for the Secret projection — a
+> reference resolves to at least three path components, so a flat `--from-literal` Secret
+> cannot satisfy one.
+
 
 ## Audit (tamper-evident)
 
@@ -172,8 +205,10 @@ There are **two kinds of session**:
   access token whose audience the gateway accepts — set the matching `gateway.oidc` config
   on the gateway (issuer, audience, `group_roles`) per its
   [ADR-0007](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0007-federated-identity-oidc-and-gateway-rbac.md).
-- **password** — the existing local **break-glass / bootstrap** login. It proxies upstream
-  with the single admin `GATEWAY_API_TOKEN`, so the BFF still enforces the admin/viewer role.
+- **password** — the existing local **break-glass / bootstrap** login. It has no per-user
+  token to pass through, so it proxies upstream with the BFF's own `GATEWAY_API_TOKEN` and
+  the BFF enforces the admin/viewer distinction itself. That token should be a `console`-role
+  entry of the BFF's own, not the gateway's admin key — see the note under the settings table.
   Keep at least the admin password even with SSO on (an IdP outage must not lock you out).
 
 The SPA shows a **"Sign in with SSO"** button when OIDC is enabled (alongside or instead of
