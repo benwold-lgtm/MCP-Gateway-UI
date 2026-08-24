@@ -2,15 +2,19 @@
 // Copyright (c) 2026 Ben Wold. All rights reserved.
 //
 // Contract drift guard: compares the committed gateway OpenAPI snapshot
-// (web/gateway.openapi.json) against a live/reference gateway spec, so the UI's
-// vendored contract can't silently rot out of sync with the gateway (the exact
-// failure that left the BFF calling pre-/v1 paths).
+// (web/gateway.openapi.json) against a live/reference gateway spec, so the UI's vendored
+// contract can't silently rot out of sync with the gateway (the exact failure that left the
+// BFF calling pre-/v1 paths). The comparison itself lives in ./spec-drift.mjs so it can be
+// tested; this file is the CLI around it.
 //
 // Source of the reference spec (first one set wins):
 //   GATEWAY_OPENAPI_URL   e.g. http://localhost:8000/openapi.json   (fetched)
 //   GATEWAY_OPENAPI_FILE  path to an openapi.json on disk
-// If neither is set, the check SKIPS (exit 0) — so ordinary CI without a gateway
-// passes, while an integration job or a local dev run can enforce it by setting one.
+//
+// ⚠️ With neither set the check **does not run**. That default is deliberate — ordinary CI
+// has no gateway to compare against — but it means a green `check:spec` line in a CI log is
+// usually the sound of nothing happening. Set CHECK_SPEC_REQUIRED=1 in any job that is
+// supposed to enforce this, and a missing reference becomes a failure instead of a shrug.
 //
 // Usage:  node scripts/check-spec-drift.mjs   (or: npm run check:spec)
 // Refresh the snapshot when drift is intentional:
@@ -18,6 +22,7 @@
 //   npm run gen:types
 
 import { readFile } from "node:fs/promises";
+import { diffSurfaces } from "./spec-drift.mjs";
 
 const SNAPSHOT = new URL("../gateway.openapi.json", import.meta.url);
 
@@ -35,37 +40,22 @@ async function loadReference() {
   return null;
 }
 
-function pathMethods(spec) {
-  // { "/v1/devices": ["get","post"], ... } — the contract surface we care about.
-  const out = {};
-  for (const [p, ops] of Object.entries(spec.paths ?? {})) {
-    out[p] = Object.keys(ops)
-      .filter((m) => ["get", "post", "put", "delete", "patch"].includes(m))
-      .sort();
-  }
-  return out;
-}
-
-function diffSurfaces(snap, ref) {
-  const problems = [];
-  if (snap.info?.version !== ref.info?.version) {
-    problems.push(`version: snapshot ${snap.info?.version} vs gateway ${ref.info?.version}`);
-  }
-  const sp = pathMethods(snap);
-  const rp = pathMethods(ref);
-  for (const p of Object.keys(rp))
-    if (!(p in sp)) problems.push(`path present on gateway but missing from snapshot: ${p} [${rp[p]}]`);
-  for (const p of Object.keys(sp)) {
-    if (!(p in rp)) problems.push(`path in snapshot but gone from gateway: ${p} [${sp[p]}]`);
-    else if (sp[p].join(",") !== rp[p].join(","))
-      problems.push(`methods differ for ${p}: snapshot [${sp[p]}] vs gateway [${rp[p]}]`);
-  }
-  return problems;
-}
-
 const ref = await loadReference();
 if (!ref) {
-  console.log("check:spec — skipped (set GATEWAY_OPENAPI_URL or GATEWAY_OPENAPI_FILE to enforce drift detection).");
+  if (process.env.CHECK_SPEC_REQUIRED) {
+    console.error(
+      "check:spec — NOT RUN, and this job requires it (CHECK_SPEC_REQUIRED is set).\n" +
+        "  Point GATEWAY_OPENAPI_URL or GATEWAY_OPENAPI_FILE at a gateway spec.",
+    );
+    process.exit(1);
+  }
+  // Worded as "did not run" rather than "skipped": a log line saying "skipped" next to a
+  // green tick reads as a check that passed, which is how a stale snapshot survived two
+  // releases without anybody noticing.
+  console.log(
+    "check:spec — DID NOT RUN (no reference gateway). Drift was NOT checked.\n" +
+      "  Set GATEWAY_OPENAPI_URL or GATEWAY_OPENAPI_FILE to compare against a real gateway.",
+  );
   process.exit(0);
 }
 
