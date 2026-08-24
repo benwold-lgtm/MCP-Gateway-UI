@@ -62,6 +62,8 @@ const DEVICE = {
   upstream_transport: "http",
   tools_revision: 3,
   fingerprint_state: "unpinned",
+  // Required by the generated type since ADR-0018 §3 (a schema default renders as required).
+  credential_state: "ok",
   fingerprint_policy: null,
 };
 

@@ -3,6 +3,8 @@ import type { Device, Overview } from "../types";
 import { api } from "../api";
 import { deviceHealth, freshness, ui } from "../tokens";
 import { HealthDot } from "./Health";
+import { CredentialChip } from "./CredentialState";
+import { needsReconnect } from "../credentialState";
 
 export function DeviceList({
   overview,
@@ -28,6 +30,10 @@ export function DeviceList({
   const staleAfter = overview.stale_after_seconds;
   const states = overview.devices.map((d: Device) => deviceHealth(d, staleAfter));
   const unknown = states.filter((x) => x === "stale").length;
+  // Counted separately from health on purpose (gateway ADR-0018 §3): these devices are not
+  // unhealthy, they are unauthorized. The count is the actual scanning affordance — it tells
+  // an operator whether the list is worth reading row by row at all.
+  const reconnect = overview.devices.filter(needsReconnect).length;
   return (
     <div>
       <p style={{ color: ui.inkSoft }}>
@@ -37,6 +43,12 @@ export function DeviceList({
             split has no room for "we do not currently know" — a device whose reading went
             stale is still counted as one or the other upstream. */}
         {unknown > 0 && <> · {unknown} unknown</>}
+        {reconnect > 0 && (
+          <>
+            {" · "}
+            <b style={{ color: "#a67c00" }}>{reconnect} need reconnecting</b>
+          </>
+        )}
       </p>
       <table cellPadding={6} style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead>
@@ -62,6 +74,10 @@ export function DeviceList({
                 >
                   {d.hostname}
                 </a>
+                {/* Beside the identifier rather than in a column of its own: a column would be
+                    empty on almost every row of almost every fleet, and the marker reads best
+                    next to the name an operator is scanning for. */}
+                <CredentialChip state={d.credential_state} />
               </td>
               <td>{d.base_url}</td>
               <td align="center">

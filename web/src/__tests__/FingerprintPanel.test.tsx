@@ -46,6 +46,8 @@ const PINNED: DeviceFull = {
   upstream_transport: "http",
   tools_revision: 3,
   fingerprint_state: "pinned",
+  // Required by the generated type since ADR-0018 §3 (a schema default renders as required).
+  credential_state: "ok",
   fingerprint_pinned_at: 1717500000.0,
   tls_spki_sha256: SPKI,
   tls_cert_sha256: "c".repeat(64),

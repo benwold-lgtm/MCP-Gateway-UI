@@ -4,6 +4,7 @@ import { api, ApiError } from "../api";
 import type { DeviceFull, Diagnostics, Tool, ToolsDiff } from "../types";
 import { DeadLetterPanel } from "./DeadLetterPanel";
 import { FingerprintPanel } from "./FingerprintPanel";
+import { NeedsReconnectBanner } from "./CredentialState";
 import { ToolInvoke } from "./ToolInvoke";
 import { health, ui } from "../tokens";
 
@@ -99,6 +100,10 @@ export function DeviceDetail({
         <h2 style={{ margin: 0 }}>{hostname}</h2>
         <button onClick={onClose}>Close</button>
       </header>
+
+      {/* Above Diagnostics, not inside it. Every reading in that table can be green while this
+          is true — it is an authorization condition, not a health one. */}
+      {device && <NeedsReconnectBanner device={device} />}
 
       {error && <p style={{ color: health.fail }}>{error}</p>}
       {!diag && !error && <p>Loading…</p>}

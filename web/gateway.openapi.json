@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "Device MCP Gateway",
-        "version": "0.3.3"
+        "version": "0.3.5"
     },
     "paths": {
         "/health": {
@@ -1272,6 +1272,11 @@
                         "title": "Upstream Kind",
                         "default": "openapi"
                     },
+                    "credential_state": {
+                        "type": "string",
+                        "title": "Credential State",
+                        "default": "ok"
+                    },
                     "spec_url": {
                         "anyOf": [
                             {
@@ -1679,6 +1684,11 @@
                         "type": "string",
                         "title": "Upstream Kind",
                         "default": "openapi"
+                    },
+                    "credential_state": {
+                        "type": "string",
+                        "title": "Credential State",
+                        "default": "ok"
                     }
                 },
                 "type": "object",
