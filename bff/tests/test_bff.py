@@ -79,6 +79,34 @@ def test_overview_proxies_gateway(app_client):
     assert resp.json()["mode"] == "embedded"
 
 
+def test_overview_passes_device_fields_through_untouched(app_client):
+    """Guard for gateway ADR-0018 §3, and for every field the gateway adds after it.
+
+    `credential_state` marks a device that is registered and reachable and cannot
+    authenticate — restored from an archive without its OAuth2 refresh token, which archives
+    never carry. The console reads it off the fleet list, so if this route ever grows a
+    `response_model`, Pydantic would drop the field as unknown and the whole feature would
+    disappear from the UI **silently**: no error, no 500, just a device that looks fine.
+
+    Asserted as passthrough of an arbitrary field rather than of this one specifically,
+    because the next field the gateway adds deserves the same protection without anybody
+    remembering to extend this test.
+    """
+    c, app = app_client
+    app.state.gateway.get = _fake_get(
+        {
+            "mode": "embedded",
+            "counts": {},
+            "devices": [{"hostname": "rotator", "credential_state": "needs_reconnect", "future_field": 7}],
+        }
+    )
+    c.post("/auth/login", json={"password": "viewer-pw"})
+
+    device = c.get("/api/overview").json()["devices"][0]
+    assert device["credential_state"] == "needs_reconnect"
+    assert device["future_field"] == 7, "the BFF must not model-filter the gateway's device shape"
+
+
 def _capture_get(seen, payload, status=200):
     async def _g(path, bearer=None):
         seen.append(path)
