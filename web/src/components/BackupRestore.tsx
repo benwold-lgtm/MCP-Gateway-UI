@@ -31,6 +31,29 @@ function signatureOf(inputs: {
   return JSON.stringify([inputs.text, inputs.passphrase, inputs.onConflict, inputs.includeDeadletters]);
 }
 
+/** `restored_needs_reconnect` → "restored needs reconnect".
+ *
+ * `String.replace` with a string pattern replaces the FIRST match only. The outcomes were all
+ * single-underscore when this was written, so the missing `/g` was invisible until ADR-0018
+ * §3 added two-underscore ones and the console started printing "restored needs_reconnect".
+ */
+function label(outcome: string): string {
+  return outcome.replaceAll("_", " ");
+}
+
+/** Amber for "needs a human", red for "did not happen" — the distinction the whole feature
+ *  rests on. A `*_needs_reconnect` device **restored successfully**; it simply cannot
+ *  authenticate yet. Colouring it like `failed` would tell an operator to go looking for a
+ *  restore that went wrong, and the same amber is what the fleet list and the fingerprint
+ *  panel already use for "this works and a person still has to decide something". */
+const AMBER = "#a67c00";
+
+function outcomeColor(outcome: string): string {
+  if (outcome === "failed") return health.fail;
+  if (outcome.endsWith("needs_reconnect")) return AMBER;
+  return ui.inkSoft;
+}
+
 export function BackupRestore({ onApplied }: { onApplied?: () => void }) {
   const [text, setText] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -210,16 +233,36 @@ function Report({ report, stale }: { report: RestoreReport; stale: boolean }) {
             key={outcome}
             style={{
               fontSize: 12,
-              color: outcome === "failed" ? health.fail : ui.inkSoft,
-              border: `1px solid ${outcome === "failed" ? health.fail : ui.rule}`,
+              color: outcomeColor(outcome),
+              border: `1px solid ${outcomeColor(outcome) === ui.inkSoft ? ui.rule : outcomeColor(outcome)}`,
               borderRadius: 999,
               padding: "1px 8px",
             }}
           >
-            {outcome.replace("_", " ")}: {n}
+            {label(outcome)}: {n}
           </span>
         ))}
       </div>
+
+      {/* The FLEET-level credential fault, first because it subsumes the rest: when the store
+          itself is unusable the gateway deliberately produces no per-device credential results
+          at all (ADR-0018 §7). Showing per-device rows here would invite an operator to go
+          checking N references when one mount is wrong. */}
+      {report.credential_store_error && (
+        <p
+          role="status"
+          style={{
+            color: health.fail,
+            fontSize: 13,
+            margin: "6px 0",
+            border: `1px solid ${health.fail}`,
+            borderRadius: 4,
+            padding: "6px 10px",
+          }}
+        >
+          <b>Secret store:</b> {report.credential_store_error}
+        </p>
+      )}
 
       {/* Lifted out of the per-device list on purpose, the way the gateway lifts it out of the
           report: a pin discarded on 3 of 500 devices is what gets missed during an incident,
@@ -232,19 +275,54 @@ function Report({ report, stale }: { report: RestoreReport; stale: boolean }) {
         </p>
       )}
 
+      {/* Amber, not red: these devices restore. What they cannot do is authenticate, and only
+          a human can change that — so this is the line an operator has to act on AFTER the
+          restore succeeds, which is exactly the kind that gets lost in a green report. */}
+      {(report.needs_reconnect ?? 0) > 0 && (
+        <p style={{ color: AMBER, fontSize: 13, margin: "4px 0" }}>
+          {report.needs_reconnect} device{report.needs_reconnect === 1 ? "" : "s"} will need{" "}
+          <b>re-authorizing by a person</b>: an OAuth2 refresh token is excluded from every archive, and for{" "}
+          {report.needs_reconnect === 1 ? "this device" : "these devices"} that token was the credential.{" "}
+          {report.needs_reconnect === 1 ? "It" : "They"} will restore, stay reachable, and be unable to get a
+          token until reconnected.
+        </p>
+      )}
+
+      {(report.credential_warnings ?? 0) > 0 && (
+        <p style={{ color: AMBER, fontSize: 13, margin: "4px 0" }}>
+          {report.credential_warnings} device{report.credential_warnings === 1 ? "" : "s"} reference a secret
+          that does not exist in <b>this stack&apos;s</b> secret store.{" "}
+          {report.credential_warnings === 1 ? "It restores" : "They restore"} as configuration; provisioning
+          the secret is a separate operation, and the next dispatch picks it up.
+        </p>
+      )}
+
       <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${ui.rule}`, borderRadius: 4 }}>
         <table cellPadding={4} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
           <tbody>
             {report.devices.map((d) => (
               <tr key={d.hostname} style={{ borderTop: `1px solid ${ui.rule}` }}>
                 <td style={{ fontFamily: mono }}>{d.hostname}</td>
-                <td style={{ color: d.outcome === "failed" ? health.fail : ui.inkSoft }}>
-                  {d.outcome.replace("_", " ")}
-                </td>
+                <td style={{ color: outcomeColor(d.outcome) }}>{label(d.outcome)}</td>
                 {/* The reason is what separates "already registered" from "current policy
                     would refuse this registration" — two very different skips. */}
                 <td style={{ color: ui.muted }}>{d.reason ?? ""}</td>
-                <td style={{ color: health.fail }}>{d.fingerprint_warning ?? ""}</td>
+                {/* One cell rather than a column per warning kind: both are rare, and two
+                    mostly-empty columns squeeze the reason text that is read on every row.
+                    Labelled so the two stay distinguishable — they call for different actions
+                    (approve a pin vs. provision a secret). */}
+                <td>
+                  {d.fingerprint_warning && (
+                    <div style={{ color: health.fail }}>
+                      <b>fingerprint:</b> {d.fingerprint_warning}
+                    </div>
+                  )}
+                  {d.credential_warning && (
+                    <div style={{ color: AMBER }}>
+                      <b>credential:</b> {d.credential_warning}
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

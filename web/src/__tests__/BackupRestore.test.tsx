@@ -62,6 +62,134 @@ async function pasteArchive(user: ReturnType<typeof userEvent.setup>, text = ARC
 const previewBtn = () => screen.getByRole("button", { name: /^preview/i });
 const applyBtn = () => screen.getByRole("button", { name: /apply this plan/i });
 
+// --- ADR-0018 §3: the credential story a restore has to tell -------------------------------
+//
+// These four signals were all being served by the gateway and rendered by nothing. The
+// `RestoreReport` type is hand-maintained — the gateway's restore route returns a plain dict
+// with no OpenAPI schema, so `check:spec` cannot see it drift — which is precisely how the
+// `*_needs_reconnect` outcomes shipped and arrived invisible.
+
+const credentialReport: RestoreReport = {
+  dry_run: true,
+  kind: "ciphertext",
+  on_conflict: "skip",
+  counts: { would_restore: 1, would_restore_needs_reconnect: 1 },
+  fingerprint_warnings: 0,
+  needs_reconnect: 1,
+  credential_warnings: 1,
+  credential_store_error: null,
+  devices: [
+    {
+      hostname: "rotator",
+      outcome: "would_restore_needs_reconnect",
+      reason: "restored without its OAuth2 refresh token",
+    },
+    {
+      hostname: "byref",
+      outcome: "would_restore",
+      credential_warning: "this stack cannot resolve 'secret://t-abc/devices/byref#api-key'",
+    },
+  ],
+};
+
+const storeDownReport: RestoreReport = {
+  dry_run: true,
+  kind: "ciphertext",
+  on_conflict: "skip",
+  counts: { would_restore: 2 },
+  fingerprint_warnings: 0,
+  needs_reconnect: 0,
+  credential_warnings: 0,
+  credential_store_error: "the secret store is not usable on this stack (root is not present)",
+  devices: [
+    { hostname: "a", outcome: "would_restore" },
+    { hostname: "b", outcome: "would_restore" },
+  ],
+};
+
+describe("BackupRestore — credential signals (ADR-0018 §3)", () => {
+  beforeEach(() => restore.mockReset());
+
+  async function previewWith(report: RestoreReport) {
+    restore.mockResolvedValue(report);
+    render(<BackupRestore />);
+    const user = userEvent.setup();
+    await pasteArchive(user);
+    await user.click(previewBtn());
+    // `getAllBy`, not `getBy`: the same outcome shows up in the count chips AND on every device
+    // row, so a singular query throws "multiple elements" before the report is even inspected.
+    await waitFor(() => expect(screen.getAllByText(/would restore/).length).toBeGreaterThan(0));
+  }
+
+  it("prints outcome labels without leftover underscores", async () => {
+    // `String.replace` with a string pattern replaces the FIRST match only. Every outcome was
+    // single-underscore when the panel was written, so the missing `/g` stayed invisible until
+    // ADR-0018 §3 added two-underscore ones — and the console then printed
+    // "would restore_needs_reconnect" at an operator.
+    await previewWith(credentialReport);
+    expect(screen.getAllByText(/would restore needs reconnect/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/needs_reconnect/)).toBeNull();
+  });
+
+  it("lifts the needs-reconnect count out of the per-device list", async () => {
+    // The line an operator must act on AFTER a restore that otherwise succeeded — which is
+    // exactly the kind that gets lost in a green report.
+    await previewWith(credentialReport);
+    expect(screen.getByText(/re-authorizing by a person/)).toBeInTheDocument();
+  });
+
+  it("lifts unresolvable references out too, and says whose store", async () => {
+    await previewWith(credentialReport);
+    // "this stack's" is load-bearing: the archive is fine, the secret is simply not here.
+    expect(screen.getByText(/secret that does not exist in/)).toBeInTheDocument();
+    expect(screen.getByText(/this stack's/)).toBeInTheDocument();
+  });
+
+  it("shows the per-device credential warning, labelled apart from a fingerprint one", async () => {
+    // They call for different actions — approve a pin vs. provision a secret — so a shared
+    // cell has to keep them distinguishable.
+    await previewWith(credentialReport);
+    const row = screen.getByText("byref").closest("tr")!;
+    expect(within(row).getByText(/credential:/)).toBeInTheDocument();
+    expect(within(row).getByText(/cannot resolve/)).toBeInTheDocument();
+  });
+
+  it("does not colour a needs-reconnect device as a failure", async () => {
+    // It restored. Painting it like `failed` sends an operator looking for a restore that went
+    // wrong, when the actual task is to go and re-authorize a device that came back fine.
+    await previewWith(credentialReport);
+    const row = screen.getByText("rotator").closest("tr")!;
+    const cell = within(row).getByText(/would restore needs reconnect/);
+    expect(cell).toHaveStyle({ color: "rgb(166, 124, 0)" });
+  });
+
+  it("reports a store outage once, at the top, and never per device", async () => {
+    // ADR-0018 §7: an unmounted volume shown as N bad references sends an operator to check N
+    // references when one mount is wrong. The gateway deliberately produces no per-device
+    // credential results in this case, and the console must not invent any.
+    await previewWith(storeDownReport);
+    expect(screen.getByText(/Secret store:/)).toBeInTheDocument();
+    expect(screen.getByText(/not usable on this stack/)).toBeInTheDocument();
+    expect(screen.queryByText(/credential:/)).toBeNull();
+  });
+
+  it("renders an older gateway's report, which sends none of these fields", async () => {
+    // The console must not blank out against a gateway it is otherwise compatible with.
+    const older: RestoreReport = {
+      dry_run: true,
+      kind: "ciphertext",
+      on_conflict: "skip",
+      counts: { would_restore: 1 },
+      fingerprint_warnings: 0,
+      devices: [{ hostname: "plain", outcome: "would_restore" }],
+    };
+    await previewWith(older);
+    expect(screen.getByText("plain")).toBeInTheDocument();
+    expect(screen.queryByText(/re-authorizing by a person/)).toBeNull();
+    expect(screen.queryByText(/Secret store:/)).toBeNull();
+  });
+});
+
 describe("BackupRestore", () => {
   beforeEach(() => {
     restore.mockReset();
