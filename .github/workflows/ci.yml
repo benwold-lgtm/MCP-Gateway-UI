@@ -22,7 +22,11 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run gen:types        # generate src/gateway.d.ts from the committed snapshot
-      - run: npm run check:spec        # contract drift guard (skips unless GATEWAY_OPENAPI_URL/FILE is set)
+      # Contract drift guard. NOTE: this job has no gateway to compare against, so the
+      # step reports "DID NOT RUN" and passes. It is real only in a job that sets
+      # GATEWAY_OPENAPI_URL/FILE (add CHECK_SPEC_REQUIRED=1 there to make a missing
+      # reference fail rather than shrug). Kept here so the script stays exercised.
+      - run: npm run check:spec
       - run: npm run lint
       - run: npm run format:check
       - run: npm run typecheck

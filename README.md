@@ -477,7 +477,30 @@ The gateway gives these endpoints real response models (`OverviewResponse`,
 `gen:types` only catches a contract change that breaks a type the SPA *consumes* — it
 won't notice a renamed/moved path the BFF proxies (the bug that left the BFF calling
 unversioned, pre-`/v1` paths). `npm run check:spec` closes that gap: point it at a live
-gateway and it diffs the committed snapshot's path/version surface, failing on drift.
+gateway and it diffs the committed snapshot against it — paths and methods, **every
+`components.schemas` shape** (property names *and* `required`), and the version.
+
+```bash
+GATEWAY_OPENAPI_URL=http://localhost:8000/openapi.json npm run check:spec
+# or against a file:
+GATEWAY_OPENAPI_FILE=../gateway/openapi.json npm run check:spec
+```
+
+⚠️ **With neither variable set, `check:spec` does not run** — it prints "DID NOT RUN" and
+exits 0, because ordinary CI has no gateway to compare against. A green `check:spec` line in
+a CI log is therefore usually the sound of nothing happening. Set `CHECK_SPEC_REQUIRED=1` in
+any job that is meant to enforce it and a missing reference becomes a failure instead of a
+shrug.
+
+That default is why the snapshot once sat **two gateway releases stale**: the schema surface
+had moved, paths and methods had not, and nothing said so. The schema diff now catches that
+class — but only where the check actually runs. Refreshing the snapshot is still a manual
+step somebody has to remember after a gateway API change.
+
+One trap when refreshing from a source checkout: the gateway's `info.version` comes from
+**installed package metadata**, so an editable install left on an older version emits a spec
+labelled with the old version. Re-sync the gateway venv first, or the version line silently
+agrees while the schemas do not.
 
 ```bash
 # enforce against a running gateway (CI skips this step when neither var is set):
