@@ -212,15 +212,35 @@ export type BackupPrepared = {
   passphrase: string | null;
 };
 
-/** One device's predicted or actual fate. `would_restore` appears only in a dry run. */
+/** One device's predicted or actual fate. `would_restore` appears only in a dry run.
+ *
+ * ⚠️ **Hand-maintained.** The gateway's restore route returns a plain dict with no OpenAPI
+ * schema, so unlike `Device`/`Overview` this shape is not generated and `check:spec` cannot
+ * see it drift. When the gateway's restore report changes, it changes here by hand or not at
+ * all — which is how the `*_needs_reconnect` outcomes below arrived unrendered.
+ */
 export type RestoreDeviceResult = {
   hostname: string;
-  outcome: "restored" | "would_restore" | "skipped" | "failed";
+  outcome:
+    | "restored"
+    | "would_restore"
+    /** Restored, and **cannot authenticate**: its OAuth2 refresh token is excluded from every
+     *  archive (gateway ADR-0018 §3) and that token was the credential. A human must
+     *  re-authorize it. Not a failure — the device is registered and may be reachable. */
+    | "restored_needs_reconnect"
+    | "would_restore_needs_reconnect"
+    | "skipped"
+    | "failed";
   reason?: string;
   /** Set when the restore would discard an archived fingerprint pin or leave a device to
    *  trust-on-first-use. Surfaced by the gateway at the top level too, because on a large
    *  fleet this is exactly what gets missed inside a per-device list. */
   fingerprint_warning?: string;
+  /** Set when **this stack** cannot resolve the device's `credential_ref` — the secret is not
+   *  in this store. The device restores anyway; provisioning the secret is a separate
+   *  operation (ADR-0018 §2a). Absent when the fault is the store itself, which is reported
+   *  once at the top instead — see `credential_store_error`. */
+  credential_warning?: string;
 };
 
 export type RestoreReport = {
@@ -230,5 +250,14 @@ export type RestoreReport = {
   created_at?: string | null;
   counts: Record<string, number>;
   fingerprint_warnings: number;
+  /** Optional because a gateway older than ADR-0018 §3 does not send them. Treated as 0 /
+   *  absent rather than assumed present — the console must not blank out against an older
+   *  gateway it is otherwise compatible with. */
+  needs_reconnect?: number;
+  credential_warnings?: number;
+  /** The **fleet-level** credential fault: the secret store is unusable on this stack, or
+   *  none is configured. Its presence means per-device credential results were deliberately
+   *  not produced (ADR-0018 §7) — one mount is wrong, not N references. */
+  credential_store_error?: string | null;
   devices: RestoreDeviceResult[];
 };
