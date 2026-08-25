@@ -91,6 +91,12 @@ export function BackupRestore({ onApplied }: { onApplied?: () => void }) {
         on_conflict: onConflict,
         include_deadletters: includeDeadletters,
         ...(passphrase.trim() ? { passphrase: passphrase.trim() } : {}),
+        // The gateway's own authority on "this is the plan that was previewed" (ADR-0018
+        // §6) — distinct from `stale` above, which is only this component's own, faster,
+        // client-side guess at the same question, checked before a round trip is spent
+        // asking the real one. Apply is disabled unless `report` is both non-null and not
+        // `stale`, so by the time this runs it is the token from the preview on screen.
+        ...(!dryRun && report?.plan_token ? { plan_token: report.plan_token } : {}),
       });
       setReport(result);
       // Bound to the inputs that produced it, so editing anything invalidates Apply.

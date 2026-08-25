@@ -258,4 +258,14 @@ export type RestoreReport = {
    *  not produced (ADR-0018 §7) — one mount is wrong, not N references. */
   credential_store_error?: string | null;
   devices: RestoreDeviceResult[];
+  /** RFC 8785 canonical-JSON digest of the exact inputs that produced this report (gateway
+   *  ADR-0018 §6). Carried on both a preview and its apply. Optional for the same reason as
+   *  the credential fields above: a gateway older than §6 does not send it. */
+  plan_digest?: string;
+  /** Only on a preview, and only from a gateway new enough to send `plan_digest` at all.
+   *  An HMAC-signed token committing to it; submit it back on the next call with
+   *  `dry_run: false` to apply exactly this plan — the gateway refuses a missing, forged,
+   *  or stale one as `ERR_PLAN_STALE` before writing anything. Absent on an applied report:
+   *  an apply consumes a token, it does not mint one. */
+  plan_token?: string;
 };

@@ -228,6 +228,27 @@ describe("BackupRestore", () => {
     expect(restore.mock.calls[1][0]).toMatchObject({ dry_run: false, on_conflict: "skip" });
   });
 
+  it("submits the plan_token a preview returned when applying it (ADR-0018 §6)", async () => {
+    // The gateway's own authority that this apply is the plan that was previewed —
+    // distinct from (and in addition to) this component's own client-side signature check.
+    render(<BackupRestore />);
+    const user = userEvent.setup();
+    await pasteArchive(user);
+    restore.mockResolvedValueOnce({ ...skipReport, plan_digest: "digest-1", plan_token: "token-1" });
+    await user.click(previewBtn());
+    await waitFor(() => expect(applyBtn()).toBeEnabled());
+
+    restore.mockResolvedValueOnce({
+      ...skipReport,
+      dry_run: false,
+      plan_digest: "digest-1",
+      counts: { restored: 3 },
+    });
+    await user.click(applyBtn());
+    await waitFor(() => expect(restore).toHaveBeenCalledTimes(2));
+    expect(restore.mock.calls[1][0]).toMatchObject({ dry_run: false, plan_token: "token-1" });
+  });
+
   it("withdraws Apply when an input changes after the preview", async () => {
     // **The one that matters.** Every field is in the signature, so this covers the conflict
     // mode, the archive, the passphrase and the dead-letter flag alike.

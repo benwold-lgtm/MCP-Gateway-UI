@@ -446,39 +446,83 @@ def test_non_object_arguments_are_refused_before_any_upstream_call(console):
 # --- restore: the destructive direction is never reached by omission -------------
 
 
-def test_a_restore_with_no_dry_run_field_arrives_at_the_gateway_as_a_dry_run(console):
-    """The gateway defaults `dry_run` to true itself, and this asserts the *BFF* does not
-    undo that — that nothing in the request-building forces the field implicitly. A thin
-    wrapper behaving subtly differently from the system it wraps is a gap this project has
-    shipped twice before, and the failure here is silent and destructive."""
+def test_a_restore_with_no_dry_run_field_arrives_at_the_gateway_as_a_preview(console):
+    """The gateway routes a dry run and a write to different paths (ADR-0018 §6), so 'the
+    destructive direction is unreachable by omission' is now a routing decision, not a body
+    field — this asserts the *BFF* makes the same safe default the gateway itself no longer
+    has to. A thin wrapper behaving subtly differently from the system it wraps is a gap this
+    project has shipped twice before, and the failure here is silent and destructive."""
     client, app = console
     up = _attach(app, _Upstream(payload={"would_restore": 3}))
     _seed(client, app, _acting_session())
 
     resp = client.post("/api/admin/restore", json={"archive": {"envelope": {}}})
     assert resp.status_code == 200
-    assert up.calls[0]["json"]["dry_run"] is True
+    assert up.calls[0]["path"] == "/admin/restore/preview"
+    assert "dry_run" not in up.calls[0]["json"]
 
 
 def test_a_restore_may_still_be_asked_for_explicitly(console):
-    """The converse, so 'always force a dry run' cannot pass the test above while making
+    """The converse, so 'always route to preview' cannot pass the test above while making
     restore impossible."""
     client, app = console
     up = _attach(app, _Upstream(payload={"restored": 3}))
     _seed(client, app, _acting_session())
 
-    client.post("/api/admin/restore", json={"archive": {"envelope": {}}, "dry_run": False})
-    assert up.calls[0]["json"]["dry_run"] is False
+    client.post(
+        "/api/admin/restore",
+        json={"archive": {"envelope": {}}, "dry_run": False, "plan_token": "tok-1"},
+    )
+    assert up.calls[0]["path"] == "/admin/restore/apply"
+    assert up.calls[0]["json"]["plan_token"] == "tok-1"
+    assert "dry_run" not in up.calls[0]["json"]
 
 
-def test_an_empty_restore_body_is_still_a_dry_run(console):
-    """A body the BFF could not parse must not become a body with no `dry_run` in it."""
+def test_an_empty_restore_body_is_still_a_preview(console):
+    """A body the BFF could not parse must not become an apply."""
     client, app = console
     up = _attach(app, _Upstream(payload={"detail": "archive required"}, status=400))
     _seed(client, app, _acting_session())
 
     client.post("/api/admin/restore", content=b"not json", headers={"Content-Type": "application/json"})
-    assert up.calls[0]["json"]["dry_run"] is True
+    assert up.calls[0]["path"] == "/admin/restore/preview"
+
+
+def test_a_preview_s_plan_digest_and_plan_token_reach_the_browser_unchanged(console):
+    """The console needs the exact token back, verbatim, to submit on the apply — a proxy
+    that reshaped or renamed the field would make the plan un-appliable without ever
+    producing an error."""
+    client, app = console
+    _attach(app, _Upstream(payload={"would_restore": 3, "plan_digest": "abc123", "plan_token": "signed.tok"}))
+    _seed(client, app, _acting_session())
+
+    resp = client.post("/api/admin/restore", json={"archive": {"envelope": {}}})
+    assert resp.json()["plan_digest"] == "abc123"
+    assert resp.json()["plan_token"] == "signed.tok"
+
+
+def test_an_apply_refused_as_stale_is_passed_through_structured(console):
+    """`ERR_PLAN_STALE` carries a dict `detail`, not a string — the one structured error in
+    this codebase. A proxy that only knew how to forward a string would still work here
+    (it forwards the body as-is), but this pins that the structure survives, since the
+    console's error rendering depends on `detail.message` being reachable."""
+    client, app = console
+    _attach(
+        app,
+        _Upstream(
+            status=409,
+            payload={"detail": {"error_code": "ERR_PLAN_STALE", "message": "stale plan", "fields": ["archive"]}},
+        ),
+    )
+    _seed(client, app, _acting_session())
+
+    resp = client.post(
+        "/api/admin/restore",
+        json={"archive": {"envelope": {}}, "dry_run": False, "plan_token": "stale-tok"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error_code"] == "ERR_PLAN_STALE"
+    assert resp.json()["detail"]["message"] == "stale plan"
 
 
 # --- the audit chain records the act, never its contents -------------------------

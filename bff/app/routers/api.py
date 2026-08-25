@@ -445,16 +445,25 @@ async def download_backup(request: Request, token: str = ""):
 
 @router.post("/admin/restore", dependencies=[_any, _no_break_glass, _admin])
 async def restore_backup(request: Request) -> JSONResponse:
-    """Replay an archive. **A request that does not say otherwise is a dry run.**
+    """Preview or apply a restore. **A request that does not say otherwise is a dry run.**
 
-    The gateway defaults `dry_run` to true itself, and this sets it anyway rather than
-    relying on that. The destructive direction must not be reachable by omission through two
-    layers, and a thin proxy quietly behaving differently from the system it wraps is a gap
-    this project has shipped twice before. Divergence here can only fail safe.
+    The gateway split this into two routes by scope (ADR-0018 §6): a dry run goes to
+    `/admin/restore/preview`, a write to `/admin/restore/apply`, and only the second is
+    destructive. `dry_run` no longer means anything to the gateway itself, but it stays
+    the client-facing switch here and defaults to true anyway rather than relying on the
+    upstream default — the destructive direction must not become reachable by omission
+    through two layers, and a thin proxy quietly behaving differently from the system it
+    wraps is a gap this project has shipped twice before. Divergence here can only fail
+    safe: an unset or unparseable body always resolves to preview.
+
+    An apply must carry `plan_token`, from a preceding preview of this exact request; the
+    gateway refuses a missing, forged, or stale one with `ERR_PLAN_STALE` before writing
+    anything, and that structured response is passed straight through.
     """
     body = await _optional_body(request)
     payload = dict(body) if isinstance(body, dict) else {}
-    payload["dry_run"] = bool(payload.get("dry_run", True))
-    resp = await relay_request(request, "POST", "/admin/restore", json=payload)
-    action = "backup.restore" if not payload["dry_run"] else "backup.restore_preview"
+    dry_run = bool(payload.pop("dry_run", True))
+    path = "/admin/restore/preview" if dry_run else "/admin/restore/apply"
+    resp = await relay_request(request, "POST", path, json=payload)
+    action = "backup.restore" if not dry_run else "backup.restore_preview"
     return await _audited(request, resp, action, target="registry")
