@@ -23,24 +23,20 @@ describe("req error extraction", () => {
   });
 
   it("reads a structured detail's `message` field, as ERR_PLAN_STALE's does", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(409, {
-          detail: { error_code: "ERR_PLAN_STALE", message: "plan_token does not match this request", fields: [] },
-        }),
-      ),
-    );
+    const detail = {
+      error_code: "ERR_PLAN_STALE",
+      message: "plan_token does not match this request",
+      fields: [],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(409, { detail })));
     const err = await api.overview().catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err.message).toBe("plan_token does not match this request");
   });
 
   it("falls back to the status text when there is no usable detail at all", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response("not json", { status: 500, statusText: "Internal Server Error" })),
-    );
+    const resp = new Response("not json", { status: 500, statusText: "Internal Server Error" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(resp));
     await expect(api.overview()).rejects.toMatchObject({ status: 500, message: "Internal Server Error" });
   });
 });

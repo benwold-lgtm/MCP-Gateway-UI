@@ -238,7 +238,12 @@ describe("BackupRestore", () => {
     await user.click(previewBtn());
     await waitFor(() => expect(applyBtn()).toBeEnabled());
 
-    restore.mockResolvedValueOnce({ ...skipReport, dry_run: false, plan_digest: "digest-1", counts: { restored: 3 } });
+    restore.mockResolvedValueOnce({
+      ...skipReport,
+      dry_run: false,
+      plan_digest: "digest-1",
+      counts: { restored: 3 },
+    });
     await user.click(applyBtn());
     await waitFor(() => expect(restore).toHaveBeenCalledTimes(2));
     expect(restore.mock.calls[1][0]).toMatchObject({ dry_run: false, plan_token: "token-1" });
