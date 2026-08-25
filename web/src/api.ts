@@ -26,6 +26,19 @@ import type {
 } from "./types";
 import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
 
+/** Almost every gateway/BFF error's `detail` is a plain string. `ERR_PLAN_STALE`
+ *  (ADR-0018 §6) is the one exception: a dict carrying `message` alongside `error_code`
+ *  and `fields`, so a caller can act on the code without parsing the sentence. Without
+ *  this, that dict would reach `ApiError`'s message unstringified and render as
+ *  "[object Object]" at the operator instead of the sentence telling them what to do. */
+function errorMessage(detail: unknown): string | undefined {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string") {
+    return (detail as { message: string }).message;
+  }
+  return undefined;
+}
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
     method,
@@ -34,8 +47,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!resp.ok) {
-    const detail = await resp.json().catch(() => ({}));
-    throw new ApiError(resp.status, (detail as { detail?: string }).detail ?? resp.statusText);
+    const body = await resp.json().catch(() => ({}));
+    throw new ApiError(resp.status, errorMessage((body as { detail?: unknown }).detail) ?? resp.statusText);
   }
   return (await resp.json()) as T;
 }
@@ -71,12 +84,17 @@ export const api = {
   // `dry_run` is required rather than defaulted here even though the BFF and the gateway both
   // default it to true. Three layers each quietly defaulting is how the destructive direction
   // eventually becomes reachable by omission; at the call site it has to be typed out.
+  // `plan_token` is required by the gateway on `dry_run: false` (ADR-0018 §6) — the token a
+  // preceding preview of this exact request returned — but stays optional in the type: a
+  // preview call never has one to send, and a caller sending an apply without one gets the
+  // gateway's own `plan_token is required` 400 rather than a client-side one duplicating it.
   restore: (body: {
     archive: unknown;
     passphrase?: string;
     dry_run: boolean;
     on_conflict: OnConflict;
     include_deadletters?: boolean;
+    plan_token?: string;
   }) => req<RestoreReport>("POST", "/api/admin/restore", body),
   // One call, three upstream hops (initialize / tools/call / delete) that the BFF runs on our
   // behalf — a bare `tools/call` cannot be forwarded through the MCP transport. Resolves with
