@@ -14,6 +14,7 @@ import { DeviceDetail } from "./DeviceDetail";
 import { Dashboard } from "./Dashboard";
 import { BackupExport } from "./BackupExport";
 import { BackupRestore } from "./BackupRestore";
+import { CatalogConsole } from "./CatalogConsole";
 
 /** The provider plane's shell (ADR-0013 §4/§8).
  *
@@ -22,7 +23,7 @@ import { BackupRestore } from "./BackupRestore";
  * component while another believed a different tenant was live would be the console disagreeing
  * with itself about whose estate is open.
  */
-type View = "access" | "devices" | "monitoring" | "backup";
+type View = "access" | "devices" | "monitoring" | "backup" | "catalog";
 
 export function ProviderConsole({
   session,
@@ -56,9 +57,11 @@ export function ProviderConsole({
 
   // Losing the act ejects you from anything it was holding open. Leaving a customer's device
   // list on screen after the authority to see it expired is the state ADR-0013 §4 exists to
-  // prevent, and a stale view is indistinguishable from a live one.
+  // prevent, and a stale view is indistinguishable from a live one. Catalog is exempt: it is
+  // never gated on an act (ADR-0020 §2 — curation/assignment touch the provider's own storage,
+  // never a tenant's), so losing one must not eject an operator out of it.
   useEffect(() => {
-    if (!act) setView("access");
+    setView((v) => (!act && v !== "catalog" ? "access" : v));
   }, [act]);
 
   // A step-up lands back here by full-page navigation, so the outcome arrives in the URL rather
@@ -101,6 +104,10 @@ export function ProviderConsole({
         hint={!act ? "needs a live act" : undefined}
         onClick={() => setView("backup")}
       />
+      {/* Not gated on the act, unlike everything above: curating the catalog and assigning
+          a type to a tenant are provider-plane acts on the provider's own storage (ADR-0020
+          §2), never a write into any tenant's registry. */}
+      <RailItem label="Catalog" active={view === "catalog"} onClick={() => setView("catalog")} />
     </>
   );
 
@@ -153,6 +160,8 @@ export function ProviderConsole({
       {(view === "devices" || view === "monitoring") && act && (
         <TenantViews tenant={act.tenant} view={view} elevation={elevation} />
       )}
+      {/* Unlike the tier-1 views above, not gated on `act` — see the rail item comment. */}
+      {view === "catalog" && <CatalogConsole />}
     </Shell>
   );
 }

@@ -98,6 +98,8 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `AUDIT_TENANT` | Which tenant this stack serves (default `default`). Stamped on every record in the clear — it is what tells a reader which content key applies |
 | `AUDIT_CONTENT_KEY` | Fernet key encrypting record content, so offboarding a tenant is a key destruction rather than a row deletion. Empty = content in the clear and **no crypto-shredding**; the chain is unaffected either way. Also `AUDIT_CONTENT_KEY_FILE` |
 | `AUDIT_PSEUDONYM_KEY` | HMAC key producing stable, non-reversible handles for cross-plane (provider) actors. Empty = the writer emits an opaque constant rather than a real identity, because an unkeyed pseudonym is reversible by dictionary attack. Also `AUDIT_PSEUDONYM_KEY_FILE` |
+| `CATALOG_SERVICE_URL` | The provider-plane device catalog's base URL (ADR-0020) — a separate service (`device_mcp_catalog/` in the gateway repo), not the BFF's own storage. Empty disables catalog curation/claiming as a named condition rather than an empty device-type list |
+| `CATALOG_API_TOKEN` | This BFF's shared bearer token for the catalog service (also `CATALOG_API_TOKEN_FILE`) — the catalog's only caller in phase 1, so one token rather than a scope model |
 
 > **`GATEWAY_API_TOKEN` is the console's identity, not the gateway's break-glass key — and
 > conflating the two is what ADR-0023 slice 4 separates.** They used to be the same value,
@@ -279,6 +281,21 @@ as the refusal, not instead of it, because it is what still holds if a session d
 a group to it is refused at startup. It is a time-boxed, individually justified, separately
 audited grant, acquired through a **step-up** — see below. (`provider:credentials` was the
 other elevated class, gating backup/restore; removed — see below.)
+
+### Catalog (ADR-0020)
+
+`provider:admin` also reaches `/provider/catalog/*` — curating device types and assigning
+them to tenants — and this is the one provider-plane surface **not** gated on a live
+act-on-tenant grant. Curation and assignment write to the catalog service's own storage, not
+a tenant's registry (§2: "assignment is an offer"), so there is no tenant authority to hold
+in the first place. The BFF relays every call to a separate service
+(`device_mcp_catalog/` in the gateway repo, `CATALOG_SERVICE_URL`/`CATALOG_API_TOKEN` above)
+and holds none of it itself.
+
+`assigned_by` on an assignment is filled in from the session's own subject, never taken from
+the request body — an unverified client-supplied actor would be worthless as an audit
+attribution. The claim flow — a tenant accepting an assigned device type into their own
+registry — is a tenant-plane act and lives under `/api/*`, not here (a later slice).
 
 ### Act on tenant — the grant that opens the data plane
 

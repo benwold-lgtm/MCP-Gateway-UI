@@ -6,6 +6,12 @@ metadata:
 data:
   # The gateway lives in its own namespace; reach it by its Service DNS name.
   GATEWAY_URL: "http://device-mcp-gateway.mcp-gateway.svc.cluster.local:8000"
+  # ADR-0020: the provider-plane device catalog. Bundled into the gateway repo's own
+  # kustomization (its own namespace, `mcp-gateway` by default) even though it is a
+  # separate component — reach it by its Service DNS name the same way as GATEWAY_URL.
+  # Empty disables catalog curation/claiming (a named condition, ADR-0020 §7 — never
+  # inferred from an empty device-type list). CATALOG_API_TOKEN goes in the Secret.
+  CATALOG_SERVICE_URL: "http://device-mcp-catalog.mcp-gateway.svc.cluster.local:8100"
   # Phase 2 monitoring sources (leave empty until wired).
   PROMETHEUS_URL: ""
   LOKI_URL: ""

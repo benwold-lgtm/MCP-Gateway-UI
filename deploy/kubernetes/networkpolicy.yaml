@@ -34,6 +34,17 @@ spec:
       ports:
         - port: 8000
           protocol: TCP
+    # ADR-0020 catalog service — same namespace as the gateway in this repo's own
+    # kustomization default, so the same namespaceSelector reaches both. Its own
+    # NetworkPolicy (deploy/kubernetes/networkpolicy.yaml policy 8 in the gateway repo)
+    # accepts ingress from this namespace specifically, not from the whole cluster.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8100
+          protocol: TCP
     # Phase 2: Prometheus query API (9090) + Loki (3100). Restrict to your
     # monitoring namespace in production.
     - ports:
