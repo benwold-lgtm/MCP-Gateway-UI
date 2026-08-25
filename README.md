@@ -275,9 +275,10 @@ as the refusal, not instead of it, because it is what still holds if a session d
 | Never presented | the tenant stack's admin key. A provider session is refused rather than falling back to it |
 | Sees | its **estate** — the tenants named by `PROVIDER_ENTITLEMENT_CLAIM` at login — offered as a list, each marked as served here or not. Navigation only: one deployment serves one tenant, so an act on any other is granted and audited yet reaches no devices, and free entry stays available because §11c leaves the decision with the gateway |
 
-`provider:invoke` and `provider:credentials` are **elevated** and cannot be granted by group
-membership at all — mapping a group to one is refused at startup. They are time-boxed,
-individually justified, separately audited grants, acquired through a **step-up** — see below.
+`provider:invoke` is **elevated** and cannot be granted by group membership at all — mapping
+a group to it is refused at startup. It is a time-boxed, individually justified, separately
+audited grant, acquired through a **step-up** — see below. (`provider:credentials` was the
+other elevated class, gating backup/restore; removed — see below.)
 
 ### Act on tenant — the grant that opens the data plane
 
@@ -325,12 +326,14 @@ one before admitting the request.
 shared or defaulting table it would be an escalation primitive — the same reason the gateway
 made `group_roles` per-issuer (§6a).
 
-### The two elevated grants — a step-up, on top of an act
+### The elevated grant — a step-up, on top of an act
 
 `provider:admin` deliberately reaches neither a customer's live hardware nor their
-credentials. Those are the two points where a compromised provider session converts into
-real damage, so §8 spends a **step-up** on exactly them and nowhere else — putting one on
-the everyday motion would fire often enough to train reflexive approval.
+credentials. Those used to be the two points where a compromised provider session converts
+into real damage, so §8 spent a **step-up** on exactly them and nowhere else. The second —
+`provider:credentials`, gating backup/restore — is removed: [ADR-0018](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0018-device-credentials-by-reference.md)
+§6 (gateway repo) removed the credential dump it gated, so the class had nothing left to
+name. Backup/restore now need only an ordinary admin session — see below. What remains:
 
 ```
 POST   /provider/tenants/{tenant}/elevate   {"scope": "provider:invoke", "justification": "…"}
@@ -342,7 +345,6 @@ DELETE /provider/elevation                  end the elevation, keep the act
 | Grant | Reaches | Window | Re-entry |
 |---|---|---|---|
 | `provider:invoke` | `tools:call` on the tenant's gateway | 15 min absolute, replayable within it | step-up |
-| `provider:credentials` | `backup:read` / `backup:write` / `backup:export-portable` | **single use** — one operation | step-up |
 
 **Who mints what.** The **provider IdP** mints the grant claim, not the BFF and not the
 gateway (§11b) — the BFF is already audit writer and credential holder, and making it a
@@ -368,19 +370,27 @@ Four things are deliberate:
 
 **The gateway is the other half.** It verifies the same claim independently — window,
 tenant, single-use consumption in its own Redis — and refuses the whole token if anything
-fails. See ADR-0013 §11 and the gateway's `device_mcp_gateway/grants.py`. The provider scope
-vocabulary stops here: what travels is `tools:call` and `backup:*`, never `provider:invoke`.
+fails. See ADR-0013 §11 and the gateway's grant verification. The provider scope vocabulary
+stops here: what travels is `tools:call`, never `provider:invoke`.
 
 #### What an elevation actually reaches
 
 ```
 POST /api/devices/{hostname}/tools/{tool}/invoke   {"arguments": {…}}   provider:invoke
-GET  /api/admin/backup                                                  provider:credentials
-POST /api/admin/backup       {"kind": "portable", "passphrase": "…"}    provider:credentials
-POST /api/admin/restore      {"archive": {…}, "dry_run": true}          provider:credentials
 ```
 
-Three rules on these routes, none of which is visible from the route list:
+`provider:invoke` is the only route left that needs one. Backup and restore used to be
+here too, behind `provider:credentials`; that class is removed
+([ADR-0018](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0018-device-credentials-by-reference.md)
+§6, gateway repo) and those routes now need only an ordinary admin session:
+
+```
+GET  /api/admin/backup
+POST /api/admin/backup       {"kind": "portable", "passphrase": "…"}
+POST /api/admin/restore      {"archive": {…}, "dry_run": true}
+```
+
+Three rules on the elevated route, none of which is visible from the route list:
 
 - **The step-up credential is relayed only here.** Elsewhere a provider session presents its
   ordinary token, even while holding a live elevation. The gateway consumes a single-use

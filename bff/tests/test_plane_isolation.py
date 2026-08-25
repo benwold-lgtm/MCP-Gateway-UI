@@ -105,9 +105,7 @@ def test_provider_scopes_are_not_gateway_scopes():
     these ever leaked into a relayed token request it would be silently dropped rather
     than refused — which is why the separation is asserted here, at the source.
     """
-    assert PROVIDER_SCOPES == frozenset(
-        {"provider:monitor", "provider:admin", "provider:invoke", "provider:credentials"}
-    )
+    assert PROVIDER_SCOPES == frozenset({"provider:monitor", "provider:admin", "provider:invoke"})
     for scope in PROVIDER_SCOPES:
         assert scope.startswith("provider:")
     # No gateway scope is reachable through the provider vocabulary.
@@ -331,19 +329,26 @@ def test_a_session_with_no_plane_reads_as_tenant(provider_console):
 
 
 def test_an_elevated_scope_cannot_be_granted_by_group_membership():
-    """§5a/§8: `provider:invoke` and `provider:credentials` are time-boxed, individually
-    justified, separately audited grants. A group mapping that hands one out standing is
-    exactly the ambient authority §4 removes, so the mapping refuses it outright rather
-    than trimming it — a config that believes it granted something must not be told it
-    succeeded.
+    """§5a/§8: `provider:invoke` is a time-boxed, individually justified, separately
+    audited grant. A group mapping that hands it out standing is exactly the ambient
+    authority §4 removes, so the mapping refuses it outright rather than trimming it — a
+    config that believes it granted something must not be told it succeeded.
 
     Found by mutation: the guard existed with nothing exercising it.
     """
-    for elevated in ("provider:invoke", "provider:credentials"):
-        with pytest.raises(ValueError, match="elevated"):
-            provider_scopes_for_groups(["sre"], {"sre": elevated})
+    with pytest.raises(ValueError, match="elevated"):
+        provider_scopes_for_groups(["sre"], {"sre": "provider:invoke"})
     # The everyday grants are still mappable.
     assert provider_scopes_for_groups(["sre"], {"sre": "provider:admin"}) == frozenset({"provider:admin"})
+
+
+def test_a_retired_scope_is_refused_as_unknown_not_as_elevated():
+    """`provider:credentials` was the other elevated class and is removed (ADR-0018 §6). A
+    mapping still naming it must fail — but for being an unrecognised provider scope, not
+    for being elevated: the two refusals mean different things to whoever reads them, and a
+    deployment carrying the stale config deserves the accurate one."""
+    with pytest.raises(ValueError, match="not one of"):
+        provider_scopes_for_groups(["sre"], {"sre": "provider:credentials"})
 
 
 def test_a_tenant_session_is_refused_on_a_provider_route(provider_console):
@@ -409,7 +414,7 @@ def test_provider_scopes_on_a_tenant_session_are_not_reported(provider_console):
             "plane": PLANE_TENANT,
             "sub": "alice",
             "access_token": "t",
-            "provider_scopes": ["provider:admin", "provider:credentials"],
+            "provider_scopes": ["provider:admin", "provider:invoke"],
         },
     )
     me = c.get("/auth/me").json()

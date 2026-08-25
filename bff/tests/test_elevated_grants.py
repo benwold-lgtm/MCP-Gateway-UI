@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""ADR-0013 §5a/§8/§11b — the two elevated grants, and the step-up behind them.
+"""ADR-0013 §5a/§8/§11b — the elevated grant, and the step-up behind it.
+
+`provider:credentials` was the other elevated class (single-use, backup:*) and is removed:
+ADR-0018 §6 (gateway repo) removed the credential dump it gated. It was this file's only
+single-use class, so the end-to-end "spent by one relayed request" coverage that used to run
+against it is gone with it — `test_spend_elevated_grant_drops_a_single_use_grant_directly`
+covers the generic mechanism at the unit level instead, until a future class needs it again
+end-to-end.
 
 **Written before the implementation**, like `test_act_on_tenant.py` and the gateway's own
 `test_elevated_grants.py`. Same reason: everything here fails silently. The request
@@ -31,10 +38,11 @@ The hazards, each of which the obvious implementation walks into:
    act-on-tenant's justification, its one-tenant-at-a-time rule and its audit trail.
 4. **An elevated credential outliving its grant.** The token is the capability; if it
    survives release, expiry or a tenant switch, the window stopped being the control.
-5. **Single use that is not.** `provider:credentials` is one operation (§8). A BFF that
-   keeps presenting the token leaves the bound entirely to the gateway's consumption
-   record — which works, but means the BFF's own audit says "one operation" while it made
-   several attempts.
+5. **Single use that is not.** A single-use class is one operation (§8). A BFF that keeps
+   presenting the token leaves the bound entirely to the gateway's consumption record —
+   which works, but means the BFF's own audit says "one operation" while it made several.
+   No live class is single-use today; the mechanism (`spend_elevated_grant`) is kept
+   generic and tested directly against that hazard for whenever one is.
 6. **The provider vocabulary leaking downstream.** `provider:invoke` is a BFF scope. What
    goes to the gateway is `tools:call`. §11 keeps that line, and it is kept *here*, since
    this is the side that does the mapping.
@@ -72,7 +80,6 @@ from app.security import (  # noqa: E402
     PLANE_PROVIDER,
     PLANE_TENANT,
     SCOPE_PROVIDER_ADMIN,
-    SCOPE_PROVIDER_CREDENTIALS,
     SCOPE_PROVIDER_INVOKE,
     SCOPE_PROVIDER_MONITOR,
 )
@@ -125,33 +132,36 @@ def _record(sess, *, now=1000.0, **over):
     return record_elevated_grant(sess, **args)
 
 
-# --- §8's two classes, mapped onto gateway scopes ------------------------------
+# --- §8's elevated class, mapped onto gateway scopes ---------------------------
 
 
-def test_the_two_classes_map_to_gateway_scopes_not_provider_ones():
-    """Hazard 6. `provider:invoke` and `provider:credentials` are BFF scopes and the
-    gateway has never heard of them (§11). This side owns the mapping, so this is where a
-    leak would start — and the gateway would *silently ignore* an unknown scope rather than
-    refuse it, which is why the assertion lives here rather than there."""
+def test_the_elevated_class_maps_to_gateway_scopes_not_provider_ones():
+    """Hazard 6. `provider:invoke` is a BFF scope and the gateway has never heard of it
+    (§11). This side owns the mapping, so this is where a leak would start — and the
+    gateway would *silently ignore* an unknown scope rather than refuse it, which is why
+    the assertion lives here rather than there."""
     invoke = elevated_spec(SCOPE_PROVIDER_INVOKE)
-    creds = elevated_spec(SCOPE_PROVIDER_CREDENTIALS)
     assert invoke.gateway_scopes == ("tools:call",)
-    assert set(creds.gateway_scopes) == {"backup:read", "backup:write", "backup:export-portable"}
     for spec in ELEVATED_GRANT_SPECS.values():
         for scope in spec.gateway_scopes:
             assert not scope.startswith("provider:")
 
 
-def test_credentials_is_single_use_and_invoke_is_not():
-    """§8's relationships, which are the decision — the durations are configuration. And
-    the credentials window is no *looser* than the invoke one, mirroring the same
-    assertion the gateway makes about its own table."""
+def test_invoke_is_not_single_use():
+    """§8's relationship, which is the decision — the duration is configuration. Was
+    compared against `provider:credentials` (removed, ADR-0018 §6) as the one that was;
+    nothing left to compare against, so this pins the remaining half on its own."""
     assert elevated_spec(SCOPE_PROVIDER_INVOKE).single_use is False
-    assert elevated_spec(SCOPE_PROVIDER_CREDENTIALS).single_use is True
-    assert elevated_spec(SCOPE_PROVIDER_CREDENTIALS).max_lifetime <= elevated_spec(SCOPE_PROVIDER_INVOKE).max_lifetime
 
 
-def test_only_the_two_elevated_scopes_are_elevatable():
+def test_provider_credentials_is_no_longer_an_elevatable_scope():
+    """Locks the removal itself: asking to elevate the retired scope must fail the same
+    way any other non-elevated scope does, not be silently accepted or 500."""
+    with pytest.raises(GrantError, match="elevat"):
+        elevated_spec("provider:credentials")
+
+
+def test_only_the_elevated_scope_is_elevatable():
     """The closed range. `provider:admin` needs no elevation and `provider:monitor` has no
     tenant access at all — asking to elevate either is a misunderstanding of the model, and
     it fails loudly rather than minting something meaningless."""
@@ -398,16 +408,27 @@ def test_a_malformed_stored_elevation_reads_as_none():
 # --- single use ----------------------------------------------------------------
 
 
-def test_a_credentials_elevation_is_spent_after_one_operation():
-    """Hazard 5, and §8's bound for the class that walks away with a customer's secrets.
-    The gateway's consumption record is authoritative — but a BFF that keeps presenting a
-    spent token makes its own audit say "one operation" while it attempted several."""
+def test_spend_elevated_grant_drops_a_single_use_grant_directly():
+    """Hazard 5's mechanism, tested generically now that no live class is single-use
+    (`provider:credentials` was, and is removed — ADR-0018 §6). `record_elevated_grant`
+    can only mint through `ELEVATED_GRANT_SPECS`, which has no `single_use=True` member
+    left to mint through, so this constructs the stored shape directly — the same way
+    `test_a_malformed_stored_elevation_reads_as_none` does — to prove `spend_elevated_grant`
+    still drops a single-use grant on its own terms, independent of which class sets the
+    flag. If a future class sets `single_use=True` again, this is the test that would
+    already have caught `spend` silently ceasing to honour it."""
     sess = _acting()
-    _record(
-        sess,
-        provider_scope=SCOPE_PROVIDER_CREDENTIALS,
-        claim=_claim(scopes=["backup:read", "backup:write", "backup:export-portable"]),
-    )
+    sess["elevated_grant"] = {
+        "id": "g-su",
+        "tenant": TENANT,
+        "provider_scope": SCOPE_PROVIDER_INVOKE,
+        "gateway_scopes": ["tools:call"],
+        "justification": WHY,
+        "granted_at": 1000.0,
+        "expires_at": 1000.0 + 900,
+        "single_use": True,
+        "access_token": STEP_UP_TOKEN,
+    }
     assert active_elevated_grant(sess, tenant=TENANT, now=1000.0) is not None
     spend_elevated_grant(sess)
     assert active_elevated_grant(sess, tenant=TENANT, now=1000.0) is None
@@ -601,21 +622,13 @@ def test_the_step_up_request_names_the_tenant_and_the_class(console):
     assert idp.asked["extra_scopes"] == ("mcp:tenant:acme", "mcp:grant:invoke")
 
 
-def test_the_requested_class_scope_follows_the_grant_being_asked_for(console):
-    """A credentials elevation must not ask for an invoke grant. Same shape as the
-    gateway-side mapping: the two classes differ in single-use and lifetime, so being
-    handed the wrong one is not a narrower grant, it is a different one."""
-    client, app = console
-    _seed_session(client, app, _acting_live())
-    idp = _FakeIdP(
-        claim={
-            "id": "g-cred",
-            "tenant": TENANT,
-            "scopes": list(elevated_spec(SCOPE_PROVIDER_CREDENTIALS).gateway_scopes),
-        }
-    )
-    _elevate(client, app, idp, scope=SCOPE_PROVIDER_CREDENTIALS)
-    assert idp.asked["extra_scopes"] == ("mcp:tenant:acme", "mcp:grant:credentials")
+# The sibling test to the one above used to elevate `provider:credentials` and assert the
+# request named *that* class rather than `provider:invoke`'s — proving the scope follows
+# whichever class is asked for, not a fixed one. With `provider:credentials` removed
+# (ADR-0018 §6) there is only one class left to ask for, so that comparison has no second
+# case to make it meaningful. `step_up_scopes`'s own parametrized tests below
+# (`test_the_template_expresses_either_factoring` et al.) already cover the substitution
+# generically at the unit level; nothing here would newly regress by this test's absence.
 
 
 def test_a_bff_with_no_scope_template_refuses_before_the_round_trip(console_no_scope_template):
@@ -1025,45 +1038,14 @@ def test_releasing_the_act_drops_the_elevation_through_the_route(console):
     assert _stored(app).get("elevated_grant") is None
 
 
-def test_a_credentials_elevation_is_spent_by_one_relayed_request(console):
-    """End to end for §8's single-use class: the second request must not carry the elevated
-    token. Driven through the relay rather than by calling `spend` directly, because "the
-    helper works" and "the relay calls it" are different facts.
-
-    The second attempt is now refused *before* anything is relayed: with the credential
-    offered only to routes that ask for it, the route's own `require_elevated` sees the
-    spent elevation and says so. That is a better answer than relaying an ordinary token and
-    collecting a 403 from upstream — but it means the second request has no bearer at all to
-    assert on, so the assertion is on the refusal.
-    """
-    client, app = console
-    _seed_session(client, app, _acting_live())
-    idp = _FakeIdP(
-        claim={
-            "id": "g-cred",
-            "tenant": TENANT,
-            # The whole class, because that is what the BFF requested — the IdP mints the
-            # class it was asked for, and a claim carrying something else is refused.
-            "scopes": ["backup:read", "backup:write", "backup:export-portable"],
-        }
-    )
-    resp = _elevate(client, app, idp, scope=SCOPE_PROVIDER_CREDENTIALS)
-    assert resp.status_code in (200, 302), resp.text
-
-    seen = []
-
-    async def _spy(path, bearer=None, **kw):
-        import httpx
-
-        seen.append(bearer)
-        return httpx.Response(200, json={"envelope": {}})
-
-    app.state.gateway.get = _spy
-    assert client.get("/api/admin/backup").status_code == 200
-    second = client.get("/api/admin/backup")
-
-    assert seen == [STEP_UP_TOKEN], "a single-use elevation was presented twice"
-    assert second.status_code == 403 and "elevation" in second.json()["detail"]
+# The end-to-end "spent by one relayed request" test lived here, against
+# `provider:credentials` and `/api/admin/backup`. Both are gone: the class is removed
+# (ADR-0018 §6) and the route no longer requires any elevation (it now needs only an
+# ordinary admin session — `_admin`, not `_needs_credentials`). No live route is single-use
+# today, so there is nothing to drive this end to end against.
+# `test_spend_elevated_grant_drops_a_single_use_grant_directly` (above) covers the same
+# hazard at the unit level in the meantime; restore an end-to-end version of this test
+# alongside whichever future route first needs `single_use=True` for real.
 
 
 def test_the_elevated_token_never_reaches_the_browser(console):
@@ -1105,34 +1087,45 @@ def test_the_step_up_uses_its_own_transaction_key(console):
 # **navigation** — so its outcome has to arrive somewhere a browser can act on.
 
 
-def _credentials_idp() -> "_FakeIdP":
-    """A fake whose claim carries the credentials class's gateway scopes.
-
-    The default claim is an *invoke* one, so a credentials elevation driven with it is
-    refused for the right reason — which would make a single-use assertion pass vacuously
-    by never producing a grant at all.
-    """
-    return _FakeIdP(
-        claim={
-            "id": "g-cred",
-            "tenant": TENANT,
-            "scopes": list(elevated_spec(SCOPE_PROVIDER_CREDENTIALS).gateway_scopes),
-        }
-    )
-
-
 def test_the_console_can_read_the_live_elevation(console):
     """Without a read there is no countdown, and no way to show single-use as a state."""
     client, app = console
     _seed_session(client, app, _acting_live())
-    _elevate(client, app, _credentials_idp(), scope=SCOPE_PROVIDER_CREDENTIALS)
+    _elevate(client, app, _FakeIdP())
 
     body = client.get("/provider/elevation").json()
     assert body["tenant"] == TENANT
-    assert body["scope"] == SCOPE_PROVIDER_CREDENTIALS
-    # The field that makes the credentials grant render differently from an invoke one.
-    assert body["single_use"] is True
+    assert body["scope"] == SCOPE_PROVIDER_INVOKE
+    assert body["single_use"] is False
     assert body["expires_at"] > body["granted_at"]
+
+
+def test_the_read_route_renders_single_use_true_when_the_stored_grant_says_so(console):
+    """The other half of the field above. No live class sets `single_use=True` today
+    (`provider:credentials` did, and is removed — ADR-0018 §6), so this seeds the stored
+    shape directly rather than through a real elevation, the same way
+    `test_spend_elevated_grant_drops_a_single_use_grant_directly` does — proving the read
+    route still renders the field correctly for whenever a class needs it again."""
+    client, app = console
+    sess = _acting_live()
+    import time as _t
+
+    now = _t.time()
+    sess["elevated_grant"] = {
+        "id": "g-su",
+        "tenant": TENANT,
+        "provider_scope": SCOPE_PROVIDER_INVOKE,
+        "gateway_scopes": ["tools:call"],
+        "justification": WHY,
+        "granted_at": now,
+        "expires_at": now + 900,
+        "single_use": True,
+        "access_token": STEP_UP_TOKEN,
+    }
+    _seed_session(client, app, sess)
+
+    body = client.get("/provider/elevation").json()
+    assert body["single_use"] is True
 
 
 def test_reading_the_elevation_never_hands_back_the_token_or_the_justification(console):
@@ -1167,7 +1160,7 @@ def test_reading_the_elevation_does_not_spend_or_renew_it(console):
     countdown would be the thing destroying what it displays."""
     client, app = console
     _seed_session(client, app, _acting_live())
-    _elevate(client, app, _credentials_idp(), scope=SCOPE_PROVIDER_CREDENTIALS)
+    _elevate(client, app, _FakeIdP())
 
     first = client.get("/provider/elevation").json()
     for _ in range(3):

@@ -50,7 +50,6 @@ from app.routers import api as api_routes  # noqa: E402
 from app.security import (  # noqa: E402
     PLANE_PROVIDER,
     SCOPE_PROVIDER_ADMIN,
-    SCOPE_PROVIDER_CREDENTIALS,
     SCOPE_PROVIDER_INVOKE,
 )
 
@@ -94,11 +93,12 @@ def _password_denied_routes() -> set[tuple[str, str]]:
     return found
 
 
+#: `provider:credentials` used to gate the three backup/restore routes here and is removed
+#: (ADR-0018 §6, gateway repo): the gateway no longer stores a credential dump a backup
+#: could disclose, so an ordinary admin session (`_admin`) is the whole requirement now.
+#: `provider:invoke` remains the only elevated class.
 ELEVATED = {
     ("POST", "/api/devices/{hostname}/tools/{tool}/invoke"): SCOPE_PROVIDER_INVOKE,
-    ("GET", "/api/admin/backup"): SCOPE_PROVIDER_CREDENTIALS,
-    ("POST", "/api/admin/backup"): SCOPE_PROVIDER_CREDENTIALS,
-    ("POST", "/api/admin/restore"): SCOPE_PROVIDER_CREDENTIALS,
 }
 
 
@@ -113,36 +113,29 @@ def test_exactly_these_routes_ask_for_an_elevated_credential():
     assert _elevated_routes() == ELEVATED
 
 
-#: The download leg of the two-step export. Break-glass is refused here — it serves the very
-#: archive a credentials export produced — but it deliberately does **not** demand an
-#: elevation of its own: `provider:credentials` is single-use and was spent preparing the
-#: file, so requiring it again would make the download unreachable by the operator who just
-#: authorized it. Its authorization is the pending record in the session instead.
+#: Every route that can yield or act on credential-bearing material. None of these carry an
+#: elevation any more (`provider:credentials` removed, ADR-0018 §6) — an ordinary admin
+#: session is the whole gate for the export/restore trio, and the download leg was never
+#: elevated (its authorization is the pending record in the session, not a grant). But a
+#: password session must still be refused on all four: it proxies with the stack's admin
+#: token, which holds every `backup:*` scope, and handing that over here would be a
+#: complete credential dump with nothing in either audit chain naming who did it.
 #:
-#: Named explicitly rather than folded into a looser rule, so that adding a second
-#: break-glass-denied route without an elevation has to be a decision someone writes down.
-CREDENTIAL_BEARING_WITHOUT_ELEVATION = {("GET", "/api/admin/backup/download")}
+#: Named explicitly rather than derived from `ELEVATED`, because credential-bearing and
+#: elevated are no longer the same set — deriving one from the other would silently drop
+#: three routes the moment their elevation was removed, which is exactly what happened here.
+CREDENTIAL_BEARING_ROUTES = {
+    ("GET", "/api/admin/backup"),
+    ("POST", "/api/admin/backup"),
+    ("POST", "/api/admin/restore"),
+    ("GET", "/api/admin/backup/download"),
+}
 
 
 def test_the_credential_routes_are_the_ones_closed_to_break_glass():
     """Every route that can yield credential material refuses a password session, and no
-    other route does.
-
-    That set is the `provider:credentials` routes *plus* the download leg they produce a file
-    for. Derived from the table rather than restated, so the two cannot drift."""
-    expected = {rt for rt, scope in ELEVATED.items() if scope == SCOPE_PROVIDER_CREDENTIALS}
-    expected |= CREDENTIAL_BEARING_WITHOUT_ELEVATION
-    assert _password_denied_routes() == expected
-
-
-def test_the_download_leg_does_not_demand_a_second_elevation():
-    """The reason it is on the exception list, asserted rather than trusted.
-
-    A single-use grant is spent by the export. If this route also declared
-    `require_elevated`, every prepared archive would be undownloadable — and the failure
-    would arrive at the worst moment, after the operator had already spent their step-up.
-    """
-    assert ("GET", "/api/admin/backup/download") not in _elevated_routes()
+    other route does."""
+    assert _password_denied_routes() == CREDENTIAL_BEARING_ROUTES
 
 
 # --- rig -----------------------------------------------------------------------
@@ -213,6 +206,25 @@ def _elevated_session(provider_scope: str = SCOPE_PROVIDER_INVOKE) -> dict:
     return sess
 
 
+def _acting_session() -> dict:
+    """A provider session holding a live act and nothing else — no elevation.
+
+    What the backup/restore/download routes need now that `provider:credentials` is
+    removed (ADR-0018 §6): `upstream_bearer` relays `access_token` (the operator's own
+    token) for an acting session with no matching elevation, which is `ORDINARY_TOKEN` here.
+    """
+    now = time.time()
+    sess = {
+        "kind": "oidc",
+        "plane": PLANE_PROVIDER,
+        "sub": "u-provider-1",
+        "provider_scopes": [SCOPE_PROVIDER_ADMIN],
+        "access_token": ORDINARY_TOKEN,
+    }
+    authorize_act_on_tenant(sess, tenant=TENANT, justification=WHY, now=now)
+    return sess
+
+
 class _Upstream:
     """Records the bearer and headers of every relayed call, and answers plausibly.
 
@@ -262,10 +274,14 @@ def test_a_routine_read_does_not_receive_the_elevated_credential(console):
     """The defect this fix exists for. A provider session holding a live elevation makes an
     ordinary read; the step-up token must not go with it. It would be accepted — the grant
     is a superset — and the gateway would consume it, leaving the operation the operator
-    elevated for to fail with a grant that was spent on a device list."""
+    elevated for to fail with a grant that was spent on a device list.
+
+    Driven with the one remaining elevated class (`provider:invoke` — `provider:credentials`
+    is removed, ADR-0018 §6); the hazard is about the credential leaking off *any* elevated
+    session onto a routine route, not about which class is held."""
     client, app = console
     up = _attach(app, _Upstream(payload={"devices": []}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _elevated_session(SCOPE_PROVIDER_INVOKE))
 
     assert client.get("/api/devices").status_code == 200
     assert up.bearers() == [ORDINARY_TOKEN]
@@ -274,56 +290,48 @@ def test_a_routine_read_does_not_receive_the_elevated_credential(console):
 def test_a_routine_read_does_not_spend_a_single_use_elevation(console):
     """The same property observed from the session rather than the wire, because the two
     could disagree: a bearer choice that got it right while still calling `spend` would
-    leave the operator's own next request refused for a grant nothing used."""
+    leave the operator's own next request refused for a grant nothing used.
+
+    No live class is single-use today, so the grant is seeded directly (as
+    `test_spend_elevated_grant_drops_a_single_use_grant_directly` does in
+    `test_elevated_grants.py`) rather than minted through `_elevated_session`, which can
+    only produce what `ELEVATED_GRANT_SPECS` actually specifies."""
     client, app = console
     _attach(app, _Upstream(payload={"devices": []}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    sess = _acting_session()
+    sess["elevated_grant"] = {
+        "id": "g-su",
+        "tenant": TENANT,
+        "provider_scope": SCOPE_PROVIDER_INVOKE,
+        "gateway_scopes": ["tools:call"],
+        "justification": WHY,
+        "granted_at": time.time(),
+        "expires_at": time.time() + 900,
+        "single_use": True,
+        "access_token": STEP_UP_TOKEN,
+    }
+    _seed(client, app, sess)
 
     client.get("/api/devices")
     stored = next(iter(app.state.sessions._data.values()))[1]
     assert stored.get("elevated_grant") is not None
 
 
-def test_the_elevated_route_receives_the_step_up_credential(console):
-    """The converse, so the fix above cannot be 'never hand it over at all' — which would
-    pass every test in the section above and break the entire feature."""
-    client, app = console
-    up = _attach(app, _Upstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
-
-    assert client.get("/api/admin/backup").status_code == 200
-    assert up.bearers() == [STEP_UP_TOKEN]
-
-
-def test_an_invoke_elevation_cannot_pay_for_a_credentials_route(console):
-    """The two classes differ in lifetime and in single-use, so being handed the wrong one
-    is not a narrower grant — it is a different one. Refused here rather than relayed and
-    left to the gateway, so the BFF can still explain itself in an audit record."""
-    client, app = console
-    up = _attach(app, _Upstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_INVOKE))
-
-    resp = client.get("/api/admin/backup")
-    assert resp.status_code == 403
-    assert "provider:credentials" in resp.json()["detail"]
-    assert up.calls == []  # nothing relayed, so nothing spent
+# The routes formerly checked here — "the elevated route receives the credential" and "an
+# invoke elevation cannot pay for a credentials route" — both used `/api/admin/backup`,
+# which is no longer elevated at all (`provider:credentials` removed, ADR-0018 §6; the
+# route now needs only an ordinary admin session, `_admin`). The first property survives
+# for the one remaining elevated route and is proven by `test_invoking_a_tool_runs_the_
+# handshake_and_tears_it_down` below (`set(up.bearers()) == {STEP_UP_TOKEN}`); the second
+# has no second class left to be handed by mistake, so there is nothing left to test.
 
 
 def test_an_elevated_route_without_any_elevation_says_what_to_do(console):
     client, app = console
     up = _attach(app, _Upstream())
-    now = time.time()
-    sess = {
-        "kind": "oidc",
-        "plane": PLANE_PROVIDER,
-        "sub": "u-provider-1",
-        "provider_scopes": [SCOPE_PROVIDER_ADMIN],
-        "access_token": ORDINARY_TOKEN,
-    }
-    authorize_act_on_tenant(sess, tenant=TENANT, justification=WHY, now=now)
-    _seed(client, app, sess)
+    _seed(client, app, _acting_session())
 
-    resp = client.get("/api/admin/backup")
+    resp = client.post("/api/devices/dev1/tools/probe/invoke", json={"arguments": {}})
     assert resp.status_code == 403 and "elevation" in resp.json()["detail"]
     assert up.calls == []
 
@@ -445,7 +453,7 @@ def test_a_restore_with_no_dry_run_field_arrives_at_the_gateway_as_a_dry_run(con
     shipped twice before, and the failure here is silent and destructive."""
     client, app = console
     up = _attach(app, _Upstream(payload={"would_restore": 3}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     resp = client.post("/api/admin/restore", json={"archive": {"envelope": {}}})
     assert resp.status_code == 200
@@ -457,7 +465,7 @@ def test_a_restore_may_still_be_asked_for_explicitly(console):
     restore impossible."""
     client, app = console
     up = _attach(app, _Upstream(payload={"restored": 3}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     client.post("/api/admin/restore", json={"archive": {"envelope": {}}, "dry_run": False})
     assert up.calls[0]["json"]["dry_run"] is False
@@ -467,7 +475,7 @@ def test_an_empty_restore_body_is_still_a_dry_run(console):
     """A body the BFF could not parse must not become a body with no `dry_run` in it."""
     client, app = console
     up = _attach(app, _Upstream(payload={"detail": "archive required"}, status=400))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     client.post("/api/admin/restore", content=b"not json", headers={"Content-Type": "application/json"})
     assert up.calls[0]["json"]["dry_run"] is True
@@ -481,7 +489,7 @@ def test_an_export_is_audited_without_its_archive_or_passphrase(console):
     archive or a passphrase into the record — the one thing this whole design protects."""
     client, app = console
     _attach(app, _Upstream(payload={"envelope": {"kind": "portable"}, "devices": ["secret-credential"]}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     client.post("/api/admin/backup", json={"kind": "portable", "passphrase": "correct-horse-battery"})
 
@@ -492,33 +500,16 @@ def test_an_export_is_audited_without_its_archive_or_passphrase(console):
     assert "correct-horse-battery" not in blob and "secret-credential" not in blob
 
 
-def test_an_elevated_call_refused_upstream_is_not_retried_without_the_elevation(console):
-    """A 401 on an elevated route must surface, not trigger the ordinary refresh-and-retry.
-
-    A refresh produces an *ordinary* access token — no `mcp_grant` claim — so the retry
-    cannot do what the first attempt was for, and by then the elevation has already been
-    spent handing over the first token. The retry would trade a truthful "your elevation was
-    refused" for a confusing 403 on a route the operator had just been told they could use.
-    """
-    client, app = console
-    up = _attach(app, _Upstream(status=401, payload={"detail": "elevated grant refused"}))
-    sess = _elevated_session(SCOPE_PROVIDER_CREDENTIALS)
-    sess["refresh_token"] = "a-usable-refresh-token"
-    _seed(client, app, sess)
-
-    refreshed = []
-
-    class _Idp:
-        async def refresh_tokens(self, *, refresh_token):
-            refreshed.append(refresh_token)
-            return {"access_token": "A-FRESH-ORDINARY-TOKEN"}
-
-    app.state.oidc = _Idp()
-
-    resp = client.get("/api/admin/backup")
-    assert resp.status_code == 401
-    assert refreshed == [], "an elevated request was retried with a token that cannot carry the grant"
-    assert up.bearers() == [STEP_UP_TOKEN]
+# "An elevated call refused upstream is not retried without the elevation" lived here,
+# against `/api/admin/backup` — the only route that combined (a) going through
+# `relay_get`/`relay_request`'s retry wrapper (`_retryable`, keyed on
+# `elevated_scope_wanted(request)`) and (b) being elevated. `/api/admin/backup` is no
+# longer elevated (`provider:credentials` removed, ADR-0018 §6), and the one remaining
+# elevated route (tool invocation) has its own bespoke handshake/relay path that never goes
+# through `relay_get`/`relay_request` at all — so there is currently no route left where
+# this hazard is reachable. `_retryable`'s check is still correct and still exercised
+# generically by the control below; restore an elevated version of this test alongside
+# whichever future elevated route first uses `relay_get`/`relay_request`.
 
 
 def test_a_routine_call_refused_upstream_is_still_retried(console):
@@ -609,7 +600,7 @@ def test_preparing_an_export_reveals_the_passphrase_and_withholds_the_archive(co
     """The first leg returns no archive at all — only the secret, once, and a token."""
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     body = _prepare(client)
     assert body["passphrase"] == _ExportUpstream.MINTED
@@ -622,7 +613,7 @@ def test_the_download_serves_a_file_not_a_json_body(console):
     the browser save it rather than render it."""
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     token = _prepare(client)["download_token"]
     resp = client.get(f"/api/admin/backup/download?token={token}")
@@ -637,7 +628,7 @@ def test_the_archive_is_served_once(console):
     by exporting again; serving a credential dump twice is not."""
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     token = _prepare(client)["download_token"]
     assert client.get(f"/api/admin/backup/download?token={token}").status_code == 200
@@ -651,7 +642,7 @@ def test_the_passphrase_is_never_stored_beside_the_archive(console):
     """
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     _prepare(client)
     stored = json.dumps(next(iter(app.state.sessions._data.values()))[1], default=str)
@@ -663,11 +654,11 @@ def test_a_download_token_is_worthless_to_another_session(console):
     an index into *this* session's pending record, so a leaked one opens nothing."""
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
     token = _prepare(client)["download_token"]
 
     # A different session — same deployment, same everything else.
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
     assert client.get(f"/api/admin/backup/download?token={token}").status_code == 404
 
 
@@ -676,7 +667,7 @@ def test_an_expired_preparation_is_refused_and_says_so(console):
     console can tell them to export again instead of implying they mistyped something."""
     client, app = console
     _attach(app, _ExportUpstream())
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
     token = _prepare(client)["download_token"]
 
     sid, (expires, data) = next(iter(app.state.sessions._data.items()))
@@ -690,7 +681,7 @@ def test_a_failed_export_stages_nothing(console):
     """A refusal upstream must not leave a claimable token behind."""
     client, app = console
     _attach(app, _Upstream(status=409, payload={"detail": "no key"}))
-    _seed(client, app, _elevated_session(SCOPE_PROVIDER_CREDENTIALS))
+    _seed(client, app, _acting_session())
 
     assert client.post("/api/admin/backup", json={"kind": "portable"}).status_code == 409
     stored = next(iter(app.state.sessions._data.values()))[1]

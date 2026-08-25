@@ -54,22 +54,26 @@ PLANES = (PLANE_TENANT, PLANE_PROVIDER)
 #   provider:monitor      aggregate estate health; no tenant API access at all (§7)
 #   provider:admin        the everyday debugging grant within a named tenant
 #   provider:invoke       ELEVATED — invoke a tool against a tenant's live device
-#   provider:credentials  ELEVATED — credential-bearing access to a named tenant
 #
-# The two elevated grants are time-boxed, individually justified and separately audited
-# (§5a/§8); they are not reachable by widening a group mapping.
+# `provider:credentials` (ELEVATED, credential-bearing access to a named tenant) is
+# removed as of ADR-0018 §6 (gateway repo): the gateway no longer stores a credential
+# dump a backup could disclose, so the class it gated has nothing left to name (see the
+# gateway's own removal, "provider:credentials disappears as a category"). This was the
+# last user of `single_use` grants; `provider:invoke` is not single-use, so the
+# consumption mechanism (`spend_elevated_grant` et al., below) is kept as generic
+# infrastructure for a future single-use class rather than removed with this one.
+#
+# The remaining elevated grant is time-boxed, individually justified and separately
+# audited (§5a/§8); it is not reachable by widening a group mapping.
 SCOPE_PROVIDER_MONITOR = "provider:monitor"
 SCOPE_PROVIDER_ADMIN = "provider:admin"
 SCOPE_PROVIDER_INVOKE = "provider:invoke"
-SCOPE_PROVIDER_CREDENTIALS = "provider:credentials"
 
-PROVIDER_SCOPES: frozenset[str] = frozenset(
-    {SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN, SCOPE_PROVIDER_INVOKE, SCOPE_PROVIDER_CREDENTIALS}
-)
+PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN, SCOPE_PROVIDER_INVOKE})
 
 # Elevated grants are never handed out by a group mapping — see §5a. Mapping a group
 # straight to one would rebuild the ambient authority §4 exists to remove.
-ELEVATED_PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_INVOKE, SCOPE_PROVIDER_CREDENTIALS})
+ELEVATED_PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_INVOKE})
 
 
 def provider_scopes_for_groups(groups, mapping: dict[str, str]) -> frozenset[str]:

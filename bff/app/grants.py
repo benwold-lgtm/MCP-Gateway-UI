@@ -28,8 +28,8 @@ Two more that the ADR implies rather than states:
   customer's stack was touched, which is the question an audit is actually asked.
 
 Deliberately *not* here: what the BFF then presents to a tenant gateway. This grant opens
-the BFF's own gate. Reaching N gateways is slice 3, and the two elevated grants
-(`provider:invoke`, `provider:credentials`) are separate acts behind a step-up (§5a/§8).
+the BFF's own gate. Reaching N gateways is slice 3, and the elevated grant
+(`provider:invoke`) is a separate act behind a step-up (§5a/§8).
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ from typing import Any, Optional
 from .security import (
     PLANE_PROVIDER,
     SCOPE_PROVIDER_ADMIN,
-    SCOPE_PROVIDER_CREDENTIALS,
     SCOPE_PROVIDER_INVOKE,
 )
 
@@ -276,14 +275,14 @@ def release_act_on_tenant(session: dict[str, Any]) -> Optional[ActOnTenant]:
     return held
 
 
-# --- the two elevated grants (ADR-0013 §5a/§8/§11b) ---------------------------
+# --- the elevated grant (ADR-0013 §5a/§8/§11b) ---------------------------------
 #
 # Layered on top of an act, never instead of one: `provider:admin` plus a live
 # act-on-tenant grant is the floor, and the elevation adds one bounded capability above it
 # for one tenant. §5a's carve-out is what makes provider access everyday debugging, so
-# these two are the points where a compromised provider session converts into real damage —
-# actuating a customer's hardware, or walking off with their credentials — and they are the
-# only places §8 spends a step-up.
+# this is the point where a compromised provider session converts into real damage —
+# actuating a customer's hardware — and it is the only place §8 spends a step-up.
+# `provider:credentials` was the other one, gated the same way; removed with ADR-0018 §6.
 
 
 @dataclass(frozen=True)
@@ -303,14 +302,11 @@ ELEVATED_GRANT_SPECS: dict[str, ElevatedSpec] = {
     # A short absolute window rather than one call: §8's grant gates *initiation*, and one
     # debugging session is several calls. Matches the gateway's own 900s for `tools:call`.
     SCOPE_PROVIDER_INVOKE: ElevatedSpec(gateway_scopes=("tools:call",), max_lifetime=900, single_use=False),
-    # Single use — one operation. The window is a backstop under that, and deliberately no
-    # looser than the invoke one. For the provider, who holds MCP_SECRET_KEY, a ciphertext
-    # archive is a credential dump too (§5b), so all three backup scopes are treated alike.
-    SCOPE_PROVIDER_CREDENTIALS: ElevatedSpec(
-        gateway_scopes=("backup:read", "backup:write", "backup:export-portable"),
-        max_lifetime=300,
-        single_use=True,
-    ),
+    # `provider:credentials` (single-use, backup:*) was here and is removed: ADR-0018 §6
+    # (gateway repo) removed the credential dump it gated, so the class had nothing left
+    # to name. This dict now has no `single_use=True` member — `spend_elevated_grant`
+    # below is kept as generic infrastructure for a future single-use class, not deleted
+    # with this one, since nothing else about it was specific to credentials.
 }
 
 
@@ -319,7 +315,6 @@ ELEVATED_GRANT_SPECS: dict[str, ElevatedSpec] = {
 #: scope names: it is an external contract, and it should change only on purpose.
 GRANT_CLASS_NAMES: dict[str, str] = {
     SCOPE_PROVIDER_INVOKE: "invoke",
-    SCOPE_PROVIDER_CREDENTIALS: "credentials",
 }
 
 

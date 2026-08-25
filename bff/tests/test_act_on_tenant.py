@@ -275,9 +275,9 @@ def test_releasing_drops_the_grant():
 
 
 def test_a_grant_confers_no_elevated_scope():
-    """§5a/§8: the two elevated grants are separate acts behind a step-up. Holding
-    act-on-tenant is the *everyday* debugging motion, and it must not carry `tools:call` or
-    credential access with it — that conflation is exactly what §5a exists to prevent."""
+    """§5a/§8: the elevated grant is a separate act behind a step-up. Holding
+    act-on-tenant is the *everyday* debugging motion, and it must not carry `tools:call`
+    with it — that conflation is exactly what §5a exists to prevent."""
     sess = _provider_session()
     grant = authorize_act_on_tenant(sess, tenant=TENANT, justification=WHY, now=1000.0)
     assert not hasattr(grant, "scopes")

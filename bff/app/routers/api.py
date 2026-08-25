@@ -21,7 +21,6 @@ from fastapi.responses import JSONResponse, Response
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, outcome_for, record_request
 from ..relay import relay_get, relay_request
 from ..security import (
-    SCOPE_PROVIDER_CREDENTIALS,
     SCOPE_PROVIDER_INVOKE,
     _persist_session,
     current_session,
@@ -40,7 +39,6 @@ _admin = Depends(require_role("admin"))
 # `tests/test_elevated_routes.py`; adding one to a route that does not need it silently
 # spends single-use grants on routine traffic.
 _needs_invoke = Depends(require_elevated(SCOPE_PROVIDER_INVOKE))
-_needs_credentials = Depends(require_elevated(SCOPE_PROVIDER_CREDENTIALS))
 _no_break_glass = Depends(deny_password_session)
 
 # Upper bound on the recent-logs panel page size. The panel shows a tail, not a bulk
@@ -325,21 +323,25 @@ async def invoke_tool(hostname: str, tool: str, request: Request) -> JSONRespons
     return await _audited(request, called, "tool.invoke", target=f"{hostname}/{tool}")
 
 
-# --- Backup and restore (ADR-0013 §5b/§8 provider:credentials) ----------------
+# --- Backup and restore --------------------------------------------------------
 #
-# `_no_break_glass` on all three: a password session proxies with the stack's admin token,
-# which holds every `backup:*` scope, so admitting one here is a complete credential dump
-# with no step-up behind it and nothing in either audit chain naming a grant.
+# No elevation here: ADR-0018 §6 (gateway repo) removed the credential dump these routes
+# used to gate behind `provider:credentials` — an archive is configuration now, not a
+# credential dump, so an ordinary admin session is the whole requirement.
+#
+# `_no_break_glass` stays on all three regardless: a password session proxies with the
+# stack's admin token, which holds every `backup:*` scope, so admitting one here would
+# still be a complete credential dump, just no longer one an elevation was ever gating.
 
 
-@router.get("/admin/backup", dependencies=[_any, _no_break_glass, _needs_credentials])
+@router.get("/admin/backup", dependencies=[_any, _no_break_glass, _admin])
 async def export_backup(request: Request, include_deadletters: bool = False) -> JSONResponse:
     """The ciphertext archive. No secret in the request, so a GET is safe here."""
     resp = await relay_get(request, f"/admin/backup?include_deadletters={str(include_deadletters).lower()}")
     return await _audited(request, resp, "backup.export", target="registry")
 
 
-@router.post("/admin/backup", dependencies=[_any, _no_break_glass, _needs_credentials])
+@router.post("/admin/backup", dependencies=[_any, _no_break_glass, _admin])
 async def export_backup_with_body(request: Request) -> JSONResponse:
     """Prepare an export: mint the archive, reveal the passphrase, hand back a download token.
 
@@ -407,15 +409,11 @@ async def download_backup(request: Request, token: str = ""):
     read a response header, and the passphrase is delivered in one — so a single request
     cannot give the operator both the file and the secret that opens it.
 
-    Note what this route deliberately does **not** require: a live `provider:credentials`
-    elevation. That grant is single-use and was spent preparing the archive; demanding it
-    again would make the file unreachable by the operator who just authorized it. The
-    authorization is carried instead by the pending record, which lives **in the session** —
-    so the token is worthless to anyone else's browser, and the archive cannot be fetched by
-    a leaked URL alone.
-
-    What it still requires is the same gate as the export itself: never a break-glass session
-    (`_no_break_glass`), because handing over this file is handing over the fleet.
+    Its authorization is carried by the pending record, which lives **in the session** — so
+    the token is worthless to anyone else's browser, and the archive cannot be fetched by a
+    leaked URL alone. What it still requires is the same gate as the export itself: never a
+    break-glass session (`_no_break_glass`), because handing over this file is handing over
+    the fleet.
     """
     sess = await current_session(request)
     pending = (sess or {}).get(PENDING_BACKUP)
@@ -445,7 +443,7 @@ async def download_backup(request: Request, token: str = ""):
     )
 
 
-@router.post("/admin/restore", dependencies=[_any, _no_break_glass, _needs_credentials])
+@router.post("/admin/restore", dependencies=[_any, _no_break_glass, _admin])
 async def restore_backup(request: Request) -> JSONResponse:
     """Replay an archive. **A request that does not say otherwise is a dry run.**
 
