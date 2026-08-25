@@ -4,9 +4,12 @@
 import type {
   ActGrant,
   ArchiveKind,
+  Assignment,
   BackupPrepared,
   ActGrantResponse,
   AuthConfig,
+  DeviceTypeDetail,
+  DeviceTypeListResponse,
   Elevation,
   ElevationResponse,
   Estate,
@@ -23,6 +26,7 @@ import type {
   Session,
   ToolsDiff,
   ToolsResponse,
+  UpstreamKind,
 } from "./types";
 import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
 
@@ -50,6 +54,10 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     const body = await resp.json().catch(() => ({}));
     throw new ApiError(resp.status, errorMessage((body as { detail?: unknown }).detail) ?? resp.statusText);
   }
+  // 204 (the catalog revoke route, ADR-0020 §2) has no body to parse — by definition,
+  // not by omission — so this returns before the .json() call every other success path
+  // still makes.
+  if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
 }
 
@@ -152,6 +160,33 @@ export const api = {
       }),
     elevation: () => req<ElevationResponse>("GET", "/provider/elevation"),
     endElevation: () => req<{ released: string | null }>("DELETE", "/provider/elevation"),
+
+    // --- catalog curation + assignment (ADR-0020 §1/§2) ------------------------
+    // Not gated on a live act-on-tenant grant: curating the catalog and assigning a type
+    // to a tenant are provider-plane acts on the provider's OWN storage (ADR-0020 §2),
+    // never a write into any tenant's registry — so unlike Devices/Monitoring/Backup
+    // above, this rail entry needs no act.
+    catalog: {
+      listDeviceTypes: () => req<DeviceTypeListResponse>("GET", "/provider/catalog/device-types"),
+      getDeviceType: (id: string) => req<DeviceTypeDetail>("GET", `/provider/catalog/device-types/${id}`),
+      createDeviceType: (body: {
+        slug: string;
+        name: string;
+        description?: string;
+        upstream_kind: UpstreamKind;
+        spec_path?: string;
+      }) => req<DeviceTypeDetail>("POST", "/provider/catalog/device-types", body),
+      addVersion: (
+        id: string,
+        body: { upstream_kind: UpstreamKind; spec_path?: string; changelog?: string },
+      ) => req<unknown>("POST", `/provider/catalog/device-types/${id}/versions`, body),
+      // `assigned_by` is not part of this body — the BFF fills it in from the session's
+      // own subject, never from what the browser sends (see routers/catalog.py).
+      assign: (typeId: string, tenantId: string) =>
+        req<Assignment>("POST", `/provider/catalog/device-types/${typeId}/assign`, { tenant_id: tenantId }),
+      revoke: (typeId: string, tenantId: string) =>
+        req<unknown>("DELETE", `/provider/catalog/device-types/${typeId}/assign/${tenantId}`),
+    },
   },
 };
 

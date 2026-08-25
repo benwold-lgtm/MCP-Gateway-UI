@@ -21,10 +21,11 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .audit import AuditLog, Pseudonymizer, TenantKeyring
 from .bootstrap import apply_first_run_bootstrap
+from .catalog_client import CatalogClient
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
-from .routers import api, auth, provider
+from .routers import api, auth, catalog, provider
 from .sessions import MemorySessionStore, RedisSessionStore
 from .throttle import LoginThrottle
 
@@ -85,11 +86,16 @@ def create_app() -> FastAPI:
             yield
         finally:
             await app.state.gateway.aclose()
+            await app.state.catalog.aclose()
             await app.state.sessions.aclose()
 
     app = FastAPI(title="Device MCP Gateway UI — BFF", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.gateway = GatewayClient(settings)
+    # ADR-0020. Constructed unconditionally (like GatewayClient) — CatalogClient itself
+    # reports "not configured" as CatalogUnavailable per-call, rather than this being a
+    # None the routers below would each have to check for separately.
+    app.state.catalog = CatalogClient(settings)
     # Server-side session store: memory for a single replica (lite/dev); Redis when
     # SESSION_REDIS_URL is set, which multi-replica deploys need (no session affinity).
     # Namespaced per deployment. The startup refusal above is per-process and the store is
@@ -153,6 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(api.router)
     app.include_router(provider.router)
+    app.include_router(catalog.router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

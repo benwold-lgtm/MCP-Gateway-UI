@@ -269,3 +269,49 @@ export type RestoreReport = {
    *  an apply consumes a token, it does not mint one. */
   plan_token?: string;
 };
+
+// --- catalog (ADR-0020, provider plane) ----------------------------------------------
+// Hand-written rather than `Schemas[...]`-derived: these describe the catalog service's own
+// contract (device_mcp_catalog/), a separate OpenAPI document from the gateway's, and
+// generating types from a second spec is out of scope for this slice.
+
+export type UpstreamKind = "openapi" | "mcp";
+export type AuthKind = "none" | "api_key" | "oauth2";
+export type FingerprintPolicy = "warn" | "enforce";
+
+export type DeviceTypeVersion = {
+  id: string;
+  device_type_id: string;
+  version: number;
+  transport: string;
+  upstream_kind: UpstreamKind;
+  upstream_transport: "http" | "sse";
+  /** Relative to whatever base_url a tenant supplies at claim time — never an absolute URL. */
+  spec_path?: string | null;
+  auth_kind: AuthKind;
+  fingerprint_policy?: FingerprintPolicy | null;
+  changelog?: string | null;
+  created_at: string;
+};
+
+export type DeviceType = {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  created_at: string;
+  latest_version: number;
+};
+
+export type DeviceTypeDetail = DeviceType & { versions: DeviceTypeVersion[] };
+
+export type DeviceTypeListResponse = { device_types: DeviceType[] };
+
+export type Assignment = {
+  id: string;
+  device_type_id: string;
+  tenant_id: string;
+  assigned_at: string;
+  assigned_by: string;
+  revoked_at?: string | null;
+};

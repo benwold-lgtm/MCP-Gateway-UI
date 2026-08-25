@@ -144,6 +144,13 @@ class Settings:
     # staff list, so without this the writer emits an opaque constant rather than a name.
     audit_pseudonym_key: str = ""
 
+    # --- Catalog service (ADR-0020) --------------------------------------------------
+    # Empty → the catalog feature is disabled (named condition, ADR-0020 §7 — never
+    # inferred from an empty device-type list). Both must be set for provider curation
+    # or the tenant claim view to work; see `catalog_client.CatalogClient`.
+    catalog_service_url: str = ""
+    catalog_api_token: str = ""
+
 
 def _split(csv: str) -> list[str]:
     return [item.strip() for item in csv.split(",") if item.strip()]
@@ -251,4 +258,6 @@ def load_settings() -> Settings:
         audit_tenant=os.getenv("AUDIT_TENANT", "default"),
         audit_content_key=_secret("AUDIT_CONTENT_KEY", "AUDIT_CONTENT_KEY_FILE"),
         audit_pseudonym_key=_secret("AUDIT_PSEUDONYM_KEY", "AUDIT_PSEUDONYM_KEY_FILE"),
+        catalog_service_url=os.getenv("CATALOG_SERVICE_URL", ""),
+        catalog_api_token=_secret("CATALOG_API_TOKEN", "CATALOG_API_TOKEN_FILE"),
     )
