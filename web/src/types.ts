@@ -72,11 +72,7 @@ export type Scope = "devices:read" | "devices:write" | "tools:call" | "metrics:r
 // separate in the type system for the same reason /auth/me reports them in their own field:
 // they are not gateway scopes, the gateway has never heard of them, and a union of the two
 // would let a view gate a tenant affordance on provider authority or the reverse.
-export type ProviderScope =
-  | "provider:monitor"
-  | "provider:admin"
-  | "provider:invoke"
-  | "provider:credentials";
+export type ProviderScope = "provider:monitor" | "provider:admin" | "provider:invoke";
 
 // Which plane authenticated this session. A fact about which IdP was used, never a
 // selector the browser sends.
@@ -118,8 +114,10 @@ export type ActGrant = {
   expires_at: number;
 };
 
-// A live elevation on top of the act. `single_use` is what makes a credentials grant
-// visibly different from an invoke one, so it is rendered, not just carried.
+// A live elevation on top of the act. `single_use` is currently always false — the one
+// remaining class (`provider:invoke`) isn't single-use — but the field stays: it's what
+// would make a future single-use class visibly different, and it is rendered, not just
+// carried, for that reason.
 export type Elevation = {
   id: string;
   tenant: string;

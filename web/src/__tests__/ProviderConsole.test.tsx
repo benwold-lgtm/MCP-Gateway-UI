@@ -221,14 +221,16 @@ describe("ProviderConsole", () => {
   });
 
   it("shows a single-use elevation as a state, not a footnote", async () => {
-    // The two classes differ at the moment they are used. Rendering both as "elevated
-    // until 12:04" would describe the credentials grant wrongly — its holder is one
-    // operation away from having nothing.
+    // No live class is single-use today (`provider:credentials` was, and is removed —
+    // ADR-0018 §6). `single_use` stays a generic field on `Elevation` for whenever a
+    // future class needs it, so this mocks it directly on the one remaining scope rather
+    // than through a real elevation — the component only reads the flag, not the scope,
+    // to decide how to render it.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     elevation.mockResolvedValue({
       id: "e1",
       tenant: "acme",
-      scope: "provider:credentials",
+      scope: "provider:invoke",
       granted_at: soon(0),
       expires_at: soon(300),
       single_use: true,
@@ -508,18 +510,21 @@ describe("the console shell", () => {
     expect(screen.getByRole("button", { name: /run get_readings/i })).toBeInTheDocument();
   });
 
-  it("does not accept the credentials elevation as authority to invoke", async () => {
-    // The two grants are separate acts (§8). A single-use credentials grant standing in for
-    // an invoke one would let a backup step-up buy tool execution on live hardware.
+  it("does not accept a non-invoke elevation as authority to invoke", async () => {
+    // §8's grants are separate acts. `provider:credentials` used to be the other one this
+    // guarded against directly (a single-use backup step-up buying tool execution on live
+    // hardware) and is removed (ADR-0018 §6); the check itself is a plain scope match
+    // (`elevation?.scope === "provider:invoke"`), so any non-matching held scope still
+    // proves it discriminates rather than accepting elevation-held-at-all.
     seedFleet();
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     elevation.mockResolvedValue({
       id: "e2",
       tenant: "acme",
-      scope: "provider:credentials",
+      scope: "provider:admin",
       granted_at: soon(0),
       expires_at: soon(300),
-      single_use: true,
+      single_use: false,
     });
     renderConsole();
     await openTool(userEvent.setup());
@@ -537,33 +542,16 @@ describe("the console shell", () => {
     expect(backup).toHaveTextContent(/needs a live act/i);
   });
 
-  it("explains the credentials elevation rather than hiding the panel", async () => {
-    // An operator with an act but no step-up should learn what would change that. Hiding it
-    // until they already held the grant would make the tier invisible.
+  it("shows the backup panel directly once an act is held, with no elevation gate", async () => {
+    // `provider:credentials` used to gate this panel behind a step-up and explain what
+    // would unlock it when absent (ADR-0013 §5b/§8); that class is removed (ADR-0018 §6)
+    // and the gateway no longer stores a credential dump a backup could disclose, so an
+    // ordinary act is the whole requirement now — no elevation copy, no waiting on one.
     actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
     renderConsole();
     await openRail(userEvent.setup(), /^backup$/i);
-    expect(await screen.findByText(/provider:credentials/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /prepare export/i })).toBeInTheDocument();
-  });
-
-  it("says the credentials elevation is single use once it is held", async () => {
-    // The property that makes this grant different from the invoke one: the next operation
-    // spends it, so an operator gets one of export-or-restore per step-up. Discovering that
-    // by finding the second refused is the outcome this sentence prevents.
-    actOnTenant.mockResolvedValue({ id: "g1", tenant: "acme", granted_at: soon(0), expires_at: soon(3600) });
-    elevation.mockResolvedValue({
-      id: "e1",
-      tenant: "acme",
-      scope: "provider:credentials",
-      granted_at: soon(0),
-      expires_at: soon(300),
-      single_use: true,
-    });
-    renderConsole();
-    await openRail(userEvent.setup(), /^backup$/i);
-    // Scoped to the sentence, not the words: the status strip's badge also reads "single
-    // use", and matching that would pass without the panel ever explaining anything.
-    expect(await screen.findByText(/the next export or restore spends it/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /prepare export/i })).toBeInTheDocument();
+    expect(screen.queryByText(/provider:credentials/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/single use/i)).not.toBeInTheDocument();
   });
 });

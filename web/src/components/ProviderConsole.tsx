@@ -149,7 +149,7 @@ export function ProviderConsole({
       {/* Tier 1 views are gated on the act, not the plane. When the act ends they unmount —
           a screen of a customer's data that outlives the authority to see it is
           indistinguishable from a live one. */}
-      {view === "backup" && act && <BackupViews tenant={act.tenant} elevation={elevation} />}
+      {view === "backup" && act && <BackupViews tenant={act.tenant} />}
       {(view === "devices" || view === "monitoring") && act && (
         <TenantViews tenant={act.tenant} view={view} elevation={elevation} />
       )}
@@ -239,34 +239,17 @@ function TenantViews({
   );
 }
 
-/** Export and restore, behind the credentials elevation (W6, ADR-0013 §5b/§8).
+/** Export and restore (W6, ADR-0013 §5b/§8, gate removed by ADR-0018 §6).
  *
- * The single-use grant is the whole shape of this screen. `provider:credentials` is spent by
- * the next operation, so an operator gets **one** of export-or-restore per step-up — and the
- * panel says which one they are about to spend it on rather than letting them discover it by
- * finding the second refused.
- *
- * Both halves stay mounted after the grant is spent: an export's passphrase is shown once and
- * is the archive's only key, so unmounting the panel the moment the elevation lapsed would
- * destroy it. What the elevation gates is *starting* an operation, not reading its result.
+ * No elevation any more: this used to sit behind `provider:credentials`, single-use, spent
+ * by the first of export-or-restore. That grant is removed — the gateway no longer stores a
+ * credential dump a backup could disclose, so an ordinary act-on-tenant session is the whole
+ * requirement, the same as every other tenant-plane view.
  */
-function BackupViews({ tenant, elevation }: { tenant: string; elevation: Elevation | null }) {
-  const held = elevation?.scope === "provider:credentials";
+function BackupViews({ tenant }: { tenant: string }) {
   return (
     <section style={{ display: "grid", gap: 4, maxWidth: 760 }}>
       <h2 style={{ margin: 0, fontSize: "1.15em", color: ui.ink }}>Backup and restore · {tenant}</h2>
-      {held ? (
-        <p style={{ margin: "0 0 8px", color: ui.muted, fontSize: 13 }}>
-          This elevation is <strong>single use</strong> — the next export or restore spends it, and the other
-          will need a fresh step-up.
-        </p>
-      ) : (
-        <p style={{ margin: "0 0 8px", color: ui.muted, fontSize: 13 }}>
-          Reading a customer&rsquo;s registry out, or writing one back, needs a live{" "}
-          <strong>provider:credentials</strong> elevation — acquire one from Access. Everything below will
-          refuse without it.
-        </p>
-      )}
       <BackupExport />
       <BackupRestore />
     </section>

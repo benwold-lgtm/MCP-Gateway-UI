@@ -6,7 +6,7 @@ import { formatCountdown, useCountdown } from "../useCountdown";
 import { health, priv, ui } from "../tokens";
 import { Gate } from "./Gate";
 
-/** The two elevated grants and the step-up behind them (ADR-0013 §5a/§8/§11).
+/** The elevated grant and the step-up behind it (ADR-0013 §5a/§8/§11).
  *
  * An elevation is a round trip: this asks, the IdP re-authenticates the operator, and the
  * BFF's callback verifies the `acr` in the *issued* token before anything is recorded. So
@@ -17,6 +17,11 @@ import { Gate } from "./Gate";
  * declined step-up is a legitimate, expected result and not an error page: an IdP may
  * decline `acr_values` and issue a perfectly valid token anyway (§11b constraint 2). That
  * case has to say what actually happened.
+ *
+ * `provider:credentials` (backup/restore, single-use) was the other class here and is
+ * removed: ADR-0018 §6 (gateway repo) removed the credential dump it gated. `CLASSES`
+ * keeps its shape — a list, not a single value — so a future elevated class has a place to
+ * be added rather than a structure to be rebuilt.
  */
 
 const CLASSES: { scope: ProviderScope; label: string; what: string }[] = [
@@ -24,11 +29,6 @@ const CLASSES: { scope: ProviderScope; label: string; what: string }[] = [
     scope: "provider:invoke",
     label: "Invoke a tool",
     what: "Actuates the customer's hardware. Lasts a short window — one debugging session.",
-  },
-  {
-    scope: "provider:credentials",
-    label: "Backup / restore",
-    what: "Hands back the customer's credentials. Single use: it is spent by the next operation.",
   },
 ];
 
@@ -160,10 +160,9 @@ export function ElevationPanel({
       )}
 
       {elevation ? (
-        // Single use is stated as a *state*, not a footnote. The two classes behave
-        // differently at the moment they are used — one survives the call, one does not —
-        // and an operator holding the credentials grant is one operation away from having
-        // nothing, which is not something to discover from a 403.
+        // Single use is stated as a *state*, not a footnote — kept generic (via
+        // `elevation.single_use`) even though the one remaining class, `provider:invoke`,
+        // is never single-use, so a future class that is does not have to relearn this.
         <div style={{ display: "grid", gap: 8 }}>
           <p style={{ margin: 0 }}>
             <strong>{elevation.scope}</strong> on <strong>{elevation.tenant}</strong>

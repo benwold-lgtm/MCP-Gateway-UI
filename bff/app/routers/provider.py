@@ -195,7 +195,7 @@ async def release(request: Request, session=_provider_admin) -> dict:
     return {"released": held.tenant if held else None}
 
 
-# --- the two elevated grants (ADR-0013 §5a/§8/§11b) ---------------------------
+# --- the elevated grant (ADR-0013 §5a/§8/§11b) ---------------------------------
 #
 # Two routes, because a step-up is a round trip through the IdP: one to start it, one to
 # receive what came back. The verification that matters happens in the second — the first
