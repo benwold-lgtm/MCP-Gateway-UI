@@ -21,10 +21,10 @@ What is being pinned:
   however that tenant's IdP names its groups, and must never be relayed to a gateway as if
   they were gateway scopes.
 * **§4 — cross-tenant power is exercised, not held.** A provider session reaching the
-  tenant data plane *without a grant* is refused outright. The grant that lifts that
-  refusal — act-on-tenant, one tenant at a time, absolute window, justified and audited —
-  is `test_act_on_tenant.py`; what stays pinned here is the **unheld** case, which is the
-  state a provider session is in for all but a deliberate, time-boxed act.
+  tenant data plane is refused outright (ADR-0017 slice 6 removed the act-on-tenant grant
+  that used to lift that refusal, one tenant at a time, for a bounded window; its
+  replacement is slice 7, not yet built). What stays pinned here is that unconditional
+  refusal — the state every provider session is in right now.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def test_provider_scopes_are_not_gateway_scopes():
     these ever leaked into a relayed token request it would be silently dropped rather
     than refused — which is why the separation is asserted here, at the source.
     """
-    assert PROVIDER_SCOPES == frozenset({"provider:monitor", "provider:admin", "provider:invoke"})
+    assert PROVIDER_SCOPES == frozenset({"provider:monitor", "provider:admin"})
     for scope in PROVIDER_SCOPES:
         assert scope.startswith("provider:")
     # No gateway scope is reachable through the provider vocabulary.
@@ -241,13 +241,11 @@ def test_a_provider_session_holds_only_provider_scopes(provider_console):
 
 
 def test_a_provider_session_is_refused_on_the_tenant_data_plane(provider_console):
-    """No grant, no data plane — the default state of every provider session.
+    """No path in — the state of every provider session now (ADR-0017 slice 6).
 
-    This console configures no `TENANT_ID`, so it is also the *fail-closed* half: a
-    deployment that cannot name the tenant it serves cannot check that a grant names it,
-    and therefore admits nobody. Standing estate-wide access is precisely what §4 exists to
-    prevent, and the grant in `test_act_on_tenant.py` is the only thing that lifts this —
-    for one named tenant, for one hour, with a reason in the chain.
+    `require_role` refuses a provider-plane session unconditionally: the act-on-tenant grant
+    that used to lift this, for one named tenant, for one hour, with a reason in the chain,
+    is gone (`grants.py` deleted). ADR-0017's replacement (slice 7) has not shipped yet.
     """
     c, app = provider_console
     called = []
@@ -328,27 +326,18 @@ def test_a_session_with_no_plane_reads_as_tenant(provider_console):
     assert c.get("/auth/me").json()["plane"] == PLANE_TENANT
 
 
-def test_an_elevated_scope_cannot_be_granted_by_group_membership():
-    """§5a/§8: `provider:invoke` is a time-boxed, individually justified, separately
-    audited grant. A group mapping that hands it out standing is exactly the ambient
-    authority §4 removes, so the mapping refuses it outright rather than trimming it — a
-    config that believes it granted something must not be told it succeeded.
-
-    Found by mutation: the guard existed with nothing exercising it.
-    """
-    with pytest.raises(ValueError, match="elevated"):
-        provider_scopes_for_groups(["sre"], {"sre": "provider:invoke"})
-    # The everyday grants are still mappable.
+def test_a_retired_scope_is_refused_as_unknown():
+    """`provider:invoke` (ADR-0017 slice 6) and `provider:credentials` (ADR-0018 §6) were
+    both time-boxed elevated grants — the only class that ever needed a *distinct* refusal
+    from an ordinary unmapped scope, since the elevation mechanism used to special-case them.
+    That mechanism is gone: a group mapping naming either now fails the same way naming a
+    typo would, and this asserts they collapse into the one generic refusal rather than
+    silently succeeding now that nothing recognizes them as special."""
+    for retired in ("provider:invoke", "provider:credentials"):
+        with pytest.raises(ValueError, match="not one of"):
+            provider_scopes_for_groups(["sre"], {"sre": retired})
+    # The everyday grant is still mappable.
     assert provider_scopes_for_groups(["sre"], {"sre": "provider:admin"}) == frozenset({"provider:admin"})
-
-
-def test_a_retired_scope_is_refused_as_unknown_not_as_elevated():
-    """`provider:credentials` was the other elevated class and is removed (ADR-0018 §6). A
-    mapping still naming it must fail — but for being an unrecognised provider scope, not
-    for being elevated: the two refusals mean different things to whoever reads them, and a
-    deployment carrying the stale config deserves the accurate one."""
-    with pytest.raises(ValueError, match="not one of"):
-        provider_scopes_for_groups(["sre"], {"sre": "provider:credentials"})
 
 
 def test_a_tenant_session_is_refused_on_a_provider_route(provider_console):

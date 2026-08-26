@@ -83,14 +83,9 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROVIDER_OIDC_ENABLED` | Turn on the **provider plane** — a second IdP for the platform's own operators (ADR-0013 §2). ⚠️ Leave off in a tenant-stack deployment; see **The provider plane** below |
 | `PROVIDER_OIDC_ISSUER` / `PROVIDER_OIDC_CLIENT_ID` / `PROVIDER_OIDC_CLIENT_SECRET` | The provider IdP's issuer + client credentials (also honours `PROVIDER_OIDC_CLIENT_SECRET_FILE`) |
 | `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
-| `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable; the elevated grants are refused here by design |
+| `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable |
 | `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
-| `PROVIDER_ENTITLEMENT_CLAIM` | Claim naming the tenants this operator may act on (default `mcp_allowed_tenants`; match the gateway's per-issuer `entitlement_claim`). Read for **navigation only** — it turns the tenant box into a list of the operator's estate. It authorizes nothing: ADR-0013 §11c puts the intersection on the gateway, because the console is the side that *chose* the tenant, so a tenant absent from the list is still accepted here and still judged there. Absent claim ⇒ the console offers free entry and says the directory published no list; an empty claim ⇒ it says the directory named nobody |
-| `PROVIDER_STEP_UP_ACR` | The authentication context the provider IdP must satisfy before minting an elevated grant (ADR-0013 §8/§11b). Requested as `acr_values` **and** required in the issued token's `acr`. Empty (the default) disables the elevated grants entirely |
-| `PROVIDER_STEP_UP_REDIRECT_URL` | The step-up's own callback (`…/auth/provider/step-up/callback`), registered with the provider IdP. Separate from the login callback so a step-up in flight cannot be completed by a login |
-| `PROVIDER_GRANT_CLAIM` | Claim carrying the IdP-minted grant (default `mcp_grant`). Must match the gateway's per-issuer `grant_claim` |
-| `PROVIDER_STEP_UP_SCOPE_TEMPLATE` | Scopes the step-up requests so the IdP knows **which** grant to mint (ADR-0013 §11c) — a template over `{tenant}` and `{grant_class}`, e.g. `mcp:tenant:{tenant} mcp:grant:{grant_class}`. No IdP mints a grant from a request that never said what to mint. Empty (the default) disables the elevated grants. The scope **selects**; the gateway **authorizes**, by intersecting the tenant against the operator's directory entitlement |
-| `TENANT_ID` | Which tenant this deployment serves (ADR-0013 §4). Only consulted to decide whether a provider session's **act-on-tenant** grant names *this* stack — so empty (the default) admits no provider session at all. Deliberately the same name the gateway uses for the same thing (`gateway.tenant_id`) |
+| `TENANT_ID` | Which tenant this deployment serves — consulted by the catalog claim flow (ADR-0020) to say which tenant's assignments/claims apply. Empty (the default) means no existing tenant-stack deployment needs a config change |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |
@@ -143,11 +138,10 @@ the gateway no longer sees the real human — it sees whatever credential the BF
 Today per-user OIDC relay hides that gap; federation ends it. Some events are also invisible
 to the gateway by construction: a **failed login** or a throttle lockout never reaches it.
 
-What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain),
-every authentication event (password login success/failure/lockout, OIDC login, logout), and
-every **act-on-tenant** and **elevated** grant — acquired, superseded or released, with its
-justification, and including the ones that were *refused* (a declined step-up among them),
-since "who was refused what" is the question an audit is most often asked. Reads are deliberately **not** recorded — per-user relay means the
+What gets recorded: every mutation (device register/update/delete, dead-letter replay/drain)
+and every authentication event (password login success/failure/lockout, OIDC login, logout),
+including the ones that were *refused*, since "who was refused what" is the question an
+audit is most often asked. Reads are deliberately **not** recorded — per-user relay means the
 gateway's own chain already has them, so duplicating would add noise rather than
 accountability. That changes when a provider session's reads reach a tenant (§9).
 
@@ -266,31 +260,47 @@ other's session ids. Session keys are therefore namespaced per deployment
 (`bff:sess:provider:…` / `bff:sess:tenant:<tenant>:…`) — and the plane wall is kept as well
 as the refusal, not instead of it, because it is what still holds if a session does cross.
 
-### What a provider session can and cannot do today
+### The provider plane today (ADR-0017 slice 6)
 
 | | |
 |---|---|
 | Holds | `provider:*` scopes, mapped from provider-IdP groups (`PROVIDER_GROUP_SCOPES`) |
 | Never holds | any gateway scope; the two vocabularies are reported separately by `/auth/me` |
-| Tenant data plane (`/api/*`) | **refused** unless the session holds a live **act-on-tenant** grant naming this deployment's `TENANT_ID` (§4) |
-| Tenant credential | the operator's **own** provider-IdP token, kept at login — but relayed **only** while a live act-on-tenant grant names this tenant. Stored is not usable |
-| Never presented | the tenant stack's admin key. A provider session is refused rather than falling back to it |
-| Sees | its **estate** — the tenants named by `PROVIDER_ENTITLEMENT_CLAIM` at login — offered as a list, each marked as served here or not. Navigation only: one deployment serves one tenant, so an act on any other is granted and audited yet reaches no devices, and free entry stays available because §11c leaves the decision with the gateway |
+| Tenant data plane (`/api/*`) | **refused unconditionally**, for now |
+| Catalog (`/provider/catalog/*`) | reachable — see below, unaffected |
 
-`provider:invoke` is **elevated** and cannot be granted by group membership at all — mapping
-a group to it is refused at startup. It is a time-boxed, individually justified, separately
-audited grant, acquired through a **step-up** — see below. (`provider:credentials` was the
-other elevated class, gating backup/restore; removed — see below.)
+ADR-0013's **act-on-tenant** grant — cross-tenant power exercised, not held, for a bounded,
+justified, audited window — and the **elevated grant** layered on top of it (a step-up
+gating tool invocation) are both removed as of ADR-0017 slice 6. `app/grants.py` and
+`app/routers/provider.py` are gone; `security.require_role` now refuses every provider-plane
+session on the tenant data plane outright, rather than checking a grant that no longer
+exists.
+
+**Why remove rather than harden.** ADR-0017 inverts who asserts provider authority over a
+tenant: instead of the provider's own console minting a grant and presenting it, the
+*tenant's own gateway* mints a short-lived support credential once a tenant admin approves a
+request the provider raised. That is a different mechanism, not a stronger version of this
+one — porting the act-on-tenant machinery forward and then replacing it would have meant
+maintaining two authorization models in parallel for no benefit. The replacement (raising a
+request, polling for approval, the credential the gateway hands back) is ADR-0017 slice 7
+(BFF) and slice 8 (UI); neither has shipped here yet, so the provider console currently shows
+Devices/Monitoring/Backup as visible-but-disabled rather than reachable.
+
+This is a real, temporary regression in what the provider console can do — and a deliberately
+safe one. Refusing unconditionally is a fail-closed interim, not a silent gap: nothing here
+was left half-migrated, and no route quietly stopped checking anything. See
+[ADR-0017](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0017-provider-authority-is-delegated.md)
+and the gateway repo's `docs/adr/README.md` item 7 for the full slice-by-slice history.
 
 ### Catalog (ADR-0020)
 
 `provider:admin` also reaches `/provider/catalog/*` — curating device types and assigning
-them to tenants — and this is the one provider-plane surface **not** gated on a live
-act-on-tenant grant. Curation and assignment write to the catalog service's own storage, not
-a tenant's registry (§2: "assignment is an offer"), so there is no tenant authority to hold
-in the first place. The BFF relays every call to a separate service
-(`device_mcp_catalog/` in the gateway repo, `CATALOG_SERVICE_URL`/`CATALOG_API_TOKEN` above)
-and holds none of it itself.
+them to tenants — and this was never gated on act-on-tenant in the first place: curation and
+assignment write to the catalog service's own storage, not a tenant's registry (§2:
+"assignment is an offer"), so there was no tenant authority to hold. The BFF relays every
+call to a separate service (`device_mcp_catalog/` in the gateway repo,
+`CATALOG_SERVICE_URL`/`CATALOG_API_TOKEN` above) and holds none of it itself. Entirely
+unaffected by the removal above.
 
 `assigned_by` on an assignment is filled in from the session's own subject, never taken from
 the request body — an unverified client-supplied actor would be worthless as an audit
@@ -332,123 +342,17 @@ touches the gateway or the live device, unlike `claim` above. The panel renders 
 there's nothing to offer and nothing when the check itself fails, rather than a banner that
 nags on a transient outage.
 
-### Act on tenant — the grant that opens the data plane
-
-Cross-tenant power is **exercised, not held** (§4). A provider operator holding
-`provider:admin` acquires authority over **one named tenant at a time**, for a bounded
-window, with a reason that goes into the audit chain:
+### Tool invocation, backup and restore (tenant plane)
 
 ```
-POST   /provider/tenants/{tenant}/authorize   {"justification": "ticket INC-4471: …"}
-GET    /provider/act-on-tenant                 → the live grant, or {"grant": null}
-DELETE /provider/act-on-tenant                 → end it early
-```
-
-Four rules, each of which the obvious implementation breaks:
-
-- **One tenant at a time.** Acquiring a grant for another tenant *drops* the first, and the
-  drop gets its own audit record. Holding several would rebuild ambient estate-wide
-  authority one justified act at a time — §4 defeated by accumulation.
-- **The window is absolute** (default 60 min), so *using* the grant never extends it. A
-  sliding window never expires for someone who keeps working, which is exactly an
-  attacker's profile.
-- **Renewal is a new act, not an extension** — a new grant id, a new justification, a new
-  record. Re-authorizing does not push the old deadline out.
-- **The justification is required and enforced.** It is the only record of *why* a
-  customer's stack was touched, which is the question an audit is actually asked. Empty is
-  refused, over-long is refused rather than truncated, and refusals are audited too.
-
-**`TENANT_ID` must be set for any of this to open anything.** Empty is the default and
-admits nobody: a deployment that cannot name the tenant it serves cannot check that a grant
-names *it*. That is also why no existing tenant-stack deployment needs a config change.
-
-**What the BFF presents upstream is the operator's own token**, not the stack's admin key —
-which is exactly what the gateway gained a second trusted issuer for (§6). The gateway's
-server-side plane ceiling then caps it at `devices:read` + `devices:write` + `metrics:read`
-(§5a/§6a), so the two controls are independent: the BFF decides *whether* an act is
-authorised, the gateway decides *how far* it can reach.
-
-Falling back to the admin key would be the worst of both — above the ceiling, carrying
-`tools:call` and every `backup:*` with no step-up, and recorded in the tenant's audit as a
-shared key rather than a human. The BFF refuses instead, in two places: `upstream_bearer`
-will not return "no credential" for a provider session, and the data-plane gate checks for
-one before admitting the request.
-
-`PROVIDER_GROUP_SCOPES` has **no fallback**: an unmapped group grants nothing. Kept as a
-shared or defaulting table it would be an escalation primitive — the same reason the gateway
-made `group_roles` per-issuer (§6a).
-
-### The elevated grant — a step-up, on top of an act
-
-`provider:admin` deliberately reaches neither a customer's live hardware nor their
-credentials. Those used to be the two points where a compromised provider session converts
-into real damage, so §8 spent a **step-up** on exactly them and nowhere else. The second —
-`provider:credentials`, gating backup/restore — is removed: [ADR-0018](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0018-device-credentials-by-reference.md)
-§6 (gateway repo) removed the credential dump it gated, so the class had nothing left to
-name. Backup/restore now need only an ordinary admin session — see below. What remains:
-
-```
-POST   /provider/tenants/{tenant}/elevate   {"scope": "provider:invoke", "justification": "…"}
-   → {"authorization_url": "…"}      the browser follows it; the IdP re-authenticates
-GET    /auth/provider/step-up/callback      the BFF verifies what came back
-DELETE /provider/elevation                  end the elevation, keep the act
-```
-
-| Grant | Reaches | Window | Re-entry |
-|---|---|---|---|
-| `provider:invoke` | `tools:call` on the tenant's gateway | 15 min absolute, replayable within it | step-up |
-
-**Who mints what.** The **provider IdP** mints the grant claim, not the BFF and not the
-gateway (§11b) — the BFF is already audit writer and credential holder, and making it a
-token issuer too concentrates exactly what [ADR-0012](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0012-federation-credential-model.md)
-argues against. The BFF requests the step-up and **verifies it happened**; the gateway
-independently verifies the claim and is authoritative.
-
-Four things are deliberate:
-
-- **Requesting a step-up is not achieving one.** `acr_values` is a request parameter and an
-  IdP may decline it and issue a perfectly valid token anyway. The `acr` in the **issued**
-  token is checked, and a token without it is refused and audited — no elevation is stored.
-- **The elevation rides on an act.** It requires a live act-on-tenant grant for the same
-  tenant, so it cannot route around that grant's justification, its one-tenant-at-a-time
-  rule or its audit trail. A new act — even for the same tenant — drops any elevation.
-- **The token is the capability, so it lives inside the grant.** Dropping the grant drops
-  the credential; there is no second place to remember to clear. It never reaches the
-  browser.
-- **The window is the BFF's, measured from the token's `auth_time`.** A claim expiry may
-  only shorten it, and an already-expired claim is refused rather than stored — a grant
-  dead on arrival would tell an operator their MFA prompt worked while every later request
-  quietly used their ordinary token.
-
-**The gateway is the other half.** It verifies the same claim independently — window,
-tenant, single-use consumption in its own Redis — and refuses the whole token if anything
-fails. See ADR-0013 §11 and the gateway's grant verification. The provider scope vocabulary
-stops here: what travels is `tools:call`, never `provider:invoke`.
-
-#### What an elevation actually reaches
-
-```
-POST /api/devices/{hostname}/tools/{tool}/invoke   {"arguments": {…}}   provider:invoke
-```
-
-`provider:invoke` is the only route left that needs one. Backup and restore used to be
-here too, behind `provider:credentials`; that class is removed
-([ADR-0018](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0018-device-credentials-by-reference.md)
-§6, gateway repo) and those routes now need only an ordinary admin session:
-
-```
+POST /api/devices/{hostname}/tools/{tool}/invoke   {"arguments": {…}}   tools:call
 GET  /api/admin/backup
 POST /api/admin/backup       {"kind": "portable", "passphrase": "…"}
 POST /api/admin/restore      {"archive": {…}, "dry_run": true}
 ```
 
-Three rules on the elevated route, none of which is visible from the route list:
+Three rules, none of which is visible from the route list:
 
-- **The step-up credential is relayed only here.** Elsewhere a provider session presents its
-  ordinary token, even while holding a live elevation. The gateway consumes a single-use
-  grant on *first validation of the token*, so a background read carrying it would burn the
-  grant on a device list and leave the operation the operator elevated for refused. The
-  closed list of routes that may receive it is asserted in `tests/test_elevated_routes.py`.
 - **Tool invocation is one blocking call, not an MCP transport.** The route runs
   `initialize` → `tools/call` → teardown and returns the result. That forecloses incremental
   progress for a long-running call — an accepted trade, because the gateway's dispatch

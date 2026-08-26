@@ -36,10 +36,9 @@ export function App() {
   // gateway grants them independently.
   const canInvoke = session?.scopes.includes("tools:call") ?? false;
 
-  // Provider sessions don't load the overview *here* — but not because the plane may not
-  // read it. A live act-on-tenant admits them to the tenant data plane, capped by the
-  // gateway (§5a), so ProviderConsole loads that tenant's fleet itself once an act exists.
-  // What this avoids is a fleet poll running with no act, which would 403 on every tick.
+  // Provider sessions don't load the overview *here*. A provider session currently has no
+  // path to any tenant's fleet at all (ADR-0017 slice 6 removed act-on-tenant; slice 7's
+  // replacement hasn't shipped), so polling would just 403 on every tick.
   const isProvider = session?.plane === "provider";
 
   const refresh = useCallback(async () => {
@@ -90,7 +89,7 @@ export function App() {
   }
   // The plane of the *session* decides the shell, not the deployment: break-glass on a
   // provider console is tenant-plane by construction and belongs in the device console.
-  if (isProvider) return <ProviderConsole session={session} config={config} onSignOut={signOut} />;
+  if (isProvider) return <ProviderConsole session={session} onSignOut={signOut} />;
 
   return (
     <main style={{ maxWidth: 900, margin: "2rem auto", fontFamily: "system-ui, sans-serif" }}>

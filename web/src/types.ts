@@ -72,7 +72,11 @@ export type Scope = "devices:read" | "devices:write" | "tools:call" | "metrics:r
 // separate in the type system for the same reason /auth/me reports them in their own field:
 // they are not gateway scopes, the gateway has never heard of them, and a union of the two
 // would let a view gate a tenant affordance on provider authority or the reverse.
-export type ProviderScope = "provider:monitor" | "provider:admin" | "provider:invoke";
+//
+// `provider:invoke` (ELEVATED — the old act-on-tenant/elevated-grant mechanism) is removed
+// as of ADR-0017 slice 6; what a provider operator may eventually request is a different,
+// delegated vocabulary (ADR-0017 slice 7), not a re-mechanized version of this one.
+export type ProviderScope = "provider:monitor" | "provider:admin";
 
 // Which plane authenticated this session. A fact about which IdP was used, never a
 // selector the browser sends.
@@ -100,68 +104,14 @@ export type AuthConfig = {
   oidc_enabled: boolean;
   password_login: boolean;
   provider_enabled: boolean;
-  step_up_enabled: boolean;
 };
 
-// --- the provider plane (ADR-0013 §4/§8) -------------------------------------
-
-// A live act-on-tenant grant (GET/POST /provider/...). The justification is deliberately
-// NOT echoed back by the BFF — it is evidence, already in the audit chain.
-export type ActGrant = {
-  id: string;
-  tenant: string;
-  granted_at: number;
-  expires_at: number;
-};
-
-// A live elevation on top of the act. `single_use` is currently always false — the one
-// remaining class (`provider:invoke`) isn't single-use — but the field stays: it's what
-// would make a future single-use class visibly different, and it is rendered, not just
-// carried, for that reason.
-export type Elevation = {
-  id: string;
-  tenant: string;
-  scope: ProviderScope | string;
-  granted_at: number;
-  expires_at: number;
-  single_use: boolean;
-};
-
-// The estate (GET /provider/tenants). Two facts that must not be merged:
-//
-//   `entitled` — what the directory said at login. `null` means the IdP published no list
-//                (a mapper is missing); `[]` means it published an empty one. Different
-//                situations with different remedies, so the union keeps them apart and the
-//                console renders a different sentence for each.
-//   `served`   — the single tenant this console's gateway *is*. Every other entitled tenant
-//                is a legitimate act that currently reaches no devices (slice 3).
-//
-// Neither field authorizes anything: ADR-0013 §11c puts the intersection on the gateway,
-// because the console is the side that chose the tenant.
-export type Estate = {
-  entitled: string[] | null;
-  served: string | null;
-};
-
-// The two endpoints above answer with a null sentinel rather than 404 when nothing is
-// held, so "no grant" is a value the caller reads instead of an error it has to catch.
-export type ActGrantResponse = ActGrant | { grant: null };
-export type ElevationResponse = Elevation | { elevation: null };
-
-// How a step-up came back, read from the query string the BFF redirected to. The reason
-// vocabulary is closed on the BFF side (STEP_UP_* in routers/auth.py).
-export type StepUpOutcome =
-  | { status: "granted" }
-  | {
-      status: "denied";
-      reason:
-        | "invalid_callback"
-        | "state_mismatch"
-        | "token_exchange_failed"
-        | "step_up_declined"
-        | "grant_refused"
-        | string;
-    };
+// The act-on-tenant grant, the elevated grant (`ActGrant`/`Elevation`/`ActGrantResponse`/
+// `ElevationResponse`), the estate navigation type (`Estate`) and the step-up outcome type
+// (`StepUpOutcome`) all described the ADR-0013 mechanism removed at ADR-0017 slice 6
+// (`grants.py`, `routers/provider.py`, `ActOnTenant.tsx`, `ElevationPanel.tsx` — all
+// deleted). Not reintroduced speculatively: ADR-0017's replacement (slice 7/8) has a
+// different shape and will need its own types, not a renaming of these.
 
 // Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
 // No gateway OpenAPI schema backs these (they describe external systems), so they

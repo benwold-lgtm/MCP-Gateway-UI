@@ -23,11 +23,9 @@ from ..audit import OUTCOME_DENIED, OUTCOME_ERROR, OUTCOME_SUCCESS, outcome_for,
 from ..catalog_client import CatalogUnavailable
 from ..relay import relay_get, relay_request
 from ..security import (
-    SCOPE_PROVIDER_INVOKE,
     _persist_session,
     current_session,
     deny_password_session,
-    require_elevated,
     require_role,
 )
 
@@ -35,12 +33,6 @@ router = APIRouter(prefix="/api", tags=["api"])
 
 _any = Depends(require_role())  # any authenticated session
 _admin = Depends(require_role("admin"))
-# Routes whose whole purpose is an elevated capability (ADR-0013 §5a/§8). The dependency
-# marks the request so the elevated credential is relayed *only* here — see
-# `security.require_elevated`. The closed list of routes carrying these is asserted in
-# `tests/test_elevated_routes.py`; adding one to a route that does not need it silently
-# spends single-use grants on routine traffic.
-_needs_invoke = Depends(require_elevated(SCOPE_PROVIDER_INVOKE))
 _no_break_glass = Depends(deny_password_session)
 
 # Upper bound on the recent-logs panel page size. The panel shows a tail, not a bulk
@@ -441,7 +433,7 @@ async def _mcp(request: Request, hostname: str, payload: dict, session_id: str |
     return await relay_request(request, "POST", f"/devices/{hostname}/mcp", json=payload, headers=headers)
 
 
-@router.post("/devices/{hostname}/tools/{tool}/invoke", dependencies=[_admin, _needs_invoke])
+@router.post("/devices/{hostname}/tools/{tool}/invoke", dependencies=[_admin])
 async def invoke_tool(hostname: str, tool: str, request: Request) -> JSONResponse:
     """Call one tool on one device and return its result.
 
@@ -471,8 +463,9 @@ async def invoke_tool(hostname: str, tool: str, request: Request) -> JSONRespons
     )
     if opened.status_code >= 400:
         # Pass the handshake's own refusal through unchanged. It carries the reason — an
-        # unapproved fingerprint, an inactive pod, a refused elevation — and rewriting it
-        # into "could not invoke" would cost the operator the one useful sentence.
+        # unapproved fingerprint, an inactive pod, a scope the caller's credential lacks —
+        # and rewriting it into "could not invoke" would cost the operator the one useful
+        # sentence.
         return await _audited(request, opened, "tool.invoke", target=f"{hostname}/{tool}")
 
     session_id = opened.headers.get(_MCP_SESSION_HEADER)

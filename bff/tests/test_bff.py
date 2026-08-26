@@ -465,7 +465,6 @@ def test_auth_config_reports_methods(app_client):
         # A plain tenant-stack BFF. `provider_enabled` false is what makes the SPA render
         # the tenant login rather than the provider one (ADR-0013 §2/§5).
         "provider_enabled": False,
-        "step_up_enabled": False,
     }
 
 
