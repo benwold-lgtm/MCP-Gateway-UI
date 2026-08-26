@@ -23,7 +23,7 @@ import httpx
 from fastapi import Request
 
 from . import sessions
-from .security import upstream_bearer
+from .security import PLANE_PROVIDER, _persist_session, session_plane, upstream_bearer
 
 
 async def refresh_oidc_access_token(request: Request) -> Optional[str]:
@@ -65,6 +65,21 @@ async def refresh_oidc_access_token(request: Request) -> Optional[str]:
         return access
 
 
+async def _drop_dead_support_grant(request: Request) -> None:
+    """A provider session's delegated support grant just 401'd (ADR-0017 §7) — the gateway
+    checks it live on every request, so a refusal here means it is genuinely gone (revoked
+    or expired), not a caching problem this side needs to paper over. Clearing it is what
+    makes the *next* poll/read honestly report "no grant" instead of a phantom stale one;
+    there is nothing to refresh, unlike the OIDC case above."""
+    sess = await sessions.load(request)
+    if not (
+        isinstance(sess, dict) and session_plane(sess) == PLANE_PROVIDER and isinstance(sess.get("support_grant"), dict)
+    ):
+        return
+    sess.pop("support_grant", None)
+    await _persist_session(request, sess)
+
+
 async def relay_get(request: Request, path: str) -> httpx.Response:
     """GET the gateway, refreshing the OIDC token and retrying once on a 401."""
     gw = request.app.state.gateway
@@ -73,6 +88,8 @@ async def relay_get(request: Request, path: str) -> httpx.Response:
         refreshed = await refresh_oidc_access_token(request)
         if refreshed:
             resp = await gw.get(path, bearer=refreshed)
+        else:
+            await _drop_dead_support_grant(request)
     return resp
 
 
@@ -91,4 +108,6 @@ async def relay_request(
         refreshed = await refresh_oidc_access_token(request)
         if refreshed:
             resp = await gw.request(method, path, json=json, bearer=refreshed, headers=headers)
+        else:
+            await _drop_dead_support_grant(request)
     return resp

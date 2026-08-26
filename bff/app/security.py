@@ -22,7 +22,7 @@ signed session id. No token or role ever reaches the browser.
 from __future__ import annotations
 
 import hmac
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 from fastapi import HTTPException, Request
 
@@ -131,6 +131,13 @@ class SessionInfo(TypedDict, total=False):
     access_token: str  # oidc sessions — relayed upstream
     refresh_token: str  # oidc sessions — server-side only, used for silent refresh
     id_token: str  # oidc sessions — id_token_hint for RP-initiated logout
+    # ADR-0017 slice 7 — a delegated support grant a provider session polled from a tenant's
+    # own gateway: {"grant_id": str, "credential": str}. No expiry or scope list is cached
+    # here on purpose (see `security.upstream_bearer`'s docstring) — the gateway checks the
+    # credential live on every request, and the BFF follows that same posture rather than
+    # keeping a second, potentially-stale opinion about whether it is still good or what it
+    # covers.
+    support_grant: dict
 
 
 def resolve_role(settings, password: str) -> Optional[str]:
@@ -213,28 +220,27 @@ async def upstream_bearer(request: Request) -> Optional[str]:
     OIDC session → the user's access token (per-user identity, F-30). Password session
     → None, so the GatewayClient falls back to its configured admin token.
 
-    **A provider-plane session must never reach that fallback** (ADR-0013 §4/§5a legacy
-    reasoning, still true). Returning ``None`` for one is not "no credential" — the
-    ``GatewayClient`` carries the tenant stack's *admin* key as its default header, so a
-    fall-through would present a provider operator to the tenant's gateway as gateway
-    ``admin``. This fails closed rather than being avoided by convention upstream.
-
-    ADR-0017 slice 6: the act-on-tenant/elevated-grant credential this used to select
-    between is gone. `require_role` now refuses a provider-plane session before any relay
-    call reaches here at all, so this branch should be unreachable — it stays as a second,
-    independent fail-closed check rather than trusting that ordering, since a bearer
-    function is exactly the place a reachability assumption paying off wrong would be worst.
-    ADR-0017's replacement (a delegated, gateway-minted support grant) is slice 7.
+    **A provider-plane session must never reach that fallback** (still true — falling
+    through would present a provider operator to the tenant's gateway as gateway ``admin``,
+    holding every scope and attributable to nobody). A provider session instead presents its
+    own delegated support grant (ADR-0017 §7) — the credential polled from the tenant's
+    gateway once a tenant admin approved a raised request. `require_role` already refused
+    the request if none was held, so this is a second, independent fail-closed check rather
+    than trusting that ordering — a bearer function is exactly the place a reachability
+    assumption paying off wrong would be worst.
     """
     sess = await current_session(request)
     if session_plane(sess) == PLANE_PROVIDER:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "A provider session has no path to a tenant's gateway right now. ADR-0013's "
-                "act-on-tenant grant was removed; its ADR-0017 replacement has not shipped yet."
-            ),
-        )
+        credential = _support_grant_credential(sess)
+        if credential is None:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "A provider session has no delegated support grant to present to this "
+                    "tenant's gateway (ADR-0017 §7). It is never relayed with the stack's admin key."
+                ),
+            )
+        return credential
     if sess and sess.get("kind") == "oidc":
         return sess.get("access_token")
     return None
@@ -248,19 +254,36 @@ def session_plane(session) -> str:
     return plane if plane in PLANES else PLANE_TENANT
 
 
+def _support_grant_credential(session: Any) -> Optional[str]:
+    """The bearer of a provider session's delegated support grant, or `None` (ADR-0017 §7).
+
+    Deliberately does not check an expiry against the BFF's own clock: the gateway checks
+    this credential live on every request it receives (`SupportGrantStore.check`), never
+    caching an opinion about whether it is still good — so the BFF matches that posture
+    rather than keeping a second, potentially-stale one. A dead credential is discovered the
+    same way here as everywhere else in this design: the next relayed call 401s, and the
+    caller (`relay_get`/`relay_request`) clears it from the session at that point.
+    """
+    grant = (session or {}).get("support_grant") if isinstance(session, dict) else None
+    if not isinstance(grant, dict):
+        return None
+    credential = grant.get("credential")
+    return credential if isinstance(credential, str) and credential else None
+
+
 def require_role(*allowed: str):
     """Dependency factory for the **tenant data plane**.
 
     401 if no session; for password sessions, 403 unless the role is permitted. OIDC
     sessions pass through — the gateway is the authorization point.
 
-    **ADR-0017 slice 6: a provider-plane session cannot reach this plane at all, for now.**
-    ADR-0013 §4's act-on-tenant grant — the mechanism that used to let a provider session in
-    here, one tenant at a time, on a discrete audited act — was removed along with the rest
-    of that design (`grants.py` is gone). Its replacement is a tenant-delegated, gateway-
-    minted support grant the provider polls for (ADR-0017), which is slice 7, not yet built.
-    Refusing unconditionally here is deliberate: it fails closed rather than leave a gap
-    where "the old gate is gone" quietly became "no gate at all."
+    **A provider-plane session reaches this plane only while holding a delegated support
+    grant (ADR-0017 §7).** ADR-0013's act-on-tenant grant — a provider session asserting its
+    own authority over a named tenant — is removed (`grants.py` is gone, ADR-0017 slice 6);
+    what replaces it is the tenant's own gateway minting a credential once a tenant admin
+    approves a request the provider raised (slice 7). This dependency only checks that
+    *something* was polled — the credential's actual scopes are enforced by the gateway on
+    every relayed call, same as an OIDC tenant session.
     """
 
     async def _dep(request: Request) -> SessionInfo:
@@ -268,14 +291,16 @@ def require_role(*allowed: str):
         if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if session_plane(sess) == PLANE_PROVIDER:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "The tenant data plane is not reachable from a provider session right now. "
-                    "ADR-0013's act-on-tenant grant was removed; its ADR-0017 replacement (a "
-                    "support grant delegated by the tenant) has not shipped yet."
-                ),
-            )
+            if _support_grant_credential(sess) is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "This provider session holds no delegated support grant for this tenant's "
+                        "gateway. Raise a support request and wait for the tenant to approve it "
+                        "(ADR-0017 §7)."
+                    ),
+                )
+            return sess
         if sess.get("kind") == "oidc":
             # Authorization is delegated to the gateway (it sees the user's real scopes).
             return sess
