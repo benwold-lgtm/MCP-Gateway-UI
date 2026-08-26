@@ -114,6 +114,11 @@ export type AuthConfig = {
 
 // --- the delegated support grant (ADR-0017 §7, slices 7/8) -------------------
 
+// The provider console's own directory of known tenants (GET /provider/tenants,
+// ADR-0021 scoped slice 1) — where to raise a request, not whether one would be approved.
+// No `gateway_url`: the BFF never sends the browser its own internal topology.
+export type TenantSummary = { tenant_id: string; display_name: string };
+
 // What raising a request returns (POST /provider/support-requests). `expires_at` is the
 // pending request's own deadline — not the grant's, which does not exist until approved.
 export type RaisedSupportRequest = {
@@ -132,8 +137,9 @@ export type SupportPollResult =
 
 // Whether this provider session currently holds a delegated grant (GET /provider/support-
 // grant) — never the credential itself, which the browser has no use for and an attacker
-// every use for.
-export type HeldSupportGrant = { held: false } | { held: true; grant_id: string };
+// every use for. `tenant_id` (ADR-0021 scoped slice 3/4) is which tenant it is for — a
+// provider console can reach more than one, so the grant alone no longer says which.
+export type HeldSupportGrant = { held: false } | { held: true; grant_id: string; tenant_id: string };
 
 // The tenant console's inbox (GET /api/support/requests) — a request a provider operator
 // raised, awaiting approve/reject. `justification` is shown here so the tenant admin can

@@ -26,6 +26,7 @@ import type {
   StandingConsent,
   SupportPollResult,
   TenantNotification,
+  TenantSummary,
   ToolsDiff,
   ToolsResponse,
   UpgradeOffersResponse,
@@ -170,10 +171,16 @@ export const api = {
     // Replaces the act-on-tenant/elevated-grant methods removed at slice 6
     // (`authorize`/`tenants`/`actOnTenant`/`release`/`elevate`/`elevation`/
     // `endElevation`) — a different mechanism, not a rebuild of the old one.
-    raiseSupportRequest: (body: { requested_scopes: string[]; justification: string }) =>
+    // The provider console's own tenant directory (ADR-0021 scoped slice 1) — where to
+    // raise a request, not whether one would be approved.
+    listTenants: () => req<{ tenants: TenantSummary[] }>("GET", "/provider/tenants"),
+    raiseSupportRequest: (body: { tenant_id: string; requested_scopes: string[]; justification: string }) =>
       req<RaisedSupportRequest>("POST", "/provider/support-requests", body),
-    pollSupportRequest: (requestId: string) =>
-      req<SupportPollResult>("GET", `/provider/support-requests/${encodeURIComponent(requestId)}`),
+    pollSupportRequest: (requestId: string, tenantId: string) =>
+      req<SupportPollResult>(
+        "GET",
+        `/provider/support-requests/${encodeURIComponent(requestId)}?tenant_id=${encodeURIComponent(tenantId)}`,
+      ),
     currentSupportGrant: () => req<HeldSupportGrant>("GET", "/provider/support-grant"),
     releaseSupportGrant: () => req<{ released: string | null }>("DELETE", "/provider/support-grant"),
 

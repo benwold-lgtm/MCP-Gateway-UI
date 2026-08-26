@@ -24,9 +24,11 @@ from .bootstrap import apply_first_run_bootstrap
 from .catalog_client import CatalogClient
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
+from .gateway_pool import TenantGatewayPool
 from .oidc import OIDCClient
 from .routers import api, auth, catalog, provider, support
 from .sessions import MemorySessionStore, RedisSessionStore
+from .tenant_registry import TenantRegistryError, load_tenant_registry
 from .throttle import LoginThrottle
 
 
@@ -80,12 +82,20 @@ def create_app() -> FastAPI:
             "session across hostnames, that is the boundary this refuses to cross."
         )
 
+    # ADR-0021 (scoped): fails at boot on a malformed PROVIDER_TENANT_REGISTRY rather than
+    # on the first request that needed an entry (the same posture as the checks above).
+    try:
+        tenant_registry = load_tenant_registry(settings.provider_tenant_registry)
+    except TenantRegistryError as exc:
+        raise RuntimeError(str(exc)) from exc
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
             yield
         finally:
             await app.state.gateway.aclose()
+            await app.state.gateway_pool.aclose()
             await app.state.catalog.aclose()
             await app.state.sessions.aclose()
 
@@ -96,6 +106,8 @@ def create_app() -> FastAPI:
     # reports "not configured" as CatalogUnavailable per-call, rather than this being a
     # None the routers below would each have to check for separately.
     app.state.catalog = CatalogClient(settings)
+    app.state.tenant_registry = tenant_registry
+    app.state.gateway_pool = TenantGatewayPool(tenant_registry, gateway_api_prefix=settings.gateway_api_prefix)
     # Server-side session store: memory for a single replica (lite/dev); Redis when
     # SESSION_REDIS_URL is set, which multi-replica deploys need (no session affinity).
     # Namespaced per deployment. The startup refusal above is per-process and the store is
@@ -156,11 +168,32 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
+    # ADR-0021 (scoped): the tenant deployment (the default — what any enterprise runs) and
+    # the provider deployment (the add-on) mount different route surfaces.
+    #
+    # `api.router` (the tenant data plane, `/api/*`) is common to both, unlike the other
+    # three: a tenant session uses it directly, and a provider session relays through it too
+    # once it holds a delegated support grant (`relay.py`'s per-tenant pool resolution,
+    # ADR-0021 scoped slices 2/3) — mounting it only on a tenant deployment would break that
+    # mechanism outright, not merely narrow it.
+    #
+    # `provider.router`/`catalog.router` require a provider-plane session
+    # (`require_provider_scope`) that a tenant session can never hold, so they are
+    # provider-only. `support.router` requires `require_role`, which only ever admits a
+    # provider session while it holds *some* grant — the gateway is what enforces whether
+    # that grant's approved scopes actually cover a tenant-governance action like approving
+    # or revoking another request (see `require_role`'s own docstring) — so it is tenant-only
+    # here for the same reason the other two are provider-only: no session on the other side
+    # can ever pass its gate, gating this exists purely for a leaner API surface.
+    #
+    # `auth.router` carries login for both planes plus the shared break-glass path.
     app.include_router(auth.router)
     app.include_router(api.router)
-    app.include_router(catalog.router)
-    app.include_router(provider.router)
-    app.include_router(support.router)
+    if settings.provider_oidc_enabled:
+        app.include_router(provider.router)
+        app.include_router(catalog.router)
+    else:
+        app.include_router(support.router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

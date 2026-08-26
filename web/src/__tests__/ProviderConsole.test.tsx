@@ -5,14 +5,17 @@
 // Slice 6 removed the act-on-tenant/elevated-grant UI this file used to exercise
 // end-to-end; what replaces the gate is a held support grant rather than a live act.
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ProviderConsole } from "../components/ProviderConsole";
 import type { HeldSupportGrant, Session } from "../types";
 
-const { currentSupportGrant } = vi.hoisted(() => ({ currentSupportGrant: vi.fn() }));
+const { currentSupportGrant, listTenants } = vi.hoisted(() => ({
+  currentSupportGrant: vi.fn(),
+  listTenants: vi.fn(),
+}));
 
 vi.mock("../api", () => ({
-  api: { provider: { currentSupportGrant, catalog: {} } },
+  api: { provider: { currentSupportGrant, listTenants, catalog: {} } },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -22,6 +25,13 @@ vi.mock("../api", () => ({
     }
   },
 }));
+
+// The tenant directory SupportRequestPanel fetches on mount — the panel's own tests
+// cover its content; here it just needs to resolve so mounting the console doesn't throw.
+beforeEach(() => {
+  listTenants.mockReset();
+  listTenants.mockResolvedValue({ tenants: [{ tenant_id: "t-1", display_name: "Acme Inc" }] });
+});
 
 const SESSION: Session = {
   kind: "oidc",
@@ -61,7 +71,11 @@ describe("ProviderConsole", () => {
   });
 
   it("enables Devices/Monitoring/Backup once a grant is already held on load", async () => {
-    currentSupportGrant.mockResolvedValue({ held: true, grant_id: "g1" } satisfies HeldSupportGrant);
+    currentSupportGrant.mockResolvedValue({
+      held: true,
+      grant_id: "g1",
+      tenant_id: "t-1",
+    } satisfies HeldSupportGrant);
     renderConsole();
     await waitFor(() => {
       for (const label of [/^devices/i, /^monitoring/i, /^backup/i]) {

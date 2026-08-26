@@ -30,6 +30,7 @@ What is being pinned:
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("UI_ADMIN_PASSWORD", "admin-pw")
 os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
@@ -49,6 +50,7 @@ from app.security import (  # noqa: E402
 
 TENANT_ISS = "https://tenant-idp.example.com"
 PROVIDER_ISS = "https://provider-idp.example.com"
+TENANT_ID = "t-1"
 
 
 @pytest.fixture
@@ -70,6 +72,10 @@ def provider_console(monkeypatch):
     monkeypatch.setenv(
         "PROVIDER_GROUP_SCOPES",
         '{"provider-sre": "provider:monitor", "provider-support": "provider:admin"}',
+    )
+    monkeypatch.setenv(
+        "PROVIDER_TENANT_REGISTRY",
+        f'[{{"tenant_id": "{TENANT_ID}", "display_name": "Tenant One", "gateway_url": "http://t1:8000"}}]',
     )
     app = create_app()
     with TestClient(app) as c:
@@ -267,15 +273,26 @@ def test_a_provider_session_is_refused_on_the_tenant_data_plane(provider_console
 
 def test_a_provider_session_holding_a_support_grant_reaches_the_data_plane(provider_console):
     """The positive case: once a delegated support grant is held, the tenant data plane
-    relays with *that* credential — never the stack's admin key."""
+    relays with *that* credential — never the stack's admin key. And it relays through
+    *that tenant's* gateway from the pool (ADR-0021, scoped), never this process's own
+    `app.state.gateway` — a provider deployment names no tenant of its own, so that client
+    is never the right one for a provider session to use."""
     c, app = provider_console
-    seen_bearer = []
+    seen = []
 
     async def _ok(path, bearer=None):
-        seen_bearer.append(bearer)
+        seen.append(bearer)
         return httpx.Response(200, json={"devices": []})
 
-    app.state.gateway.get = _ok
+    async def _boom(path, bearer=None):
+        raise AssertionError("a provider session's call reached app.state.gateway, not the pool")
+
+    def _pool_get(tenant_id):
+        assert tenant_id == TENANT_ID
+        return SimpleNamespace(get=_ok)
+
+    app.state.gateway.get = _boom
+    app.state.gateway_pool.get = _pool_get
     _seed_session(
         c,
         app,
@@ -284,14 +301,61 @@ def test_a_provider_session_holding_a_support_grant_reaches_the_data_plane(provi
             "plane": PLANE_PROVIDER,
             "sub": "carol",
             "provider_scopes": ["provider:admin"],
-            "support_grant": {"grant_id": "g1", "credential": "sgr_abc123"},
+            "support_grant": {"tenant_id": TENANT_ID, "grant_id": "g1", "credential": "sgr_abc123"},
         },
     )
 
     resp = c.get("/api/devices")
 
     assert resp.status_code == 200
-    assert seen_bearer == ["sgr_abc123"]
+    assert seen == ["sgr_abc123"]
+
+
+def test_a_grant_with_no_recorded_tenant_fails_closed_not_silently_to_app_state_gateway(provider_console):
+    """A grant shaped by something that predates slice 3 (no `tenant_id`) must not fall
+    back to `app.state.gateway` — that client names no tenant in particular on a provider
+    deployment, so silently using it would send a tenant-scoped credential somewhere
+    unrelated rather than somewhere merely wrong."""
+    c, app = provider_console
+
+    async def _boom(path, bearer=None):
+        raise AssertionError("app.state.gateway must never be used for a provider session")
+
+    app.state.gateway.get = _boom
+    _seed_session(
+        c,
+        app,
+        {
+            "kind": "oidc",
+            "plane": PLANE_PROVIDER,
+            "sub": "carol",
+            "provider_scopes": ["provider:admin"],
+            "support_grant": {"grant_id": "g1", "credential": "sgr_abc123"},  # no tenant_id
+        },
+    )
+
+    resp = c.get("/api/devices")
+
+    assert resp.status_code == 500
+
+
+def test_a_grant_naming_a_tenant_the_registry_no_longer_has_fails_closed(provider_console):
+    c, app = provider_console
+    _seed_session(
+        c,
+        app,
+        {
+            "kind": "oidc",
+            "plane": PLANE_PROVIDER,
+            "sub": "carol",
+            "provider_scopes": ["provider:admin"],
+            "support_grant": {"tenant_id": "gone", "grant_id": "g1", "credential": "sgr_abc123"},
+        },
+    )
+
+    resp = c.get("/api/devices")
+
+    assert resp.status_code == 500
 
 
 def test_a_401d_support_grant_is_cleared_from_the_session(provider_console):
@@ -304,7 +368,7 @@ def test_a_401d_support_grant_is_cleared_from_the_session(provider_console):
     async def _dead(path, bearer=None):
         return httpx.Response(401, json={"detail": "invalid or missing token"})
 
-    app.state.gateway.get = _dead
+    app.state.gateway_pool.get = lambda tenant_id: SimpleNamespace(get=_dead)
     _seed_session(
         c,
         app,
@@ -313,7 +377,7 @@ def test_a_401d_support_grant_is_cleared_from_the_session(provider_console):
             "plane": PLANE_PROVIDER,
             "sub": "carol",
             "provider_scopes": ["provider:admin"],
-            "support_grant": {"grant_id": "g1", "credential": "sgr_stale"},
+            "support_grant": {"tenant_id": TENANT_ID, "grant_id": "g1", "credential": "sgr_stale"},
         },
     )
 

@@ -46,6 +46,9 @@ class _Gateway:
         return await self.request("GET", path, bearer=bearer)
 
 
+TENANT_ID = "t-1"
+
+
 @pytest.fixture
 def provider_console(monkeypatch):
     monkeypatch.setenv("OIDC_ENABLED", "false")
@@ -54,12 +57,22 @@ def provider_console(monkeypatch):
     monkeypatch.setenv("PROVIDER_OIDC_CLIENT_ID", "provider-console")
     monkeypatch.setenv("PROVIDER_OIDC_REDIRECT_URL", "https://console.example.com/auth/provider/callback")
     monkeypatch.setenv("PROVIDER_GROUP_SCOPES", '{"provider-support": "provider:admin"}')
+    monkeypatch.setenv(
+        "PROVIDER_TENANT_REGISTRY",
+        f'[{{"tenant_id": "{TENANT_ID}", "display_name": "Tenant One", "gateway_url": "http://t1:8000"}}]',
+    )
     app = create_app()
     gw = _Gateway()
-    # Monkeypatched onto the real GatewayClient instance, not swapped wholesale, so
-    # `.aclose()` (called by the app's own lifespan shutdown) still exists.
-    app.state.gateway.get = gw.get
-    app.state.gateway.request = gw.request
+
+    # The pool builds a real per-tenant GatewayClient lazily; these tests fake the whole
+    # pool rather than reach inside it, since resolving the *right* tenant is exactly the
+    # property slice 2 introduced and these tests exercise it via `TENANT_ID`.
+    def _fake_pool_get(tenant_id):
+        if tenant_id != TENANT_ID:
+            raise KeyError(tenant_id)
+        return gw
+
+    app.state.gateway_pool.get = _fake_pool_get
     with TestClient(app) as c:
         yield c, app, gw
 
@@ -80,7 +93,8 @@ def test_raising_relays_with_the_bffs_own_credential_and_the_sessions_subject(pr
     gw.when("POST", "/support-requests", httpx.Response(201, json={"request_id": "r1", "expires_at": 123.0}))
 
     resp = client.post(
-        "/provider/support-requests", json={"requested_scopes": ["devices:read"], "justification": "INC-9001"}
+        "/provider/support-requests",
+        json={"tenant_id": TENANT_ID, "requested_scopes": ["devices:read"], "justification": "INC-9001"},
     )
 
     assert resp.status_code == 200
@@ -92,6 +106,19 @@ def test_raising_relays_with_the_bffs_own_credential_and_the_sessions_subject(pr
     assert call["json"]["requested_scopes"] == ["devices:read"]
 
 
+def test_raising_against_an_unknown_tenant_is_a_404_not_a_500(provider_console):
+    client, app, gw = provider_console
+    _seed_provider_session(client, app, sub="op-14")
+
+    resp = client.post(
+        "/provider/support-requests",
+        json={"tenant_id": "no-such-tenant", "requested_scopes": [], "justification": "x"},
+    )
+
+    assert resp.status_code == 404
+    assert gw.calls == []
+
+
 def test_the_client_cannot_assert_a_different_provider_subject(provider_console):
     """`provider_subject` names the operator for the gateway's own attribution — it must
     come from the session, never from anything the browser sends."""
@@ -101,7 +128,12 @@ def test_the_client_cannot_assert_a_different_provider_subject(provider_console)
 
     client.post(
         "/provider/support-requests",
-        json={"requested_scopes": ["devices:read"], "justification": "x", "provider_subject": "someone-else"},
+        json={
+            "tenant_id": TENANT_ID,
+            "requested_scopes": ["devices:read"],
+            "justification": "x",
+            "provider_subject": "someone-else",
+        },
     )
 
     assert gw.calls[0]["json"]["provider_subject"] == "op-14"
@@ -112,7 +144,10 @@ def test_an_upstream_refusal_is_passed_through(provider_console):
     _seed_provider_session(client, app)
     gw.when("POST", "/support-requests", httpx.Response(400, json={"detail": "'justification' is required"}))
 
-    resp = client.post("/provider/support-requests", json={"requested_scopes": ["devices:read"], "justification": ""})
+    resp = client.post(
+        "/provider/support-requests",
+        json={"tenant_id": TENANT_ID, "requested_scopes": ["devices:read"], "justification": ""},
+    )
 
     assert resp.status_code == 400
     assert "justification" in resp.json()["detail"]
@@ -123,10 +158,20 @@ def test_polling_a_pending_request_does_not_touch_the_session(provider_console):
     _seed_provider_session(client, app)
     gw.when("GET", "/support-requests/r1?provider_subject=op-14", httpx.Response(200, json={"status": "pending"}))
 
-    resp = client.get("/provider/support-requests/r1")
+    resp = client.get(f"/provider/support-requests/r1?tenant_id={TENANT_ID}")
 
     assert resp.json() == {"status": "pending"}
     assert client.get("/provider/support-grant").json() == {"held": False}
+
+
+def test_polling_against_an_unknown_tenant_is_a_404_not_a_500(provider_console):
+    client, app, gw = provider_console
+    _seed_provider_session(client, app)
+
+    resp = client.get("/provider/support-requests/r1?tenant_id=no-such-tenant")
+
+    assert resp.status_code == 404
+    assert gw.calls == []
 
 
 def test_polling_an_approved_request_stores_the_credential_on_the_session(provider_console):
@@ -138,11 +183,11 @@ def test_polling_an_approved_request_stores_the_credential_on_the_session(provid
         httpx.Response(200, json={"status": "approved", "grant_id": "g1", "credential": "sgr_abc123"}),
     )
 
-    resp = client.get("/provider/support-requests/r1")
+    resp = client.get(f"/provider/support-requests/r1?tenant_id={TENANT_ID}")
 
     assert resp.json() == {"status": "approved", "grant_id": "g1", "credential": "sgr_abc123"}
     held = client.get("/provider/support-grant").json()
-    assert held == {"held": True, "grant_id": "g1"}
+    assert held == {"held": True, "grant_id": "g1", "tenant_id": TENANT_ID}
 
 
 def test_the_held_grant_view_never_exposes_the_credential_itself(provider_console):
@@ -153,7 +198,7 @@ def test_the_held_grant_view_never_exposes_the_credential_itself(provider_consol
         "/support-requests/r1?provider_subject=op-14",
         httpx.Response(200, json={"status": "approved", "grant_id": "g1", "credential": "sgr_secret"}),
     )
-    client.get("/provider/support-requests/r1")
+    client.get(f"/provider/support-requests/r1?tenant_id={TENANT_ID}")
 
     body = client.get("/provider/support-grant").json()
 
@@ -169,7 +214,7 @@ def test_releasing_a_held_grant_relays_the_revoke_and_clears_the_session(provide
         "/support-requests/r1?provider_subject=op-14",
         httpx.Response(200, json={"status": "approved", "grant_id": "g1", "credential": "sgr_abc"}),
     )
-    client.get("/provider/support-requests/r1")
+    client.get(f"/provider/support-requests/r1?tenant_id={TENANT_ID}")
     gw.when("DELETE", "/support-grants/g1", httpx.Response(204))
 
     resp = client.delete("/provider/support-grant")
@@ -195,6 +240,9 @@ def test_a_tenant_session_cannot_reach_these_routes(provider_console):
     resp = client.post("/auth/login", json={"password": "admin-pw"})
     assert resp.status_code == 200
 
-    resp = client.post("/provider/support-requests", json={"requested_scopes": [], "justification": "x"})
+    resp = client.post(
+        "/provider/support-requests",
+        json={"tenant_id": TENANT_ID, "requested_scopes": [], "justification": "x"},
+    )
 
     assert resp.status_code == 403
