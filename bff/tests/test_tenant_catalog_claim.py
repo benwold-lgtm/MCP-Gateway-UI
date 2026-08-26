@@ -1,0 +1,317 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Ben Wold. All rights reserved.
+# Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
+"""ADR-0020 §4, slice 4 — the tenant-plane claim flow.
+
+The claim itself is not a new gateway capability: it merges a catalog device type's current
+version with the tenant-supplied host/credential and calls the gateway's existing
+`POST /devices`, unmodified — `app.state.gateway`, faked the same way `test_elevated_routes.py`
+fakes it. `app.state.catalog` is faked the same way `test_provider_catalog.py` fakes it.
+
+Four properties carry this slice:
+
+1. **Only what's assigned to THIS tenant is claimable** — an unassigned type 403s, never a
+   500 or a silently-empty registration.
+2. **The template/instance split holds** — the version's fields (transport, upstream_kind,
+   auth_kind, spec_path) end up in the merged body; the tenant's own fields (hostname,
+   base_url, credential) are never overridden by the type.
+3. **`spec_url` is joined against the TENANT's base_url**, never the curator's — §1's whole
+   reason `spec_path` is relative.
+4. **A catalog outage recording the pin does not undo an already-successful registration** —
+   it is surfaced as its own named audit outcome instead.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+os.environ.setdefault("UI_ADMIN_PASSWORD", "admin-pw")
+os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
+os.environ.setdefault("SESSION_SECRET", "test-secret")
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.catalog_client import CatalogUnavailable  # noqa: E402
+from app.main import create_app  # noqa: E402
+
+TENANT = "acme"
+
+DEVICE_TYPE_DETAIL = {
+    "id": "t1",
+    "slug": "acme-sensor-x1",
+    "name": "Acme Sensor X1",
+    "latest_version": 1,
+    "versions": [
+        {
+            "id": "v1",
+            "device_type_id": "t1",
+            "version": 1,
+            "transport": "sse",
+            "upstream_kind": "openapi",
+            "upstream_transport": "http",
+            "spec_path": "/openapi.json",
+            "auth_kind": "api_key",
+            "fingerprint_policy": "enforce",
+            "changelog": None,
+        }
+    ],
+}
+
+
+@pytest.fixture
+def console(monkeypatch, tmp_path):
+    monkeypatch.setenv("OIDC_ENABLED", "false")
+    monkeypatch.setenv("AUDIT_PATH", str(tmp_path / "audit.log"))
+    monkeypatch.setenv("AUDIT_TENANT", TENANT)
+    monkeypatch.setenv("TENANT_ID", TENANT)
+    monkeypatch.setenv("CATALOG_SERVICE_URL", "http://catalog.internal")
+    monkeypatch.setenv("CATALOG_API_TOKEN", "catalog-token")
+    monkeypatch.delenv("BFF_STATE_DIR", raising=False)
+    app = create_app()
+    with TestClient(app) as c:
+        yield c, app
+
+
+def _login(client) -> None:
+    assert client.post("/auth/login", json={"password": "admin-pw"}).status_code == 200
+
+
+def _audited(app, action: str) -> list[dict]:
+    rows = app.state.audit.read(tenant=TENANT, limit=200)
+    return [r["content"] for r in reversed(rows) if r["content"] and r["content"]["action"] == action]
+
+
+class _FakeCatalog:
+    """Answers `GET /tenants/{t}/assignments` and `GET /device-types/{id}` from fixed
+    payloads, and records every call made through it — including the claim-recording POST,
+    so a test can assert it happened without a real catalog service."""
+
+    def __init__(self, *, assigned: Optional[list[str]] = None, detail: Optional[dict] = None):
+        self.assigned = assigned if assigned is not None else ["t1"]
+        self.detail = detail if detail is not None else DEVICE_TYPE_DETAIL
+        self.calls: list[dict] = []
+        self._raise_on: set[str] = set()
+
+    def fail_on(self, path_prefix: str) -> None:
+        self._raise_on.add(path_prefix)
+
+    async def request(self, method, path, *, json=None):
+        self.calls.append({"method": method, "path": path, "json": json})
+        for prefix in self._raise_on:
+            if path.startswith(prefix):
+                raise CatalogUnavailable("catalog unreachable (test)")
+        if path == f"/tenants/{TENANT}/assignments":
+            device_types = [
+                {"id": i, "slug": i, "name": i, "created_at": "2026-01-01T00:00:00Z", "latest_version": 1}
+                for i in self.assigned
+            ]
+            return httpx.Response(200, json={"device_types": device_types})
+        if path == "/device-types/t1":
+            return httpx.Response(200, json=self.detail)
+        if path == "/device-types/t1/claims":
+            return httpx.Response(201, json={"id": "c1"})
+        return httpx.Response(404, json={"detail": "not found"})
+
+
+def _attach_catalog(app, fake: _FakeCatalog) -> _FakeCatalog:
+    app.state.catalog.request = fake.request
+    return fake
+
+
+class _FakeGateway:
+    def __init__(self, *, status: int = 201, payload=None):
+        self.status = status
+        self.payload = payload if payload is not None else {"hostname": "sensor-01"}
+        self.calls: list[dict] = []
+
+    async def request(self, method, path, json=None, bearer=None, headers=None):
+        self.calls.append({"method": method, "path": path, "json": json})
+        return httpx.Response(self.status, json=self.payload)
+
+
+def _attach_gateway(app, fake: _FakeGateway) -> _FakeGateway:
+    app.state.gateway.request = fake.request
+    return fake
+
+
+# --- listing / detail ----------------------------------------------------------------
+
+
+def test_tenant_catalog_lists_only_what_is_assigned(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(assigned=["t1", "t2"]))
+
+    resp = client.get("/api/catalog/device-types")
+
+    assert resp.status_code == 200
+    assert {d["id"] for d in resp.json()["device_types"]} == {"t1", "t2"}
+
+
+def test_tenant_catalog_list_names_a_catalog_outage_rather_than_reading_as_empty(console):
+    client, app = console
+    _login(client)
+    fake = _FakeCatalog()
+    fake.fail_on("/tenants/")
+    _attach_catalog(app, fake)
+
+    resp = client.get("/api/catalog/device-types")
+
+    assert resp.status_code == 503
+
+
+def test_detail_404s_for_a_type_not_assigned_to_this_tenant(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(assigned=["some-other-type"]))
+
+    resp = client.get("/api/catalog/device-types/t1")
+
+    assert resp.status_code == 404
+
+
+def test_detail_relays_the_assigned_types_versions(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())
+
+    resp = client.get("/api/catalog/device-types/t1")
+
+    assert resp.status_code == 200
+    assert resp.json()["versions"][0]["auth_kind"] == "api_key"
+
+
+def test_missing_tenant_id_is_a_named_503_not_a_lookup_of_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("OIDC_ENABLED", "false")
+    monkeypatch.setenv("AUDIT_PATH", str(tmp_path / "audit.log"))
+    monkeypatch.delenv("TENANT_ID", raising=False)
+    monkeypatch.delenv("BFF_STATE_DIR", raising=False)
+    app = create_app()
+    with TestClient(app) as client:
+        _login(client)
+        resp = client.get("/api/catalog/device-types")
+    assert resp.status_code == 503
+
+
+# --- claim -----------------------------------------------------------------------------
+
+
+def test_claim_403s_for_an_unassigned_type(console):
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog(assigned=["some-other-type"]))
+    gateway = _attach_gateway(app, _FakeGateway())
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 403
+    assert gateway.calls == []
+    assert not any(c["path"] == "/device-types/t1/claims" for c in catalog.calls)
+
+
+def test_claim_merges_the_template_with_the_tenants_own_fields(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={
+            "hostname": "sensor-01",
+            "base_url": "https://sensor-01.local/api/",
+            "auth": {"api_key": "s3cr3t"},
+        },
+    )
+
+    assert resp.status_code == 201
+    assert len(gateway.calls) == 1
+    body = gateway.calls[0]["json"]
+    # The tenant's own fields, untouched by the type.
+    assert body["hostname"] == "sensor-01"
+    assert body["base_url"] == "https://sensor-01.local/api/"
+    assert body["auth"] == {"api_key": "s3cr3t"}
+    # The type's template fields, not something the tenant supplied.
+    assert body["transport"] == "sse"
+    assert body["upstream_kind"] == "openapi"
+    assert body["auth_type"] == "api_key"
+    assert body["fingerprint_policy"] == "enforce"
+    # Joined against the TENANT's base_url, not any curator-side URL.
+    assert body["spec_url"] == "https://sensor-01.local/api/openapi.json"
+
+
+def test_claim_omits_auth_entirely_when_the_type_needs_none(console):
+    client, app = console
+    _login(client)
+    detail = {**DEVICE_TYPE_DETAIL, "versions": [{**DEVICE_TYPE_DETAIL["versions"][0], "auth_kind": "none"}]}
+    _attach_catalog(app, _FakeCatalog(detail=detail))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "ignored"}},
+    )
+
+    assert resp.status_code == 201
+    assert "auth" not in gateway.calls[0]["json"]
+
+
+def test_claim_records_the_pin_after_a_successful_registration(console):
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog())
+    _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 201
+    claim_calls = [c for c in catalog.calls if c["path"] == "/device-types/t1/claims"]
+    assert claim_calls == [
+        {
+            "method": "POST",
+            "path": "/device-types/t1/claims",
+            "json": {"tenant_id": TENANT, "hostname": "sensor-01", "version": 1},
+        }
+    ]
+
+
+def test_claim_does_not_record_a_pin_when_registration_itself_fails(console):
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog())
+    _attach_gateway(app, _FakeGateway(status=409, payload={"detail": "already registered"}))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 409
+    assert not any(c["path"] == "/device-types/t1/claims" for c in catalog.calls)
+
+
+def test_a_lost_pin_is_a_named_audit_outcome_not_a_silent_drop(console):
+    """The device is already registered by the time the pin-recording call is made — a
+    catalog outage there must not read as if the claim never happened."""
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog())
+    catalog.fail_on("/device-types/t1/claims")
+    _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 201  # the registration itself still succeeded
+    lost = _audited(app, "device.claim.pin_unrecorded")
+    assert len(lost) == 1
+    assert lost[0]["outcome"] == "error"
+
+
+def test_claim_requires_an_authenticated_admin_session(console):
+    client, app = console
+    _attach_catalog(app, _FakeCatalog())
+    _attach_gateway(app, _FakeGateway())
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 401

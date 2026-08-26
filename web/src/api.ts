@@ -8,6 +8,7 @@ import type {
   BackupPrepared,
   ActGrantResponse,
   AuthConfig,
+  ClaimPayload,
   DeviceTypeDetail,
   DeviceTypeListResponse,
   Elevation,
@@ -116,6 +117,19 @@ export const api = {
   registerDevice: (d: DevicePayload) => req<unknown>("POST", "/api/devices", d),
   updateDevice: (hostname: string, d: DevicePayload) => req<unknown>("PUT", `/api/devices/${hostname}`, d),
   deleteDevice: (hostname: string) => req<unknown>("DELETE", `/api/devices/${hostname}`),
+  // --- claim from catalog (ADR-0020 §4, tenant plane) -------------------------------
+  // This tenant's currently assigned device types — what the catalog claim view lists.
+  // Does not touch or gate registerDevice above: free-type registration keeps working
+  // exactly as it does today.
+  catalog: {
+    listAssigned: () => req<DeviceTypeListResponse>("GET", "/api/catalog/device-types"),
+    getDeviceType: (id: string) => req<DeviceTypeDetail>("GET", `/api/catalog/device-types/${id}`),
+    // The BFF merges this with the type's current curated version and registers the
+    // result via the gateway's ordinary devices route — the browser supplies only its
+    // own half (host + credential), never the template fields.
+    claim: (typeId: string, body: ClaimPayload) =>
+      req<DeviceMutation>("POST", `/api/catalog/${typeId}/claim`, body),
+  },
   // Re-pin a device to the key it is now presenting (gateway ADR-0015 §6). Admin-only at
   // the BFF; the gateway 409s when the device is not actually pending approval.
   approveFingerprint: (hostname: string) =>

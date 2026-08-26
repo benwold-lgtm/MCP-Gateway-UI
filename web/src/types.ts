@@ -315,3 +315,16 @@ export type Assignment = {
   assigned_by: string;
   revoked_at?: string | null;
 };
+
+// --- catalog (ADR-0020 §4, tenant plane) -------------------------------------------
+// What the "claim from catalog" form supplies — only the tenant's own half of a device
+// record (host + credential). Everything else (transport, upstream_kind, auth_kind,
+// spec_path, fingerprint_policy) comes from the claimed type's current version and is
+// filled in server-side; the browser never sees or sends it.
+export type ClaimPayload = {
+  hostname: string;
+  base_url: string;
+  auth?: ApiKeyAuth | OAuth2Auth;
+  rate_limit_rps?: number;
+  expected_tls_spki_sha256?: string;
+};
