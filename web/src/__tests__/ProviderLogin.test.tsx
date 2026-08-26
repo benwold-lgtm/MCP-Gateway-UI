@@ -20,7 +20,6 @@ const CONFIG: AuthConfig = {
   oidc_enabled: false,
   password_login: true,
   provider_enabled: true,
-  step_up_enabled: true,
 };
 
 describe("ProviderLogin", () => {

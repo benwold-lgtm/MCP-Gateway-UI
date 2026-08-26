@@ -23,7 +23,7 @@ import httpx
 from fastapi import Request
 
 from . import sessions
-from .security import elevated_scope_wanted, upstream_bearer
+from .security import upstream_bearer
 
 
 async def refresh_oidc_access_token(request: Request) -> Optional[str]:
@@ -65,23 +65,11 @@ async def refresh_oidc_access_token(request: Request) -> Optional[str]:
         return access
 
 
-def _retryable(request: Request) -> bool:
-    """Whether a 401 on this request may be retried with a refreshed access token.
-
-    Not for an elevated request. A refresh produces an *ordinary* access token: it carries
-    no `mcp_grant` claim, so the retry cannot do what the first attempt was for, and by then
-    the elevation has already been spent handing out the first token. Retrying would trade a
-    truthful "your elevation was refused" for a confusing 403 on a route the operator had
-    just been told they could use. The 401 is the answer.
-    """
-    return elevated_scope_wanted(request) is None
-
-
 async def relay_get(request: Request, path: str) -> httpx.Response:
     """GET the gateway, refreshing the OIDC token and retrying once on a 401."""
     gw = request.app.state.gateway
     resp = await gw.get(path, bearer=await upstream_bearer(request))
-    if resp.status_code == 401 and _retryable(request):
+    if resp.status_code == 401:
         refreshed = await refresh_oidc_access_token(request)
         if refreshed:
             resp = await gw.get(path, bearer=refreshed)
@@ -99,7 +87,7 @@ async def relay_request(
     """Proxy a method to the gateway, refreshing the OIDC token and retrying once on a 401."""
     gw = request.app.state.gateway
     resp = await gw.request(method, path, json=json, bearer=await upstream_bearer(request), headers=headers)
-    if resp.status_code == 401 and _retryable(request):
+    if resp.status_code == 401:
         refreshed = await refresh_oidc_access_token(request)
         if refreshed:
             resp = await gw.request(method, path, json=json, bearer=refreshed, headers=headers)

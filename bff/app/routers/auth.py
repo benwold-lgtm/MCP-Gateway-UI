@@ -12,21 +12,16 @@ Two ways in (ADR-0007):
 from __future__ import annotations
 
 import secrets
-import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .. import sessions
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, record_request
-from ..grants import GrantError, entitled_tenants, record_elevated_grant
 from ..oidc import OIDCError, make_pkce_pair
 from ..relay import relay_get
 from ..security import (
-    SCOPE_PROVIDER_ADMIN,
-    _persist_session,
-    require_provider_scope,
     PASSWORD_ROLE_SCOPES,
     PLANE_PROVIDER,
     PLANE_TENANT,
@@ -36,7 +31,6 @@ from ..security import (
     session_plane,
 )
 from ..throttle import client_ip
-from .provider import STEP_UP_TX, step_up_ready
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -55,20 +49,12 @@ async def auth_config(request: Request) -> dict:
     ``oidc_enabled`` by construction — the deployment decides the plane, and the browser
     only reads which deployment it reached. A UI that offered the operator the choice would
     be re-introducing at the front door the thing the startup check exists to forbid.
-
-    ``step_up_enabled`` is reported separately because a provider console can be correctly
-    configured and still not offer elevated grants (no ``acr``/redirect ⇒ nothing to verify
-    against, so :func:`provider.step_up_ready` 404s). The console must be able to hide the
-    elevate affordance rather than discover that by clicking it.
     """
     s = request.app.state.settings
     return {
         "oidc_enabled": request.app.state.oidc is not None,
         "password_login": bool(s.ui_admin_password or s.ui_viewer_password),
         "provider_enabled": request.app.state.provider_oidc is not None,
-        "step_up_enabled": bool(
-            request.app.state.provider_oidc is not None and s.provider_step_up_acr and s.provider_step_up_redirect_url
-        ),
     }
 
 
@@ -339,10 +325,6 @@ async def provider_callback(
     # Mapped here, on the provider-plane path only. There is no shared table a tenant
     # login could reach by naming a group after the provider mapping (§6a's rule, this side).
     scopes = provider_scopes_for_groups(groups, settings.provider_group_scopes)
-    # The estate, as the directory stated it at login. Navigation only — see
-    # `grants.entitled_tenants`; the gateway still runs §11c's intersection on every
-    # elevated grant, and this list never widens what that will accept.
-    estate = entitled_tenants(claims.get(settings.provider_entitlement_claim))
     if not scopes:
         # Authenticated but unmapped: a session with no provider authority. Every provider
         # route then 403s and the audit names who was refused — better than a blank 401
@@ -360,213 +342,15 @@ async def provider_callback(
             "sub": claims.get("sub"),
             "name": claims.get("name") or claims.get("preferred_username") or claims.get("email"),
             "provider_scopes": sorted(scopes),
-            # `None` (claim absent) and `[]` (directory named nobody) are stored distinctly
-            # and must stay that way: they are different operator situations with different
-            # remedies, and collapsing them is how a console ends up telling someone they
-            # have no entitlement when really nothing asked.
-            "entitled_tenants": estate,
-            # The operator's own token, kept so the BFF has an accountable identity to
-            # present to a tenant's gateway — which is exactly what ADR-0013 §6 added a
-            # second trusted issuer for. Two things bound it, and neither is optional:
-            #
-            #   * It is relayed **only while a live act-on-tenant grant names that tenant**
-            #     (§4, enforced in `security.require_role` / `upstream_bearer`). Stored is
-            #     not the same as usable: without a grant this token opens nothing.
-            #   * The gateway caps what it can reach regardless — the provider plane's
-            #     server-side ceiling is `devices:read` + `devices:write` + `metrics:read`
-            #     (§5a/§6a), never `tools:call` and never any `backup:*`.
-            #
-            # The alternative — presenting nothing — is not "no credential": the
-            # GatewayClient falls back to the tenant stack's *admin* key, which is above
-            # the ceiling and attributable to nobody. That is the outcome §6 exists to
-            # replace, so a provider session carrying its own identity is the safer shape,
-            # not the riskier one.
+            # The operator's own token, kept so the BFF has an accountable identity — though
+            # as of ADR-0017 slice 6 there is no path that currently relays it anywhere
+            # (`require_role` refuses every provider-plane session before any tenant-plane
+            # relay call; see `security.py`). Kept rather than dropped because slice 7's
+            # replacement mechanism will need exactly this: an accountable operator identity
+            # to present when raising a support request against a named tenant's gateway.
             "access_token": tokens.get("access_token"),
             "id_token": tokens.get("id_token"),
         },
     )
     await record_request(request, "auth.provider_login", outcome=OUTCOME_SUCCESS, method="oidc")
     return RedirectResponse(settings.oidc_post_login_redirect or "/", status_code=302)
-
-
-# --- the step-up behind an elevated grant (ADR-0013 §8/§11b) ------------------
-#
-# Lives here, beside the login callback, because every IdP callback belongs under /auth —
-# and *separate from* it, on its own path with its own transaction key, so a step-up in
-# flight cannot be completed by a login callback or the reverse. The elevation is
-# *requested* on the provider plane (`POST /provider/tenants/{t}/elevate`); this is only
-# where what came back is checked.
-
-
-#: The fixed vocabulary a step-up landing may report. A closed set on purpose: the outcome
-#: travels in a URL, and a URL is logged by every proxy between here and the browser. The
-#: console maps these to sentences, so the exception's own text — which names the tenant and
-#: quotes the configured `acr` — stays in the audit record and out of access logs.
-STEP_UP_INVALID = "invalid_callback"
-#: The IdP itself refused the authorization request and said why. Distinct from
-#: ``STEP_UP_INVALID`` because the two have nothing in common but their shape: a truncated
-#: or forged callback is a *transport* failure the operator cannot act on, while this is the
-#: directory answering — a misconfigured scope, an unknown client, a withheld consent — and
-#: is almost always a deployment fault someone can go and fix. Collapsing them cost a real
-#: debugging session: an unattached client scope surfaced as "the step-up came back
-#: incomplete", which is true of nothing that happened.
-STEP_UP_IDP_REFUSED = "idp_refused"
-STEP_UP_STATE_MISMATCH = "state_mismatch"
-STEP_UP_EXCHANGE_FAILED = "token_exchange_failed"
-STEP_UP_DECLINED = "step_up_declined"
-STEP_UP_REFUSED = "grant_refused"
-
-
-def _wants_html(request: Request) -> bool:
-    """Whether this caller is a browser following a redirect rather than an API client.
-
-    The step-up callback is the one endpoint here that is reached by **navigation** — the
-    IdP sends the operator's browser to it — so its natural response is a redirect back into
-    the console, not a JSON body the operator would see as raw text. Everything else that
-    calls it (the test suite, a script driving the flow) asks for `*/*` and keeps the
-    status codes those callers assert on, which is why this negotiates rather than switching
-    outright: the refusals below are load-bearing, and a browser affordance should not be
-    able to soften one into a 302 for a client that was checking for a 403.
-    """
-    return "text/html" in (request.headers.get("accept") or "")
-
-
-def _step_up_landing(request: Request, *, reason: str | None = None):
-    """Send the browser back to the console with the outcome of the step-up.
-
-    Only ever the deployment's own configured post-login redirect — never anything derived
-    from the callback's query string, which is attacker-influenced (the same reason the
-    tenant rides in the server-side transaction).
-    """
-    base = request.app.state.settings.oidc_post_login_redirect or "/"
-    sep = "&" if "?" in base else "?"
-    outcome = f"elevation=denied&reason={reason}" if reason else "elevation=granted"
-    return RedirectResponse(f"{base}{sep}{outcome}", status_code=302)
-
-
-@router.get("/provider/step-up/callback", include_in_schema=False)
-async def step_up_callback(
-    request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    session=Depends(require_provider_scope(SCOPE_PROVIDER_ADMIN)),
-) -> dict:
-    """Receive the step-up and, if it really happened, record the elevated grant.
-
-    This is where §11b constraint 2 is enforced: `acr_values` was a *request*, and an IdP
-    may decline it and issue a perfectly valid token anyway. Every signature here can
-    verify while no step-up occurred, so the `acr` in the **issued** token is checked — and
-    it is checked before anything is stored, so a declined step-up leaves no trace of
-    authority behind it.
-    """
-    oidc, settings = step_up_ready(request)
-    tx = request.session.pop(STEP_UP_TX, None)  # single use: a replayed callback finds nothing
-    tenant = tx.get("tenant") if isinstance(tx, dict) else None
-
-    if error:
-        # The IdP answered, and it said no. Its own error code goes into the chain — that is
-        # the whole value of this branch — but **bounded and code-only**: `error_description`
-        # is unbounded text from another system heading into an append-only record, and the
-        # code alone (`invalid_scope`, `invalid_client`, `access_denied`) is what identifies
-        # the fault. The console gets a fixed reason; the specifics stay in the audit.
-        await record_request(
-            request,
-            "provider.elevate",
-            outcome=OUTCOME_DENIED,
-            target=tenant,
-            reason="idp_refused",
-            idp_error=str(error)[:64],
-        )
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_IDP_REFUSED)
-        raise HTTPException(status_code=400, detail=f"The identity provider refused the step-up: {error}")
-
-    if not code or not state or not isinstance(tx, dict):
-        await record_request(
-            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="invalid_callback"
-        )
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_INVALID)
-        raise HTTPException(status_code=400, detail="Invalid step-up callback")
-    if not secrets.compare_digest(state, tx.get("state", "")):
-        await record_request(
-            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="state_mismatch"
-        )
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_STATE_MISMATCH)
-        raise HTTPException(status_code=400, detail="Step-up state mismatch")
-
-    try:
-        tokens = await oidc.exchange_code(
-            code=code, verifier=tx["verifier"], redirect_uri=settings.provider_step_up_redirect_url
-        )
-        claims = await oidc.validate_id_token(
-            id_token=tokens["id_token"], nonce=tx["nonce"], access_token=tokens.get("access_token")
-        )
-    except OIDCError as exc:
-        await record_request(
-            request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason="token_exchange_failed"
-        )
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_EXCHANGE_FAILED)
-        raise HTTPException(status_code=401, detail=f"Step-up failed: {exc}")
-
-    acr = claims.get("acr")
-    if not isinstance(acr, str) or acr != settings.provider_step_up_acr:
-        # The check the whole design turns on. A missing `acr` lands here too, and must:
-        # an IdP that declined the step-up and issued anyway produces exactly that.
-        reason = f"acr {acr!r} is not the configured step-up context {settings.provider_step_up_acr!r}"
-        await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=reason)
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_DECLINED)
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "The IdP did not perform the required step-up: acr_values was requested but the "
-                "issued token does not carry it (ADR-0013 §11b)."
-            ),
-        )
-
-    try:
-        grant = record_elevated_grant(
-            session,
-            tenant=tx["tenant"],
-            provider_scope=tx["scope"],
-            justification=tx["justification"],
-            claim=claims.get(settings.provider_grant_claim),
-            access_token=tokens.get("access_token"),
-            auth_time=claims.get("auth_time"),
-            now=time.time(),
-        )
-    except GrantError as exc:
-        await record_request(request, "provider.elevate", outcome=OUTCOME_DENIED, target=tenant, reason=str(exc))
-        if _wants_html(request):
-            return _step_up_landing(request, reason=STEP_UP_REFUSED)
-        raise HTTPException(status_code=403, detail=str(exc))
-
-    await _persist_session(request, session)
-    await record_request(
-        request,
-        "provider.elevate",
-        outcome=OUTCOME_SUCCESS,
-        target=grant.tenant,
-        grant=grant.id,
-        scope=grant.provider_scope,
-        justification=grant.justification,
-        expires_at=grant.expires_at,
-        single_use=grant.single_use,
-    )
-    if _wants_html(request):
-        # The browser learns *that* an elevation landed, and re-reads the grant itself from
-        # `GET /provider/elevation` — one description of a live grant, not two that can drift.
-        return _step_up_landing(request)
-    # Never the token. It is the most valuable thing this BFF holds — a bearer that raises
-    # a customer gateway's ceiling — and the browser has no use for it.
-    return {
-        "id": grant.id,
-        "tenant": grant.tenant,
-        "scope": grant.provider_scope,
-        "expires_at": grant.expires_at,
-        "single_use": grant.single_use,
-    }

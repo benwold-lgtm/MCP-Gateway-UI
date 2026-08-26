@@ -25,8 +25,8 @@ export function DeviceDetail({
   hostname: string;
   canWrite: boolean;
   /** Whether this session may *call* a tool, which is a different authority from writing a
-   *  device record: a tenant admin holds `tools:call` as an ordinary scope, a provider
-   *  operator needs a live `provider:invoke` elevation (ADR-0013 §8). Defaults to false so
+   *  device record: a tenant admin holds `tools:call` as an ordinary scope. A provider
+   *  operator currently has no path to this at all (ADR-0017 slice 6). Defaults to false so
    *  a caller that has not thought about it does not hand out a Run button. */
   canInvoke?: boolean;
   /** Shown in the tool panel when `canInvoke` is false — what would change that. */

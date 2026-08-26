@@ -26,10 +26,11 @@ import { health, mono, ui } from "../tokens";
  *    hands both back over HTTP 200. Collapsing them into "it didn't work" costs the operator
  *    the one thing they needed to know.
  *
- * Gating is the caller's job (`canInvoke`), because it differs by plane: a tenant admin holds
- * `tools:call` as an ordinary scope, while a provider operator needs a live, step-up-backed
- * `provider:invoke` elevation for the tenant they are acting on (ADR-0013 §8). Neither is
- * decided here — the BFF refuses, then the gateway refuses again on the token it is handed.
+ * Gating is the caller's job (`canInvoke`): a tenant admin holds `tools:call` as an ordinary
+ * scope. A provider operator currently has no path to this at all (ADR-0017 slice 6 removed
+ * the act-on-tenant/elevated-grant mechanism that used to gate provider tool invocation;
+ * its replacement is slice 7/8). Neither is decided here — the BFF refuses, then the gateway
+ * refuses again on the token it is handed.
  */
 export function ToolInvoke({
   hostname,

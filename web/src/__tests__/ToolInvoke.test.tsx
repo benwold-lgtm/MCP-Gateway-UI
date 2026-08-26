@@ -120,18 +120,16 @@ describe("ToolInvoke", () => {
   });
 
   it("passes an authorization refusal through in the BFF's own words", async () => {
-    // A missing elevation, an inactive pod: the upstream sentence names the remedy, and
+    // A missing scope, an inactive pod: the upstream sentence names the remedy, and
     // rewriting it into "could not invoke" would cost the operator the useful half.
     const { ApiError } = await import("../api");
-    invokeTool.mockRejectedValue(
-      new ApiError(403, "This operation needs a live 'provider:invoke' elevation"),
-    );
+    invokeTool.mockRejectedValue(new ApiError(403, "This session does not hold 'tools:call'"));
     renderPanel();
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: /^a/ }), "1");
     await user.type(screen.getByRole("textbox", { name: /^b/ }), "1");
     await user.click(screen.getByRole("button", { name: /run add/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/provider:invoke/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/tools:call/);
   });
 
   it("offers no control at all without the authority, and says what is missing", async () => {

@@ -25,7 +25,7 @@ from .catalog_client import CatalogClient
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .oidc import OIDCClient
-from .routers import api, auth, catalog, provider
+from .routers import api, auth, catalog
 from .sessions import MemorySessionStore, RedisSessionStore
 from .throttle import LoginThrottle
 
@@ -158,7 +158,6 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(api.router)
-    app.include_router(provider.router)
     app.include_router(catalog.router)
 
     @app.get("/healthz")

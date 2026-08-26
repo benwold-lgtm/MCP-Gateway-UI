@@ -22,8 +22,7 @@ signed session id. No token or role ever reaches the browser.
 from __future__ import annotations
 
 import hmac
-import time
-from typing import Any, Optional, TypedDict
+from typing import Optional, TypedDict
 
 from fastapi import HTTPException, Request
 
@@ -53,27 +52,19 @@ PLANES = (PLANE_TENANT, PLANE_PROVIDER)
 #
 #   provider:monitor      aggregate estate health; no tenant API access at all (§7)
 #   provider:admin        the everyday debugging grant within a named tenant
-#   provider:invoke       ELEVATED — invoke a tool against a tenant's live device
 #
-# `provider:credentials` (ELEVATED, credential-bearing access to a named tenant) is
-# removed as of ADR-0018 §6 (gateway repo): the gateway no longer stores a credential
-# dump a backup could disclose, so the class it gated has nothing left to name (see the
-# gateway's own removal, "provider:credentials disappears as a category"). This was the
-# last user of `single_use` grants; `provider:invoke` is not single-use, so the
-# consumption mechanism (`spend_elevated_grant` et al., below) is kept as generic
-# infrastructure for a future single-use class rather than removed with this one.
-#
-# The remaining elevated grant is time-boxed, individually justified and separately
-# audited (§5a/§8); it is not reachable by widening a group mapping.
+# `provider:invoke` (ELEVATED — invoke a tool against a tenant's live device) and
+# `provider:credentials` (ELEVATED, credential-bearing access to a named tenant) are both
+# gone: `provider:credentials` was removed with its mechanism at ADR-0018 §6 (gateway
+# repo); `provider:invoke` is removed here at ADR-0017 slice 6, along with the
+# act-on-tenant/elevated-grant machinery it named a class of (`grants.py`, deleted). What a
+# provider operator may eventually request against a tenant's gateway is ADR-0017's
+# delegated support-grant scopes (slice 7) — a different vocabulary, not a re-mechanized
+# version of this one, so it is not reintroduced speculatively here.
 SCOPE_PROVIDER_MONITOR = "provider:monitor"
 SCOPE_PROVIDER_ADMIN = "provider:admin"
-SCOPE_PROVIDER_INVOKE = "provider:invoke"
 
-PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN, SCOPE_PROVIDER_INVOKE})
-
-# Elevated grants are never handed out by a group mapping — see §5a. Mapping a group
-# straight to one would rebuild the ambient authority §4 exists to remove.
-ELEVATED_PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_INVOKE})
+PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN})
 
 
 def provider_scopes_for_groups(groups, mapping: dict[str, str]) -> frozenset[str]:
@@ -97,12 +88,6 @@ def provider_scopes_for_groups(groups, mapping: dict[str, str]) -> frozenset[str
             raise ValueError(
                 f"provider group {group!r} maps to {scope!r}, which is not one of "
                 f"{sorted(PROVIDER_SCOPES)} — provider mappings may only grant provider scopes"
-            )
-        if scope in ELEVATED_PROVIDER_SCOPES:
-            raise ValueError(
-                f"provider group {group!r} maps to the elevated scope {scope!r}. Elevated grants "
-                f"are time-boxed, individually justified and separately audited (ADR-0013 §5a/§8) — "
-                f"they are not granted by group membership."
             )
         out.add(scope)
     return frozenset(out)
@@ -190,63 +175,6 @@ async def _persist_session(request: Request, session: dict) -> None:
     sessions.cache(request, session)
 
 
-#: Where :func:`require_elevated` records the class a route needs. Read by
-#: :func:`upstream_bearer` and by the relay's retry decision, and set nowhere else.
-STATE_ELEVATED_SCOPE = "elevated_scope"
-
-
-def elevated_scope_wanted(request: Any) -> Optional[str]:
-    """The elevated class this request declared it needs, or ``None``.
-
-    ``None`` is the answer for every route that did not ask, which is what keeps the
-    elevated credential off routine traffic. A route that *should* have asked and did not
-    relays the ordinary token and is refused by the gateway — the safe direction, and a
-    loud one.
-    """
-    return getattr(getattr(request, "state", None), STATE_ELEVATED_SCOPE, None)
-
-
-def require_elevated(provider_scope: str):
-    """Dependency for a route whose whole purpose is an elevated capability (§5a/§8/§11).
-
-    Two jobs, and **neither is the authorization boundary** — the gateway verifies the grant
-    claim on the token it is handed, and that check is deliberately not reproducible here
-    (§11c: the side that chooses a value cannot be the side that authorizes it):
-
-    * **Mark the request** so :func:`upstream_bearer` hands over the step-up token. Without
-      a mark the elevated credential is never relayed at all.
-    * **Refuse early** when a provider session holds no matching elevation, so an operator
-      is told to elevate instead of collecting an opaque 401 from upstream — and so a
-      single-use grant is not spent on a request that was going to fail anyway.
-
-    Tenant-plane and password sessions pass straight through: they have no elevation to
-    hold, and their authority on these routes is decided by the gateway and by the role gate
-    beside this dependency respectively.
-    """
-
-    async def _dep(request: Request) -> None:
-        setattr(request.state, STATE_ELEVATED_SCOPE, provider_scope)
-        sess = await current_session(request)
-        if session_plane(sess) != PLANE_PROVIDER:
-            return
-        from .grants import active_elevated_grant, active_grant
-
-        now = time.time()
-        act = active_grant(sess, now=now)
-        held = active_elevated_grant(sess, tenant=act.tenant, now=now) if act is not None else None
-        if held is None or held.provider_scope != provider_scope:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"This operation needs a live {provider_scope!r} elevation for this tenant. "
-                    "Elevations are per-operation and step-up backed (ADR-0013 §8); acquire one "
-                    "and retry."
-                ),
-            )
-
-    return _dep
-
-
 async def deny_password_session(request: Request) -> None:
     """Refuse the local break-glass login on routes that hand back credentials.
 
@@ -285,64 +213,28 @@ async def upstream_bearer(request: Request) -> Optional[str]:
     OIDC session → the user's access token (per-user identity, F-30). Password session
     → None, so the GatewayClient falls back to its configured admin token.
 
-    **A provider-plane session must never reach that fallback** (ADR-0013 §4/§5a). Returning
-    ``None`` for one is not "no credential" — the ``GatewayClient`` carries the tenant
-    stack's *admin* key as its default header, so a fall-through would present a provider
-    operator to the tenant's gateway as gateway ``admin``: above the §5a ceiling that makes
-    provider access everyday debugging, carrying `tools:call` and every `backup:*` with no
-    step-up and no grant claim, and recorded in the tenant's audit as a shared key rather
-    than a human. That is precisely the outcome the second-issuer design (§6) exists to
-    replace, so it fails closed here rather than being avoided by convention upstream.
+    **A provider-plane session must never reach that fallback** (ADR-0013 §4/§5a legacy
+    reasoning, still true). Returning ``None`` for one is not "no credential" — the
+    ``GatewayClient`` carries the tenant stack's *admin* key as its default header, so a
+    fall-through would present a provider operator to the tenant's gateway as gateway
+    ``admin``. This fails closed rather than being avoided by convention upstream.
+
+    ADR-0017 slice 6: the act-on-tenant/elevated-grant credential this used to select
+    between is gone. `require_role` now refuses a provider-plane session before any relay
+    call reaches here at all, so this branch should be unreachable — it stays as a second,
+    independent fail-closed check rather than trusting that ordering, since a bearer
+    function is exactly the place a reachability assumption paying off wrong would be worst.
+    ADR-0017's replacement (a delegated, gateway-minted support grant) is slice 7.
     """
     sess = await current_session(request)
     if session_plane(sess) == PLANE_PROVIDER:
-        from .grants import active_elevated_grant, active_grant, spend_elevated_grant
-
-        now = time.time()
-        act = active_grant(sess, now=now)
-        if act is not None:
-            # **Only routes that asked for it get the elevated credential.** Handing it to
-            # every relayed request while an elevation is live looks harmless — the step-up
-            # token is a strict superset — but the gateway consumes a single-use grant on
-            # *first validation of the token*, whatever route it was for. So one background
-            # `GET /api/devices` between the elevation and the operation it was raised for
-            # burns the grant on a device list, and the real call is refused. The mark is
-            # set by `require_elevated`, which is the only thing that can set it.
-            wanted = elevated_scope_wanted(request)
-            elevated = active_elevated_grant(sess, tenant=act.tenant, now=now)
-            # **One comparison carries both properties.** It has to match the class, because
-            # an invoke elevation cannot pay for a credentials route — the two differ in
-            # lifetime and single-use, so the wrong one is a different grant, not a narrower
-            # one. And a route that never declared a class compares against `None`, which no
-            # real grant equals, so the same test is what keeps the credential off routine
-            # traffic. Written as two guards first; mutation testing showed each one masked
-            # the other, so the defect this exists to prevent could return with every
-            # mutation still killed. Neither was individually falsifiable. This is.
-            if elevated is not None and elevated.provider_scope == wanted:
-                # The step-up token carries the `mcp_grant` claim the gateway verifies, and
-                # the gateway *unions* the granted scopes onto the principal's own — so this
-                # token is a strict superset of the ordinary one and there is no per-route
-                # choice to get wrong.
-                #
-                # Spending happens here, at the moment the credential is handed out, because
-                # that is what the gateway's own consumption measures: it consumes on first
-                # validation, so a second request bearing the same token is refused there.
-                # Dropping it here keeps the BFF's audit honest about "one operation"
-                # instead of leaving the bound entirely downstream.
-                spent = spend_elevated_grant(sess)
-                if spent is not None:
-                    await _persist_session(request, sess)
-                return elevated.access_token
-        token = sess.get("access_token") if sess else None
-        if not token:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "A provider session has no credential to present to this tenant's gateway. "
-                    "It is never relayed with the stack's admin key (ADR-0013 §4/§5a)."
-                ),
-            )
-        return token
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "A provider session has no path to a tenant's gateway right now. ADR-0013's "
+                "act-on-tenant grant was removed; its ADR-0017 replacement has not shipped yet."
+            ),
+        )
     if sess and sess.get("kind") == "oidc":
         return sess.get("access_token")
     return None
@@ -362,25 +254,13 @@ def require_role(*allowed: str):
     401 if no session; for password sessions, 403 unless the role is permitted. OIDC
     sessions pass through — the gateway is the authorization point.
 
-    A provider-plane session reaches this plane **only while holding a live act-on-tenant
-    grant naming the tenant this deployment serves** (ADR-0013 §4). Cross-tenant power is
-    exercised, not held: the grant is a discrete, audited, time-boxed act, and everything
-    about it — one tenant at a time, an absolute window, a justification — lives in
-    `grants.py`.
-
-    Three parts to the check, and all are load-bearing:
-
-    * **`settings.tenant_id` must be configured.** Empty is the default and admits nobody,
-      which is what keeps every existing tenant-stack deployment behaving exactly as it did
-      — and it fails closed, since a deployment that cannot name itself cannot verify that
-      a grant names *it*.
-    * **The grant must name that tenant.** Without the comparison, "act on tenant X" is
-      "act on any tenant", which is §4 inverted rather than implemented.
-    * **The session must have a credential of its own to present.** The grant is the BFF's
-      authorization to proceed; it is not a credential. Admitting a session with nothing to
-      relay does not produce a refusal upstream — it produces a request carrying the stack's
-      *admin* key, which is above the §5a ceiling and attributable to nobody. Checked at the
-      gate so the refusal is one clean 403 here rather than a surprise mid-relay.
+    **ADR-0017 slice 6: a provider-plane session cannot reach this plane at all, for now.**
+    ADR-0013 §4's act-on-tenant grant — the mechanism that used to let a provider session in
+    here, one tenant at a time, on a discrete audited act — was removed along with the rest
+    of that design (`grants.py` is gone). Its replacement is a tenant-delegated, gateway-
+    minted support grant the provider polls for (ADR-0017), which is slice 7, not yet built.
+    Refusing unconditionally here is deliberate: it fails closed rather than leave a gap
+    where "the old gate is gone" quietly became "no gate at all."
     """
 
     async def _dep(request: Request) -> SessionInfo:
@@ -388,32 +268,14 @@ def require_role(*allowed: str):
         if not sess:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if session_plane(sess) == PLANE_PROVIDER:
-            from .grants import active_grant
-
-            tenant_id = getattr(request.app.state.settings, "tenant_id", "") or ""
-            grant = active_grant(sess, now=time.time())
-            # Grant first, credential second — deliberately. "You have not authorized an act
-            # on this tenant" is the condition an operator is actually in, and it is the one
-            # they can fix; leading with the credential message would answer a question they
-            # did not ask. Both refuse, so the order costs nothing but clarity.
-            if not tenant_id or grant is None or grant.tenant != tenant_id:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "This is the tenant data plane; a provider session reaches it only while "
-                        "holding a live 'act on tenant' grant for this tenant (ADR-0013 §4)."
-                    ),
-                )
-            if not sess.get("access_token"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "A provider session holds no credential for this tenant's gateway, so it "
-                        "cannot reach the tenant data plane — and it is never relayed with the "
-                        "stack's admin key (ADR-0013 §4/§5a)."
-                    ),
-                )
-            return sess
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "The tenant data plane is not reachable from a provider session right now. "
+                    "ADR-0013's act-on-tenant grant was removed; its ADR-0017 replacement (a "
+                    "support grant delegated by the tenant) has not shipped yet."
+                ),
+            )
         if sess.get("kind") == "oidc":
             # Authorization is delegated to the gateway (it sees the user's real scopes).
             return sess

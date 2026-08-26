@@ -23,7 +23,6 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
           oidc_enabled: false,
           password_login: true,
           provider_enabled: false,
-          step_up_enabled: false,
         }),
       );
   }, []);

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // ADR-0020 §1/§2, slice 3 — the minimal provider console surface. The one property worth a
-// dedicated test is the same one `ActOnTenant.test.tsx` calls load-bearing for its own slice:
-// a failure must read differently from an empty result. "The catalog is unreachable" and
+// dedicated test is a shape that recurs across this console's other panels too: a failure
+// must read differently from an empty result. "The catalog is unreachable" and
 // "nothing has been curated yet" are different problems with different fixes (§7), and a
 // console that collapses them into the same blank list teaches an operator the wrong one.
 import { render, screen, waitFor } from "@testing-library/react";
