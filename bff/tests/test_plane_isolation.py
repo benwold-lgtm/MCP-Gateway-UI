@@ -241,11 +241,10 @@ def test_a_provider_session_holds_only_provider_scopes(provider_console):
 
 
 def test_a_provider_session_is_refused_on_the_tenant_data_plane(provider_console):
-    """No path in — the state of every provider session now (ADR-0017 slice 6).
-
-    `require_role` refuses a provider-plane session unconditionally: the act-on-tenant grant
-    that used to lift this, for one named tenant, for one hour, with a reason in the chain,
-    is gone (`grants.py` deleted). ADR-0017's replacement (slice 7) has not shipped yet.
+    """No delegated support grant, no data plane — the state of every provider session that
+    has not raised and had a request approved (ADR-0017 §7, slice 7 — the mechanism that
+    admits a provider session once it *does* hold one is proven in
+    `test_provider_support_requests.py` / `test_tenant_support_requests.py`).
     """
     c, app = provider_console
     called = []
@@ -264,6 +263,67 @@ def test_a_provider_session_is_refused_on_the_tenant_data_plane(provider_console
         resp = c.get(path)
         assert resp.status_code == 403, f"{path} admitted a provider session"
     assert called == [], "a provider session reached the gateway with no grant"
+
+
+def test_a_provider_session_holding_a_support_grant_reaches_the_data_plane(provider_console):
+    """The positive case: once a delegated support grant is held, the tenant data plane
+    relays with *that* credential — never the stack's admin key."""
+    c, app = provider_console
+    seen_bearer = []
+
+    async def _ok(path, bearer=None):
+        seen_bearer.append(bearer)
+        return httpx.Response(200, json={"devices": []})
+
+    app.state.gateway.get = _ok
+    _seed_session(
+        c,
+        app,
+        {
+            "kind": "oidc",
+            "plane": PLANE_PROVIDER,
+            "sub": "carol",
+            "provider_scopes": ["provider:admin"],
+            "support_grant": {"grant_id": "g1", "credential": "sgr_abc123"},
+        },
+    )
+
+    resp = c.get("/api/devices")
+
+    assert resp.status_code == 200
+    assert seen_bearer == ["sgr_abc123"]
+
+
+def test_a_401d_support_grant_is_cleared_from_the_session(provider_console):
+    """The gateway checks a support grant live on every request — a 401 means it is
+    genuinely gone (revoked or expired), not a caching problem the BFF should paper over.
+    Clearing it is what makes the *next* read honestly report no grant held, rather than a
+    phantom stale one (`relay._drop_dead_support_grant`)."""
+    c, app = provider_console
+
+    async def _dead(path, bearer=None):
+        return httpx.Response(401, json={"detail": "invalid or missing token"})
+
+    app.state.gateway.get = _dead
+    _seed_session(
+        c,
+        app,
+        {
+            "kind": "oidc",
+            "plane": PLANE_PROVIDER,
+            "sub": "carol",
+            "provider_scopes": ["provider:admin"],
+            "support_grant": {"grant_id": "g1", "credential": "sgr_stale"},
+        },
+    )
+
+    resp = c.get("/api/devices")
+    assert resp.status_code == 401
+
+    live = app.state.sessions._data
+    sid = next(iter(live))
+    _, stored = live[sid]
+    assert "support_grant" not in stored
 
 
 def test_a_tenant_session_still_works_unchanged(provider_console):
