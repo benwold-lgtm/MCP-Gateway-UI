@@ -20,10 +20,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from . import sessions
-from .security import PLANE_PROVIDER, _persist_session, session_plane, upstream_bearer
+from .security import PLANE_PROVIDER, _persist_session, current_session, session_plane, upstream_bearer
 
 
 async def refresh_oidc_access_token(request: Request) -> Optional[str]:
@@ -80,9 +80,44 @@ async def _drop_dead_support_grant(request: Request) -> None:
     await _persist_session(request, sess)
 
 
+async def _gateway_for(request: Request):
+    """Which `GatewayClient` a relay should use for this request.
+
+    A tenant or password session always uses this process's own configured gateway — the
+    one fixed target a tenant-stack BFF has always had. A provider session holding a
+    delegated support grant (ADR-0017 §7) instead resolves to *that tenant's* gateway from
+    the pool (ADR-0021, scoped): `app.state.gateway` on a provider deployment names no
+    tenant in particular, so sending a tenant-scoped credential to it would reach the wrong
+    backend outright, not merely an inconvenient one.
+
+    By the time this runs, `require_role`/`upstream_bearer` have already confirmed a
+    provider session holds *some* credential, so the only failures possible here are
+    inconsistencies (a grant with no recorded tenant, or naming one the registry no longer
+    has) — both fail closed with a 500 rather than silently falling back to the ambiguous
+    single-gateway default.
+    """
+    sess = await current_session(request)
+    if session_plane(sess) != PLANE_PROVIDER:
+        return request.app.state.gateway
+    grant = (sess or {}).get("support_grant")
+    tenant_id = grant.get("tenant_id") if isinstance(grant, dict) else None
+    if not tenant_id:
+        raise HTTPException(
+            status_code=500,
+            detail="This provider session's support grant has no recorded tenant to relay to.",
+        )
+    try:
+        return request.app.state.gateway_pool.get(tenant_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"This provider session's support grant names a tenant the registry no longer has: {tenant_id!r}.",
+        ) from None
+
+
 async def relay_get(request: Request, path: str) -> httpx.Response:
     """GET the gateway, refreshing the OIDC token and retrying once on a 401."""
-    gw = request.app.state.gateway
+    gw = await _gateway_for(request)
     resp = await gw.get(path, bearer=await upstream_bearer(request))
     if resp.status_code == 401:
         refreshed = await refresh_oidc_access_token(request)
@@ -102,7 +137,7 @@ async def relay_request(
     headers: Optional[dict] = None,
 ) -> httpx.Response:
     """Proxy a method to the gateway, refreshing the OIDC token and retrying once on a 401."""
-    gw = request.app.state.gateway
+    gw = await _gateway_for(request)
     resp = await gw.request(method, path, json=json, bearer=await upstream_bearer(request), headers=headers)
     if resp.status_code == 401:
         refreshed = await refresh_oidc_access_token(request)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
-import type { HeldSupportGrant } from "../types";
+import type { HeldSupportGrant, TenantSummary } from "../types";
 import { health, ui } from "../tokens";
 
 /** The tenant vocabulary a provider operator may request (ADR-0017 §7).
@@ -19,7 +19,7 @@ const POLL_INTERVAL_MS = 3000;
 type Phase =
   | { kind: "idle" }
   | { kind: "raising" }
-  | { kind: "pending"; requestId: string }
+  | { kind: "pending"; requestId: string; tenantId: string }
   | { kind: "rejected" }
   | { kind: "error"; message: string };
 
@@ -49,6 +49,9 @@ export function SupportRequestPanel({
   const [scopes, setScopes] = useState<Set<string>>(new Set());
   const [justification, setJustification] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tenants, setTenants] = useState<TenantSummary[]>([]);
+  const [tenantsError, setTenantsError] = useState<string | null>(null);
+  const [tenantId, setTenantId] = useState("");
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -56,6 +59,21 @@ export function SupportRequestPanel({
       if (timer.current != null) window.clearInterval(timer.current);
     };
   }, []);
+
+  // The tenant directory (ADR-0021 scoped) — which tenant to raise this request against.
+  // Fetched once: the registry is GitOps-managed, not something that changes mid-session.
+  useEffect(() => {
+    api.provider
+      .listTenants()
+      .then((result) => setTenants(result.tenants))
+      .catch((err) =>
+        setTenantsError(err instanceof ApiError ? err.message : "Could not load the tenant directory"),
+      );
+  }, []);
+
+  function tenantName(id: string): string {
+    return tenants.find((t) => t.tenant_id === id)?.display_name ?? id;
+  }
 
   function toggleScope(scope: string) {
     setScopes((prev) => {
@@ -70,12 +88,13 @@ export function SupportRequestPanel({
     setPhase({ kind: "raising" });
     try {
       const result = await api.provider.raiseSupportRequest({
+        tenant_id: tenantId,
         requested_scopes: [...scopes],
         justification,
       });
-      setPhase({ kind: "pending", requestId: result.request_id });
+      setPhase({ kind: "pending", requestId: result.request_id, tenantId });
       timer.current = window.setInterval(() => {
-        void poll(result.request_id);
+        void poll(result.request_id, tenantId);
       }, POLL_INTERVAL_MS);
     } catch (err) {
       setPhase({
@@ -85,12 +104,12 @@ export function SupportRequestPanel({
     }
   }
 
-  async function poll(requestId: string) {
+  async function poll(requestId: string, forTenantId: string) {
     try {
-      const result = await api.provider.pollSupportRequest(requestId);
+      const result = await api.provider.pollSupportRequest(requestId, forTenantId);
       if (result.status === "approved") {
         if (timer.current != null) window.clearInterval(timer.current);
-        onGranted({ held: true, grant_id: result.grant_id });
+        onGranted({ held: true, grant_id: result.grant_id, tenant_id: forTenantId });
       } else if (result.status === "rejected") {
         if (timer.current != null) window.clearInterval(timer.current);
         setPhase({ kind: "rejected" });
@@ -122,8 +141,9 @@ export function SupportRequestPanel({
     return (
       <section style={{ display: "grid", gap: 8, maxWidth: 480 }}>
         <p style={{ color: ui.inkSoft }}>
-          A tenant admin approved a support grant (<code>{held.grant_id}</code>). Devices, Monitoring and
-          Backup are reachable while it lasts — the tenant can end it at any time from their own console.
+          <strong>{tenantName(held.tenant_id)}</strong> approved a support grant (<code>{held.grant_id}</code>
+          ). Devices, Monitoring and Backup are reachable while it lasts — the tenant can end it at any time
+          from their own console.
         </p>
         <button onClick={() => void release()} disabled={busy} style={{ justifySelf: "start" }}>
           Release grant
@@ -135,7 +155,9 @@ export function SupportRequestPanel({
   if (phase.kind === "pending") {
     return (
       <section style={{ display: "grid", gap: 8, maxWidth: 480 }}>
-        <p style={{ color: ui.inkSoft }}>Waiting for a tenant admin to approve or reject this request…</p>
+        <p style={{ color: ui.inkSoft }}>
+          Waiting for {tenantName(phase.tenantId)} to approve or reject this request…
+        </p>
       </section>
     );
   }
@@ -148,6 +170,18 @@ export function SupportRequestPanel({
       </p>
       {phase.kind === "rejected" && <p style={{ color: health.fail }}>The tenant rejected this request.</p>}
       {phase.kind === "error" && <p style={{ color: health.fail }}>{phase.message}</p>}
+      {tenantsError && <p style={{ color: health.fail }}>{tenantsError}</p>}
+      <label style={{ display: "grid", gap: 4 }}>
+        Tenant
+        <select value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+          <option value="">— select a tenant —</option>
+          {tenants.map((t) => (
+            <option key={t.tenant_id} value={t.tenant_id}>
+              {t.display_name}
+            </option>
+          ))}
+        </select>
+      </label>
       <div style={{ display: "grid", gap: 4 }}>
         {OFFERED_SCOPES.map((scope) => (
           <label key={scope} style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -164,7 +198,7 @@ export function SupportRequestPanel({
       />
       <button
         onClick={() => void raise()}
-        disabled={phase.kind === "raising" || scopes.size === 0 || !justification.trim()}
+        disabled={phase.kind === "raising" || !tenantId || scopes.size === 0 || !justification.trim()}
         style={{ justifySelf: "start" }}
       >
         Raise request

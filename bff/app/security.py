@@ -136,11 +136,15 @@ class SessionInfo(TypedDict, total=False):
     refresh_token: str  # oidc sessions — server-side only, used for silent refresh
     id_token: str  # oidc sessions — id_token_hint for RP-initiated logout
     # ADR-0017 slice 7 — a delegated support grant a provider session polled from a tenant's
-    # own gateway: {"grant_id": str, "credential": str}. No expiry or scope list is cached
-    # here on purpose (see `security.upstream_bearer`'s docstring) — the gateway checks the
+    # own gateway: {"tenant_id": str, "grant_id": str, "credential": str}. `tenant_id` (added
+    # ADR-0021 scoped slice 3) is what `relay._gateway_for` resolves against the tenant
+    # gateway pool — a provider console can reach more than one tenant, so the credential
+    # alone no longer says where to send it. No expiry or scope list is cached here on
+    # purpose (see `security.upstream_bearer`'s docstring) — the gateway checks the
     # credential live on every request, and the BFF follows that same posture rather than
     # keeping a second, potentially-stale opinion about whether it is still good or what it
-    # covers.
+    # covers. Only one grant is held per session today — raising against a second tenant
+    # overwrites this rather than adding a second entry (`routers/provider.py`).
     support_grant: dict
 
 

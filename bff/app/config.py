@@ -100,6 +100,13 @@ class Settings:
     # ADR-0017 slice 6 (`grants.py`, `routers/provider.py` — deleted; see those commits).
     # Not reintroduced speculatively: ADR-0017's replacement (slice 7) has a different shape
     # and will need its own settings, not a renaming of these.
+    #
+    # The tenant registry (ADR-0021, scoped) — the provider console's own directory of
+    # which tenants exist and where each one's gateway lives, as a JSON array of
+    # {tenant_id, display_name, gateway_url}. See tenant_registry.py. Populated by tenant
+    # provisioning fulfilment (ADR-0024), never written by the console itself. Empty is a
+    # valid "no tenants yet", not a config error.
+    provider_tenant_registry: str = ""
 
     # --- Audit (gateway F-57 model, ADR-0013 §9/§10) --------------------------
     # File the hash-chained audit is appended to. Empty → records still chain and still
@@ -221,6 +228,9 @@ def load_settings() -> Settings:
         provider_oidc_scopes=os.getenv("PROVIDER_OIDC_SCOPES", "openid profile email"),
         provider_group_scopes=_json_map("PROVIDER_GROUP_SCOPES"),
         provider_groups_claim=os.getenv("PROVIDER_GROUPS_CLAIM", "groups"),
+        # Not itself a secret, but the same env-or-file shape is convenient for a value a
+        # GitOps pipeline mounts as a file rather than an inline env var.
+        provider_tenant_registry=_secret("PROVIDER_TENANT_REGISTRY", "PROVIDER_TENANT_REGISTRY_FILE"),
         # Audit. AUDIT_PATH defaults under BFF_STATE_DIR when the lite bootstrap is in
         # play, so a home box gets a durable, re-seedable chain without configuring one.
         audit_path=os.getenv("AUDIT_PATH", ""),

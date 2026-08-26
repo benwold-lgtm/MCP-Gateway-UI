@@ -2,20 +2,22 @@
 //
 // ADR-0017 §7, slice 8 — the raise/poll transaction in isolation. `ProviderConsole.test.tsx`
 // proves the shell reads `held` correctly; this proves the panel drives raising and polling
-// to that state.
+// to that state. ADR-0021 (scoped) slice 4 added the tenant selector — a provider console can
+// reach more than one tenant now, so raising and polling both name one.
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SupportRequestPanel } from "../components/SupportRequestPanel";
 
-const { raiseSupportRequest, pollSupportRequest, releaseSupportGrant } = vi.hoisted(() => ({
+const { raiseSupportRequest, pollSupportRequest, releaseSupportGrant, listTenants } = vi.hoisted(() => ({
   raiseSupportRequest: vi.fn(),
   pollSupportRequest: vi.fn(),
   releaseSupportGrant: vi.fn(),
+  listTenants: vi.fn(),
 }));
 
 vi.mock("../api", () => ({
-  api: { provider: { raiseSupportRequest, pollSupportRequest, releaseSupportGrant } },
+  api: { provider: { raiseSupportRequest, pollSupportRequest, releaseSupportGrant, listTenants } },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -26,11 +28,18 @@ vi.mock("../api", () => ({
   },
 }));
 
+const TENANTS = [
+  { tenant_id: "t-1", display_name: "Acme Inc" },
+  { tenant_id: "t-2", display_name: "Zeta Corp" },
+];
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   raiseSupportRequest.mockReset();
   pollSupportRequest.mockReset();
   releaseSupportGrant.mockReset();
+  listTenants.mockReset();
+  listTenants.mockResolvedValue({ tenants: TENANTS });
 });
 
 afterEach(() => {
@@ -38,18 +47,20 @@ afterEach(() => {
 });
 
 async function raise(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(() => expect(screen.getByRole("option", { name: "Acme Inc" })).toBeInTheDocument());
+  await user.selectOptions(screen.getByLabelText("Tenant"), "t-1");
   await user.click(screen.getByLabelText("devices:read"));
   await user.type(screen.getByPlaceholderText(/justification/i), "INC-9001");
   await user.click(screen.getByRole("button", { name: /raise request/i }));
 }
 
 describe("SupportRequestPanel", () => {
-  it("cannot raise until a scope is picked and a justification is written", async () => {
+  it("cannot raise until a tenant is picked, a scope is picked and a justification is written", async () => {
     render(<SupportRequestPanel held={null} onGranted={vi.fn()} onReleased={vi.fn()} />);
     expect(screen.getByRole("button", { name: /raise request/i })).toBeDisabled();
   });
 
-  it("raises with the picked scopes and justification", async () => {
+  it("raises against the picked tenant with the picked scopes and justification", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     raiseSupportRequest.mockResolvedValue({
       request_id: "r1",
@@ -62,13 +73,14 @@ describe("SupportRequestPanel", () => {
     await raise(user);
 
     expect(raiseSupportRequest).toHaveBeenCalledWith({
+      tenant_id: "t-1",
       requested_scopes: ["devices:read"],
       justification: "INC-9001",
     });
-    expect(await screen.findByText(/waiting for a tenant admin/i)).toBeInTheDocument();
+    expect(await screen.findByText(/waiting for acme inc/i)).toBeInTheDocument();
   });
 
-  it("polls until approved, then reports the grant up", async () => {
+  it("polls the same tenant it raised against, then reports the grant up", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const onGranted = vi.fn();
     raiseSupportRequest.mockResolvedValue({ request_id: "r1", requested_scopes: [], expires_at: 1 });
@@ -87,7 +99,10 @@ describe("SupportRequestPanel", () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
 
-    await waitFor(() => expect(onGranted).toHaveBeenCalledWith({ held: true, grant_id: "g1" }));
+    expect(pollSupportRequest).toHaveBeenCalledWith("r1", "t-1");
+    await waitFor(() =>
+      expect(onGranted).toHaveBeenCalledWith({ held: true, grant_id: "g1", tenant_id: "t-1" }),
+    );
   });
 
   it("stops polling and reports a rejection", async () => {
@@ -109,12 +124,29 @@ describe("SupportRequestPanel", () => {
     expect(pollSupportRequest.mock.calls.length).toBe(pollCallsAtRejection);
   });
 
-  it("never renders the credential itself, only the grant id, once held", () => {
+  it("shows the held tenant's display name and never renders the credential itself", async () => {
     render(
-      <SupportRequestPanel held={{ held: true, grant_id: "g1" }} onGranted={vi.fn()} onReleased={vi.fn()} />,
+      <SupportRequestPanel
+        held={{ held: true, grant_id: "g1", tenant_id: "t-1" }}
+        onGranted={vi.fn()}
+        onReleased={vi.fn()}
+      />,
     );
+    expect(await screen.findByText("Acme Inc", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("g1", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText(/sgr_/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the raw tenant_id if the directory hasn't loaded it", async () => {
+    listTenants.mockResolvedValue({ tenants: [] });
+    render(
+      <SupportRequestPanel
+        held={{ held: true, grant_id: "g1", tenant_id: "unknown-tenant" }}
+        onGranted={vi.fn()}
+        onReleased={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("unknown-tenant", { exact: false })).toBeInTheDocument();
   });
 
   it("releases the grant and reports it up", async () => {
@@ -123,7 +155,7 @@ describe("SupportRequestPanel", () => {
     releaseSupportGrant.mockResolvedValue({ released: "g1" });
     render(
       <SupportRequestPanel
-        held={{ held: true, grant_id: "g1" }}
+        held={{ held: true, grant_id: "g1", tenant_id: "t-1" }}
         onGranted={vi.fn()}
         onReleased={onReleased}
       />,
