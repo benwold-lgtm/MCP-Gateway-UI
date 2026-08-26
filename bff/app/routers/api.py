@@ -13,12 +13,14 @@ from __future__ import annotations
 import secrets
 import time
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, outcome_for, record_request
+from ..audit import OUTCOME_DENIED, OUTCOME_ERROR, OUTCOME_SUCCESS, outcome_for, record_request
+from ..catalog_client import CatalogUnavailable
 from ..relay import relay_get, relay_request
 from ..security import (
     SCOPE_PROVIDER_INVOKE,
@@ -126,6 +128,144 @@ async def update_device(hostname: str, request: Request) -> JSONResponse:
 async def delete_device(hostname: str, request: Request) -> JSONResponse:
     resp = await relay_request(request, "DELETE", f"/devices/{hostname}")
     return await _audited(request, resp, "device.delete", target=hostname)
+
+
+# --- Catalog claim (tenant plane, ADR-0020 §4) --------------------------------
+#
+# The claim itself is not a new gateway capability: it merges a device type's curated
+# template with the tenant-supplied host/credential and calls the gateway's ordinary
+# `POST /devices` (register_device above), unmodified. This does not touch or gate that
+# route — the free-type DeviceForm keeps working exactly as it does today (ADR-0020 §3's
+# "claiming is the only path" is a separate, not-yet-made decision, deliberately deferred).
+
+
+def _tenant_id(request: Request) -> str:
+    tenant_id = getattr(request.app.state.settings, "tenant_id", "") or ""
+    if not tenant_id:
+        # Fails closed like every other TENANT_ID-gated capability in this BFF (see
+        # security.py's act-on-tenant check) rather than guessing which tenant a
+        # catalog lookup is "for".
+        raise HTTPException(status_code=503, detail="TENANT_ID not configured on this BFF")
+    return tenant_id
+
+
+async def _assigned_types(request: Request, tenant_id: str) -> list[dict]:
+    catalog = request.app.state.catalog
+    try:
+        resp = await catalog.request("GET", f"/tenants/{tenant_id}/assignments")
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except ValueError:
+            detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    return resp.json()["device_types"]
+
+
+@router.get("/catalog/device-types", dependencies=[_any])
+async def tenant_catalog(request: Request) -> JSONResponse:
+    """This tenant's currently assigned device types (ADR-0020 §2) — what the "claim from
+    catalog" view lists. Not assigned reads as an empty list here deliberately: unlike the
+    catalog service itself, THIS route's own unavailability is what must read as a named
+    condition (the 503 above), not the ordinary "nothing assigned" case."""
+    tenant_id = _tenant_id(request)
+    return JSONResponse(content={"device_types": await _assigned_types(request, tenant_id)})
+
+
+@router.get("/catalog/device-types/{type_id}", dependencies=[_any])
+async def tenant_catalog_detail(type_id: str, request: Request) -> JSONResponse:
+    """One assigned type's version detail — what the claim form reads to know which
+    credential fields to ask for (`auth_kind`). Scoped to types actually assigned to this
+    tenant: unlike the provider console, a tenant has no legitimate reason to browse the
+    wider catalog, only what has been offered to them."""
+    tenant_id = _tenant_id(request)
+    assigned = {t["id"] for t in await _assigned_types(request, tenant_id)}
+    if type_id not in assigned:
+        raise HTTPException(status_code=404, detail="not assigned to this tenant")
+    catalog = request.app.state.catalog
+    try:
+        resp = await catalog.request("GET", f"/device-types/{type_id}")
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _passthrough(resp)
+
+
+@router.post("/catalog/{type_id}/claim", dependencies=[_admin])
+async def claim_device_type(type_id: str, request: Request) -> JSONResponse:
+    """Merge the device type's current curated version with the tenant-supplied host/
+    credential and register it via the gateway's existing `POST /devices` (ADR-0020 §4).
+
+    Two calls, two audit records, matching this BFF's existing two-call pattern (e.g.
+    restore's prepare+download): the device registration itself, and a best-effort
+    follow-up to the catalog service pinning which version was claimed. The second call's
+    failure does NOT undo the first's success — the device is already real by then — it is
+    instead surfaced as its own named audit outcome (`device.claim.pin_unrecorded`) so an
+    operator can find and backfill it once the catalog recovers, rather than being silently
+    lost, which would just leave slice 5's upgrade-offer diff with no baseline and no trace
+    of why.
+    """
+    tenant_id = _tenant_id(request)
+    assigned = {t["id"] for t in await _assigned_types(request, tenant_id)}
+    if type_id not in assigned:
+        raise HTTPException(status_code=403, detail="this device type is not assigned to your tenant")
+
+    catalog = request.app.state.catalog
+    try:
+        detail_resp = await catalog.request("GET", f"/device-types/{type_id}")
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if detail_resp.status_code != 200:
+        return _passthrough(detail_resp)
+    versions = detail_resp.json()["versions"]
+    current = max(versions, key=lambda v: v["version"])
+
+    body = await request.json()
+    hostname = body.get("hostname")
+    base_url = body.get("base_url")
+
+    merged: dict[str, Any] = {
+        "hostname": hostname,
+        "base_url": base_url,
+        "transport": current["transport"],
+        "upstream_kind": current["upstream_kind"],
+        "upstream_transport": current["upstream_transport"],
+        "auth_type": current["auth_kind"],
+    }
+    if base_url and current.get("spec_path"):
+        # Relative to the tenant's OWN base_url, never the curator's (schemas.py's
+        # VersionFields.spec_path docstring, ADR-0020 §1) — joined here, at claim time,
+        # which is the only point either half of this path is known together.
+        root = base_url if base_url.endswith("/") else base_url + "/"
+        merged["spec_url"] = urljoin(root, current["spec_path"].lstrip("/"))
+    if current["auth_kind"] != "none":
+        merged["auth"] = body.get("auth")
+    if current.get("fingerprint_policy"):
+        merged["fingerprint_policy"] = current["fingerprint_policy"]
+    if body.get("rate_limit_rps") is not None:
+        merged["rate_limit_rps"] = body["rate_limit_rps"]
+    if body.get("expected_tls_spki_sha256"):
+        merged["expected_tls_spki_sha256"] = body["expected_tls_spki_sha256"]
+
+    resp = await relay_request(request, "POST", "/devices", json=merged)
+    audited = await _audited(request, resp, "device.claim", target=str(hostname or "-"))
+    if 200 <= resp.status_code < 300:
+        try:
+            await catalog.request(
+                "POST",
+                f"/device-types/{type_id}/claims",
+                json={"tenant_id": tenant_id, "hostname": hostname, "version": current["version"]},
+            )
+        except CatalogUnavailable as exc:
+            await record_request(
+                request,
+                "device.claim.pin_unrecorded",
+                outcome=OUTCOME_ERROR,
+                target=str(hostname or "-"),
+                reason=str(exc),
+            )
+    return audited
 
 
 @router.post("/devices/{hostname}/fingerprint/approve", dependencies=[_admin])

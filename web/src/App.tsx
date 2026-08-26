@@ -8,9 +8,10 @@ import { ProviderConsole } from "./components/ProviderConsole";
 import { DeviceList } from "./components/DeviceList";
 import { DeviceDetail } from "./components/DeviceDetail";
 import { DeviceForm } from "./components/DeviceForm";
+import { ClaimFromCatalog } from "./components/ClaimFromCatalog";
 import { Dashboard } from "./components/Dashboard";
 
-type FormState = { mode: "create" } | { mode: "edit"; hostname: string };
+type FormState = { mode: "create" } | { mode: "edit"; hostname: string } | { mode: "claim" };
 type View = "devices" | "monitoring";
 
 export function App() {
@@ -114,7 +115,15 @@ export function App() {
       ) : (
         <>
           {canWrite &&
-            (form ? (
+            (form?.mode === "claim" ? (
+              <ClaimFromCatalog
+                onDone={() => {
+                  setForm(null);
+                  void refresh();
+                }}
+                onCancel={() => setForm(null)}
+              />
+            ) : form ? (
               <DeviceForm
                 mode={form.mode}
                 hostname={form.mode === "edit" ? form.hostname : undefined}
@@ -125,7 +134,10 @@ export function App() {
                 onCancel={() => setForm(null)}
               />
             ) : (
-              <button onClick={() => setForm({ mode: "create" })}>Register device</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setForm({ mode: "create" })}>Register device</button>
+                <button onClick={() => setForm({ mode: "claim" })}>Claim from catalog</button>
+              </div>
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}
           {selected && (

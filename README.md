@@ -294,8 +294,26 @@ and holds none of it itself.
 
 `assigned_by` on an assignment is filled in from the session's own subject, never taken from
 the request body — an unverified client-supplied actor would be worthless as an audit
-attribution. The claim flow — a tenant accepting an assigned device type into their own
-registry — is a tenant-plane act and lives under `/api/*`, not here (a later slice).
+attribution.
+
+The claim flow (§4) — a tenant accepting an assigned device type into their own registry —
+is a tenant-plane act and lives under `/api/catalog/*`, not here:
+
+```
+GET  /api/catalog/device-types       → this tenant's currently assigned device types
+GET  /api/catalog/device-types/{id}  → one assigned type's version detail (404 if not assigned)
+POST /api/catalog/{id}/claim         {hostname, base_url, auth?, rate_limit_rps?, expected_tls_spki_sha256?}
+```
+
+`claim` merges the type's current curated version (transport, upstream_kind, auth_kind,
+spec_path, fingerprint_policy) with only the tenant-supplied fields above, and registers the
+result via the gateway's ordinary `POST /devices` — the same route the free-type `DeviceForm`
+uses, unmodified. `spec_path` is joined against the **tenant's own** `base_url`, never a
+curator-side URL. A best-effort second call pins which version was claimed on the catalog
+service; if the catalog is unreachable at that point the device registration still stands —
+the miss is recorded as its own audit outcome (`device.claim.pin_unrecorded`) rather than
+silently lost, since undoing an already-successful registration over a bookkeeping failure
+would be the worse of the two problems.
 
 ### Act on tenant — the grant that opens the data plane
 
