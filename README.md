@@ -315,6 +315,23 @@ the miss is recorded as its own audit outcome (`device.claim.pin_unrecorded`) ra
 silently lost, since undoing an already-successful registration over a bookkeeping failure
 would be the worse of the two problems.
 
+**Upgrade offers (§4, slice 5)** — never blocking, never scheduled, never forced:
+
+```
+GET  /api/catalog/upgrades                    → offers: a claimed device whose pinned
+                                                 version differs from the type's current one
+POST /api/catalog/upgrades/{hostname}/accept  {device_type_id, version}
+```
+
+Each offer carries a diff between the two versions' curator-DECLARED `tool_set`s (never a
+live measurement — the catalog has no tenant `base_url` to probe one with); `diff: null`
+means neither version had one to compare, a distinct condition from an empty diffed result.
+Accepting an offer only re-pins the claim on the catalog side (the existing
+`POST /device-types/{id}/claims` route, called again with the new version) — it never
+touches the gateway or the live device, unlike `claim` above. The panel renders nothing when
+there's nothing to offer and nothing when the check itself fails, rather than a banner that
+nags on a transient outage.
+
 ### Act on tenant — the grant that opens the data plane
 
 Cross-tenant power is **exercised, not held** (§4). A provider operator holding

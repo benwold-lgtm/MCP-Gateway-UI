@@ -328,3 +328,28 @@ export type ClaimPayload = {
   rate_limit_rps?: number;
   expected_tls_spki_sha256?: string;
 };
+
+// --- upgrade offers (ADR-0020 §4, slice 5) -----------------------------------------
+// Never blocking, never scheduled, never forced. A claimed device whose pinned version
+// differs from what's currently curated, with a diff between the two versions' DECLARED
+// tool sets — never a live measurement, since the catalog has no base_url to probe.
+export type ToolSetDiff = {
+  added: string[];
+  removed: string[];
+  changed: string[];
+  breaking: boolean;
+  breaking_reasons: string[];
+};
+
+export type UpgradeOffer = {
+  hostname: string;
+  device_type_id: string;
+  slug: string;
+  claimed_version: number;
+  current_version: number;
+  /** `null` when either version has no declared tool_set to diff — distinct from an empty
+   *  (diffed, no changes) `ToolSetDiff`. */
+  diff: ToolSetDiff | null;
+};
+
+export type UpgradeOffersResponse = { offers: UpgradeOffer[] };

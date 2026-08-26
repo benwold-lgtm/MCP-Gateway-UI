@@ -27,6 +27,7 @@ import type {
   Session,
   ToolsDiff,
   ToolsResponse,
+  UpgradeOffersResponse,
   UpstreamKind,
 } from "./types";
 import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
@@ -129,6 +130,15 @@ export const api = {
     // own half (host + credential), never the template fields.
     claim: (typeId: string, body: ClaimPayload) =>
       req<DeviceMutation>("POST", `/api/catalog/${typeId}/claim`, body),
+    upgrades: () => req<UpgradeOffersResponse>("GET", "/api/catalog/upgrades"),
+    // Never blocking, never scheduled, never forced (ADR-0020 §4). Re-pins this hostname
+    // to the new version on the catalog side only — no gateway call, no change to the
+    // live device.
+    acceptUpgrade: (hostname: string, deviceTypeId: string, version: number) =>
+      req<unknown>("POST", `/api/catalog/upgrades/${hostname}/accept`, {
+        device_type_id: deviceTypeId,
+        version,
+      }),
   },
   // Re-pin a device to the key it is now presenting (gateway ADR-0015 §6). Admin-only at
   // the BFF; the gateway 409s when the device is not actually pending approval.

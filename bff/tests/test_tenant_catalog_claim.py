@@ -89,9 +89,16 @@ class _FakeCatalog:
     payloads, and records every call made through it — including the claim-recording POST,
     so a test can assert it happened without a real catalog service."""
 
-    def __init__(self, *, assigned: Optional[list[str]] = None, detail: Optional[dict] = None):
+    def __init__(
+        self,
+        *,
+        assigned: Optional[list[str]] = None,
+        detail: Optional[dict] = None,
+        upgrades: Optional[list[dict]] = None,
+    ):
         self.assigned = assigned if assigned is not None else ["t1"]
         self.detail = detail if detail is not None else DEVICE_TYPE_DETAIL
+        self.upgrades = upgrades if upgrades is not None else []
         self.calls: list[dict] = []
         self._raise_on: set[str] = set()
 
@@ -109,6 +116,8 @@ class _FakeCatalog:
                 for i in self.assigned
             ]
             return httpx.Response(200, json={"device_types": device_types})
+        if path == f"/tenants/{TENANT}/upgrades":
+            return httpx.Response(200, json={"offers": self.upgrades})
         if path == "/device-types/t1":
             return httpx.Response(200, json=self.detail)
         if path == "/device-types/t1/claims":
@@ -313,5 +322,90 @@ def test_claim_requires_an_authenticated_admin_session(console):
     _attach_gateway(app, _FakeGateway())
 
     resp = client.post("/api/catalog/t1/claim", json={"hostname": "sensor-01", "base_url": "https://sensor-01.local"})
+
+    assert resp.status_code == 401
+
+
+# --- upgrade offers --------------------------------------------------------------------
+
+
+def test_upgrades_relays_the_offers_list(console):
+    client, app = console
+    _login(client)
+    offer = {
+        "hostname": "sensor-01",
+        "device_type_id": "t1",
+        "slug": "acme-x1",
+        "claimed_version": 1,
+        "current_version": 2,
+        "diff": {"added": ["calibrate"], "removed": [], "changed": [], "breaking": False, "breaking_reasons": []},
+    }
+    _attach_catalog(app, _FakeCatalog(upgrades=[offer]))
+
+    resp = client.get("/api/catalog/upgrades")
+
+    assert resp.status_code == 200
+    assert resp.json()["offers"] == [offer]
+
+
+def test_upgrades_names_a_catalog_outage_rather_than_reading_as_no_offers(console):
+    client, app = console
+    _login(client)
+    fake = _FakeCatalog()
+    fake.fail_on("/tenants/")
+    _attach_catalog(app, fake)
+
+    resp = client.get("/api/catalog/upgrades")
+
+    assert resp.status_code == 503
+
+
+def test_upgrades_requires_an_authenticated_session(console):
+    client, app = console
+    _attach_catalog(app, _FakeCatalog())
+
+    resp = client.get("/api/catalog/upgrades")
+
+    assert resp.status_code == 401
+
+
+def test_accept_upgrade_re_pins_without_touching_the_gateway(console):
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog())
+    gateway = _attach_gateway(app, _FakeGateway())
+
+    resp = client.post("/api/catalog/upgrades/sensor-01/accept", json={"device_type_id": "t1", "version": 2})
+
+    assert resp.status_code == 201
+    assert gateway.calls == []  # no device mutation — this is catalog-side bookkeeping only
+    pin_calls = [c for c in catalog.calls if c["path"] == "/device-types/t1/claims"]
+    assert pin_calls == [
+        {
+            "method": "POST",
+            "path": "/device-types/t1/claims",
+            "json": {"tenant_id": TENANT, "hostname": "sensor-01", "version": 2},
+        }
+    ]
+    records = _audited(app, "device.claim.upgrade_accepted")
+    assert len(records) == 1
+
+
+def test_accept_upgrade_requires_device_type_id_and_version(console):
+    client, app = console
+    _login(client)
+    catalog = _attach_catalog(app, _FakeCatalog())
+
+    resp = client.post("/api/catalog/upgrades/sensor-01/accept", json={})
+
+    assert resp.status_code == 400
+    assert catalog.calls == []
+
+
+def test_accept_upgrade_requires_an_authenticated_admin_session(console):
+    client, app = console
+    _attach_catalog(app, _FakeCatalog())
+
+    resp = client.post("/api/catalog/upgrades/sensor-01/accept", json={"device_type_id": "t1", "version": 2})
 
     assert resp.status_code == 401

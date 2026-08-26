@@ -9,6 +9,7 @@ import { DeviceList } from "./components/DeviceList";
 import { DeviceDetail } from "./components/DeviceDetail";
 import { DeviceForm } from "./components/DeviceForm";
 import { ClaimFromCatalog } from "./components/ClaimFromCatalog";
+import { UpgradeOffers } from "./components/UpgradeOffers";
 import { Dashboard } from "./components/Dashboard";
 
 type FormState = { mode: "create" } | { mode: "edit"; hostname: string } | { mode: "claim" };
@@ -140,6 +141,7 @@ export function App() {
               </div>
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}
+          {canWrite && <UpgradeOffers />}
           {selected && (
             <DeviceDetail
               hostname={selected}

@@ -268,6 +268,46 @@ async def claim_device_type(type_id: str, request: Request) -> JSONResponse:
     return audited
 
 
+@router.get("/catalog/upgrades", dependencies=[_any])
+async def upgrade_offers(request: Request) -> JSONResponse:
+    """Non-blocking, never scheduled, never forced (§4): a claimed device whose pinned
+    version differs from what's currently curated, with a diff between the two versions'
+    DECLARED tool sets when both have one. A read, so unaudited like the other catalog
+    listings above — accepting an offer is the mutation below, audited there."""
+    tenant_id = _tenant_id(request)
+    catalog = request.app.state.catalog
+    try:
+        resp = await catalog.request("GET", f"/tenants/{tenant_id}/upgrades")
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _passthrough(resp)
+
+
+@router.post("/catalog/upgrades/{hostname}/accept", dependencies=[_admin])
+async def accept_upgrade(hostname: str, request: Request) -> JSONResponse:
+    """Accepting an offer re-pins THIS device to the new curated version — it does not
+    touch the gateway or the live device at all, unlike `claim_device_type` above (which
+    registers a brand-new one). The catalog's own claims-recording route is idempotent on
+    `(tenant_id, hostname)` (an UPSERT, see repo.py), so calling it again here with the
+    new version is exactly re-pinning, nothing more."""
+    tenant_id = _tenant_id(request)
+    body = await request.json()
+    device_type_id = body.get("device_type_id")
+    version = body.get("version")
+    if not device_type_id or not version:
+        raise HTTPException(status_code=400, detail="'device_type_id' and 'version' are required")
+    catalog = request.app.state.catalog
+    try:
+        resp = await catalog.request(
+            "POST",
+            f"/device-types/{device_type_id}/claims",
+            json={"tenant_id": tenant_id, "hostname": hostname, "version": version},
+        )
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return await _audited(request, resp, "device.claim.upgrade_accepted", target=hostname)
+
+
 @router.post("/devices/{hostname}/fingerprint/approve", dependencies=[_admin])
 async def approve_fingerprint(hostname: str, request: Request) -> JSONResponse:
     """Re-pin a device to the key it is now presenting (gateway ADR-0015 §6).
