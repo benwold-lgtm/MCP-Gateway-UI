@@ -112,7 +112,11 @@ def session_identity(session) -> str:
 # scopes) is what actually enforces them. OIDC sessions get their scopes from the gateway's
 # /auth/me instead (the real per-user grant), so there is no duplicated mapping for them.
 PASSWORD_ROLE_SCOPES: dict[str, list[str]] = {
-    "admin": ["devices:read", "devices:write", "metrics:read", "tools:call"],
+    # `support:administer` (ADR-0017 §7, slice 7) gates `/api/support/*` and
+    # `/api/notifications` via `require_role("admin")` — included here so the same
+    # password-admin session that the BFF actually admits also sees the nav item for it,
+    # rather than the UI hiding a control the backend would honour.
+    "admin": ["devices:read", "devices:write", "metrics:read", "tools:call", "support:administer"],
     "viewer": ["devices:read", "metrics:read"],
 }
 

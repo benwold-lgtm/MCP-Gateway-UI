@@ -2,6 +2,7 @@
 // Typed client to the BFF. Same-origin in production (nginx) and via Vite proxy in
 // dev, so the session cookie is sent automatically with credentials: "include".
 import type {
+  ActiveSupportGrant,
   ArchiveKind,
   Assignment,
   BackupPrepared,
@@ -13,12 +14,18 @@ import type {
   DeviceMutation,
   DevicePayload,
   Diagnostics,
+  HeldSupportGrant,
   InvokeEnvelope,
   OnConflict,
   Overview,
+  PendingSupportRequest,
+  RaisedSupportRequest,
   RestoreReport,
   Role,
   Session,
+  StandingConsent,
+  SupportPollResult,
+  TenantNotification,
   ToolsDiff,
   ToolsResponse,
   UpgradeOffersResponse,
@@ -155,16 +162,21 @@ export const api = {
     req<PromQueryResponse>("GET", `/api/prometheus/query?query=${encodeURIComponent(query)}`),
   logs: (limit = 100) => req<LokiResponse>("GET", `/api/logs?limit=${limit}`),
 
-  // --- provider plane (ADR-0013 §2, catalog only as of ADR-0017 slice 6) -----
+  // --- provider plane (ADR-0013 §2, ADR-0017 §7 for the support-request methods) -----
   // These live under /provider, not /api: a different plane with a different session
   // vocabulary, and the BFF refuses them outright for a tenant session.
-  //
-  // The act-on-tenant/elevated-grant methods that used to live here (`authorize`,
-  // `tenants`, `actOnTenant`, `release`, `elevate`, `elevation`, `endElevation`) are
-  // removed along with the mechanism they called (ADR-0017 slice 6 — `grants.py`,
-  // `routers/provider.py` deleted). ADR-0017's replacement (slice 7) has a different
-  // shape and will need its own methods, not a renaming of these.
   provider: {
+    // --- the delegated support grant (ADR-0017 §7, slice 7/8) -------------------
+    // Replaces the act-on-tenant/elevated-grant methods removed at slice 6
+    // (`authorize`/`tenants`/`actOnTenant`/`release`/`elevate`/`elevation`/
+    // `endElevation`) — a different mechanism, not a rebuild of the old one.
+    raiseSupportRequest: (body: { requested_scopes: string[]; justification: string }) =>
+      req<RaisedSupportRequest>("POST", "/provider/support-requests", body),
+    pollSupportRequest: (requestId: string) =>
+      req<SupportPollResult>("GET", `/provider/support-requests/${encodeURIComponent(requestId)}`),
+    currentSupportGrant: () => req<HeldSupportGrant>("GET", "/provider/support-grant"),
+    releaseSupportGrant: () => req<{ released: string | null }>("DELETE", "/provider/support-grant"),
+
     // --- catalog curation + assignment (ADR-0020 §1/§2) ------------------------
     // Not gated on a live act-on-tenant grant: curating the catalog and assigning a type
     // to a tenant are provider-plane acts on the provider's OWN storage (ADR-0020 §2),
@@ -192,4 +204,31 @@ export const api = {
         req<unknown>("DELETE", `/provider/catalog/device-types/${typeId}/assign/${tenantId}`),
     },
   },
+
+  // --- tenant-plane support-request management + notifications (ADR-0017 §7, slice 7/8) --
+  support: {
+    requests: () => req<{ requests: PendingSupportRequest[] }>("GET", "/api/support/requests"),
+    approve: (requestId: string, ttlSeconds?: number) =>
+      req<{ grant_id: string; expires_at: number }>(
+        "POST",
+        `/api/support/requests/${encodeURIComponent(requestId)}/approve`,
+        ttlSeconds ? { ttl_seconds: ttlSeconds } : undefined,
+      ),
+    reject: (requestId: string) =>
+      req<unknown>("POST", `/api/support/requests/${encodeURIComponent(requestId)}/reject`),
+    grants: () => req<{ grants: ActiveSupportGrant[] }>("GET", "/api/support/grants"),
+    revoke: (grantId: string) => req<unknown>("DELETE", `/api/support/grants/${encodeURIComponent(grantId)}`),
+    standingConsent: () => req<StandingConsent>("GET", "/api/support/standing-consent"),
+    enableStandingConsent: (scopes: string[], ttlSeconds?: number) =>
+      req<{ scopes: string[]; enabled_by: string; expires_at: number }>(
+        "POST",
+        "/api/support/standing-consent",
+        {
+          scopes,
+          ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}),
+        },
+      ),
+    disableStandingConsent: () => req<unknown>("DELETE", "/api/support/standing-consent"),
+  },
+  notifications: () => req<{ notifications: TenantNotification[] }>("GET", "/api/notifications"),
 };
