@@ -110,8 +110,69 @@ export type AuthConfig = {
 // `ElevationResponse`), the estate navigation type (`Estate`) and the step-up outcome type
 // (`StepUpOutcome`) all described the ADR-0013 mechanism removed at ADR-0017 slice 6
 // (`grants.py`, `routers/provider.py`, `ActOnTenant.tsx`, `ElevationPanel.tsx` — all
-// deleted). Not reintroduced speculatively: ADR-0017's replacement (slice 7/8) has a
-// different shape and will need its own types, not a renaming of these.
+// deleted). Not reintroduced: ADR-0017's replacement has the different shape below.
+
+// --- the delegated support grant (ADR-0017 §7, slices 7/8) -------------------
+
+// What raising a request returns (POST /provider/support-requests). `expires_at` is the
+// pending request's own deadline — not the grant's, which does not exist until approved.
+export type RaisedSupportRequest = {
+  request_id: string;
+  requested_scopes: string[];
+  expires_at: number | null;
+};
+
+// The raising session's own poll (GET /provider/support-requests/{id}). A closed union
+// rather than one shape with optional fields, so a caller cannot read `credential` off a
+// still-pending result by forgetting to check `status` first.
+export type SupportPollResult =
+  | { status: "pending" }
+  | { status: "rejected" }
+  | { status: "approved"; grant_id: string; credential: string };
+
+// Whether this provider session currently holds a delegated grant (GET /provider/support-
+// grant) — never the credential itself, which the browser has no use for and an attacker
+// every use for.
+export type HeldSupportGrant = { held: false } | { held: true; grant_id: string };
+
+// The tenant console's inbox (GET /api/support/requests) — a request a provider operator
+// raised, awaiting approve/reject. `justification` is shown here so the tenant admin can
+// actually decide; the gateway never echoes it back anywhere else.
+export type PendingSupportRequest = {
+  request_id: string;
+  provider_subject: string;
+  requested_scopes: string[];
+  justification: string;
+  created_at: number;
+  expires_at: number;
+};
+
+// "Who can reach my stack right now" (GET /api/support/grants) — the control ADR-0017
+// gives the tenant, alongside the revoke button that acts on one of these.
+export type ActiveSupportGrant = {
+  id: string;
+  provider_subject: string;
+  scopes: string[];
+  issued_at: number;
+  expires_at: number;
+  step_up_verified: boolean;
+  self_issued: boolean;
+};
+
+export type StandingConsent =
+  | { enabled: false }
+  | { enabled: true; scopes: string[]; enabled_by: string; enabled_at: number; expires_at: number };
+
+// The durable tenant-facing signal list (GET /api/notifications, ADR-0017 slice 5 on the
+// gateway) — a break-glass activation, a support grant self-issued often enough to flag.
+export type TenantNotification = {
+  id: string;
+  kind: string;
+  subject: string;
+  message: string;
+  severity: string;
+  created_at: number;
+};
 
 // Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
 // No gateway OpenAPI schema backs these (they describe external systems), so they

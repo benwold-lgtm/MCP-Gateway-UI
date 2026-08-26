@@ -11,9 +11,10 @@ import { DeviceForm } from "./components/DeviceForm";
 import { ClaimFromCatalog } from "./components/ClaimFromCatalog";
 import { UpgradeOffers } from "./components/UpgradeOffers";
 import { Dashboard } from "./components/Dashboard";
+import { SupportRequestsInbox } from "./components/SupportRequestsInbox";
 
 type FormState = { mode: "create" } | { mode: "edit"; hostname: string } | { mode: "claim" };
-type View = "devices" | "monitoring";
+type View = "devices" | "monitoring" | "support";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -35,6 +36,10 @@ export function App() {
   // record and running a tool against the live device are different authorities, and the
   // gateway grants them independently.
   const canInvoke = session?.scopes.includes("tools:call") ?? false;
+  // ADR-0017 §7: administering the support-request/grant mechanism itself, gated separately
+  // from the tenant-vocabulary scopes above — a session can hold every device scope and
+  // still not be trusted to decide who else may act on this fleet.
+  const canAdministerSupport = session?.scopes.includes("support:administer") ?? false;
 
   // Provider sessions don't load the overview *here*. A provider session currently has no
   // path to any tenant's fleet at all (ADR-0017 slice 6 removed act-on-tenant; slice 7's
@@ -108,9 +113,16 @@ export function App() {
         <button onClick={() => setView("monitoring")} disabled={view === "monitoring"}>
           Monitoring
         </button>
+        {canAdministerSupport && (
+          <button onClick={() => setView("support")} disabled={view === "support"}>
+            Support
+          </button>
+        )}
       </nav>
 
-      {view === "monitoring" ? (
+      {view === "support" ? (
+        <SupportRequestsInbox />
+      ) : view === "monitoring" ? (
         <Dashboard />
       ) : (
         <>
