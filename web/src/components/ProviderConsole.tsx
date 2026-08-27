@@ -9,8 +9,7 @@ import { SupportRequestPanel } from "./SupportRequestPanel";
 import { DeviceList } from "./DeviceList";
 import { DeviceDetail } from "./DeviceDetail";
 import { Dashboard } from "./Dashboard";
-import { BackupExport } from "./BackupExport";
-import { BackupRestore } from "./BackupRestore";
+import { BackupPanel } from "./BackupPanel";
 
 /** The provider plane's shell (ADR-0017 §7).
  *
@@ -114,7 +113,7 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
           onReleased={() => setHeldGrant({ held: false })}
         />
       )}
-      {view === "backup" && held && <BackupViews />}
+      {view === "backup" && held && <BackupPanel />}
       {(view === "devices" || view === "monitoring") && held && <TenantViews view={view} />}
       {view === "catalog" && <CatalogConsole />}
     </Shell>
@@ -175,19 +174,6 @@ function TenantViews({ view }: { view: "devices" | "monitoring" }) {
           )}
         </>
       )}
-    </section>
-  );
-}
-
-/** Export and restore, reached through a held support grant — an ordinary admin-equivalent
- * session is the whole requirement (ADR-0018 §6 removed the credential-bearing elevation
- * this used to sit behind), the same as every other tenant-plane view here. */
-function BackupViews() {
-  return (
-    <section style={{ display: "grid", gap: 4, maxWidth: 760 }}>
-      <h2 style={{ margin: 0, fontSize: "1.15em", color: ui.ink }}>Backup and restore</h2>
-      <BackupExport />
-      <BackupRestore />
     </section>
   );
 }

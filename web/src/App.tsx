@@ -12,9 +12,10 @@ import { ClaimFromCatalog } from "./components/ClaimFromCatalog";
 import { UpgradeOffers } from "./components/UpgradeOffers";
 import { Dashboard } from "./components/Dashboard";
 import { SupportRequestsInbox } from "./components/SupportRequestsInbox";
+import { BackupPanel } from "./components/BackupPanel";
 
 type FormState = { mode: "create" } | { mode: "edit"; hostname: string } | { mode: "claim" };
-type View = "devices" | "monitoring" | "support";
+type View = "devices" | "monitoring" | "support" | "backup";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -40,6 +41,12 @@ export function App() {
   // from the tenant-vocabulary scopes above — a session can hold every device scope and
   // still not be trusted to decide who else may act on this fleet.
   const canAdministerSupport = session?.scopes.includes("support:administer") ?? false;
+  // The registry is the tenant's own data (ADR-0011), so the tenant console offers backup
+  // too — the routes were always mounted on both planes, only the screen was missing.
+  // `backup:read` and not the role: a break-glass session's role *is* admin, and it is
+  // precisely the session the routes refuse, so gating on the role would offer a screen
+  // whose every button 403s. The gateway enforces either way; this only decides what to show.
+  const canBackup = session?.scopes.includes("backup:read") ?? false;
 
   // Provider sessions don't load the overview *here*. A provider session currently has no
   // path to any tenant's fleet at all (ADR-0017 slice 6 removed act-on-tenant; slice 7's
@@ -113,6 +120,11 @@ export function App() {
         <button onClick={() => setView("monitoring")} disabled={view === "monitoring"}>
           Monitoring
         </button>
+        {canBackup && (
+          <button onClick={() => setView("backup")} disabled={view === "backup"}>
+            Backup
+          </button>
+        )}
         {canAdministerSupport && (
           <button onClick={() => setView("support")} disabled={view === "support"}>
             Support
@@ -120,7 +132,9 @@ export function App() {
         )}
       </nav>
 
-      {view === "support" ? (
+      {view === "backup" ? (
+        <BackupPanel />
+      ) : view === "support" ? (
         <SupportRequestsInbox />
       ) : view === "monitoring" ? (
         <Dashboard />
