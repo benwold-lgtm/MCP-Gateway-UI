@@ -140,8 +140,16 @@ def _split(csv: str) -> list[str]:
 def _secret(env_name: str, file_env: str) -> str:
     """A secret from ``env_name``, or from the file named by ``file_env`` if the var is
     empty (the standard ``*_FILE`` convention). Lets the lite stack share the gateway key
-    the gateway self-provisioned to a mounted volume — no secret copied between containers."""
-    value = os.getenv(env_name, "")
+    the gateway self-provisioned to a mounted volume — no secret copied between containers.
+
+    Both branches strip. The file branch always did, for the obvious reason that a file
+    written by `echo` or `openssl rand > f` ends in a newline. The env branch needs it for
+    exactly the same reason one step removed: `kubectl create secret --from-file=` — the
+    documented way to build these — carries that newline into the environment variable, so
+    a value that looks correct in `printenv` fails every comparison against what a client
+    actually sends.
+    """
+    value = os.getenv(env_name, "").strip()
     if value:
         return value
     file_path = os.getenv(file_env, "").strip()
@@ -186,11 +194,21 @@ def load_settings() -> Settings:
         # GATEWAY_TOKEN_FILE so the lite stack can read the key the gateway generated.
         gateway_token=_secret("GATEWAY_API_TOKEN", "GATEWAY_TOKEN_FILE"),
         # UI login passwords → role. Leave a role's password empty to disable it.
-        ui_admin_password=os.getenv("UI_ADMIN_PASSWORD", ""),
-        ui_viewer_password=os.getenv("UI_VIEWER_PASSWORD", ""),
+        # Stripped: these are compared against what a human types into a browser form,
+        # which can never carry the trailing newline that `--from-file` puts in the
+        # environment. Unstripped, the correct password fails as "Invalid credentials" —
+        # the one message that sends an operator to re-check a password that was right,
+        # on the break-glass path they reached for because something else was broken.
+        ui_admin_password=os.getenv("UI_ADMIN_PASSWORD", "").strip(),
+        ui_viewer_password=os.getenv("UI_VIEWER_PASSWORD", "").strip(),
         # MUST be overridden in production; signs the session cookie. Booting with this
         # default while COOKIE_SECURE is on is refused in create_app().
-        session_secret=os.getenv("SESSION_SECRET", DEFAULT_SESSION_SECRET),
+        # Stripped for the same reason as the passwords, though the consequence is milder:
+        # this signs the session cookie, so a whitespace-tainted value is self-consistent
+        # and works. Normalising it costs a one-time re-login on upgrade and buys one rule
+        # that holds for every secret read here, rather than a per-value judgement call
+        # about whether this particular one happens to be compared against outside input.
+        session_secret=os.getenv("SESSION_SECRET", DEFAULT_SESSION_SECRET).strip(),
         session_redis_url=os.getenv("SESSION_REDIS_URL", ""),
         session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", "28800")),  # 8 hours
         prometheus_url=os.getenv("PROMETHEUS_URL", ""),
@@ -235,6 +253,20 @@ def load_settings() -> Settings:
         # play, so a home box gets a durable, re-seedable chain without configuring one.
         audit_path=os.getenv("AUDIT_PATH", ""),
         audit_tenant=os.getenv("AUDIT_TENANT", "default"),
+        # ⚠️ UPGRADE NOTE. These two are key *material*, not values compared against
+        # something a client sends: a trailing newline here is self-consistent and works.
+        # They still go through `_secret`, which now strips both branches — so a deployment
+        # that supplied a key via an env var with surrounding whitespace derives a
+        # different key after this change, and records sealed under the old one no longer
+        # decrypt. That divergence already existed and was worse for being invisible: the
+        # file branch has always stripped, so the same key material delivered as a file and
+        # as an env var produced two different keys. Made consistent deliberately. An
+        # affected deployment -- one whose AUDIT_*_KEY env var has surrounding whitespace --
+        # must either re-state the key without it (the chain then verifies as before,
+        # because the stripped value is what the file branch would already have produced)
+        # or archive the existing chain before upgrading. Check with:
+        #   kubectl exec deploy/device-mcp-ui-bff -- \
+        #     python3 -c "import os;v=os.environ.get('AUDIT_CONTENT_KEY','');print(v!=v.strip())"
         audit_content_key=_secret("AUDIT_CONTENT_KEY", "AUDIT_CONTENT_KEY_FILE"),
         audit_pseudonym_key=_secret("AUDIT_PSEUDONYM_KEY", "AUDIT_PSEUDONYM_KEY_FILE"),
         catalog_service_url=os.getenv("CATALOG_SERVICE_URL", ""),
