@@ -71,4 +71,59 @@ describe("App", () => {
     await screen.findByRole("button", { name: /^devices$/i });
     expect(screen.queryByRole("button", { name: /^support$/i })).not.toBeInTheDocument();
   });
+
+  // --- Backup on the tenant console (ADR-0011: the registry is the tenant's own data) ---
+  //
+  // The routes were always mounted on both planes; only the tenant screen was missing, so
+  // the capability was reachable with `curl` while the console implied it was not.
+
+  it("offers Backup to a tenant session holding backup:read", async () => {
+    me.mockResolvedValue({
+      kind: "oidc",
+      plane: "tenant",
+      subject: "idp:tenantadmin",
+      scopes: ["devices:read", "devices:write", "backup:read", "backup:write"],
+      provider_scopes: [],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /^backup$/i }));
+    expect(await screen.findByRole("heading", { name: /backup and restore/i })).toBeInTheDocument();
+  });
+
+  it("hides Backup from a break-glass admin, whose role is admin but who holds no backup scope", async () => {
+    // The case that makes scope-gating rather than role-gating load-bearing. A password
+    // session's role IS "admin", but `PASSWORD_ROLE_SCOPES` deliberately withholds every
+    // `backup:*` scope because the BFF refuses that session on all four backup routes --
+    // it proxies with the stack's admin token. Gating the nav on the role would offer a
+    // screen whose every button 403s, which reads as a broken console rather than a
+    // deliberate refusal.
+    me.mockResolvedValue({
+      kind: "password",
+      plane: "tenant",
+      subject: "local:admin",
+      role: "admin",
+      scopes: ["devices:read", "devices:write", "metrics:read", "tools:call", "support:administer"],
+      provider_scopes: [],
+    });
+    render(<App />);
+
+    await screen.findByRole("button", { name: /^devices$/i });
+    expect(screen.queryByRole("button", { name: /^backup$/i })).not.toBeInTheDocument();
+  });
+
+  it("hides Backup from a viewer", async () => {
+    me.mockResolvedValue({
+      kind: "oidc",
+      plane: "tenant",
+      subject: "idp:tenantop",
+      scopes: ["devices:read", "metrics:read"],
+      provider_scopes: [],
+    });
+    render(<App />);
+
+    await screen.findByRole("button", { name: /^devices$/i });
+    expect(screen.queryByRole("button", { name: /^backup$/i })).not.toBeInTheDocument();
+  });
 });
