@@ -47,9 +47,13 @@ class Settings:
     # attempts from one client IP within login_window_seconds, further attempts get 429.
     login_max_failures: int = 5
     login_window_seconds: int = 60
-    # Only trust X-Forwarded-For for the client IP when the BFF sits behind a proxy that
-    # sets it — otherwise a caller could spoof the header to evade the throttle.
-    trust_forwarded_for: bool = False
+    # How many reverse proxies sit in front of this BFF. 0 ignores X-Forwarded-For and
+    # throttles on the direct peer. Behind an ingress that is the *controller's* address
+    # for every user, which collapses the throttle into one shared bucket: one person
+    # fumbling a password then throttles everyone, break-glass included. Set it to the
+    # real hop count so each caller is counted separately — and no higher, since every hop
+    # you claim beyond the ones that exist is one the caller gets to write for you.
+    trusted_proxy_hops: int = 0
     # Federated identity (OIDC, ADR-0007). When enabled, the BFF runs an Authorization
     # Code + PKCE login against the IdP and relays the user's access token upstream
     # (Mode A token passthrough), so the gateway authorizes the real user. Local
@@ -154,6 +158,30 @@ def _secret(env_name: str, file_env: str) -> str:
     return ""
 
 
+def _trusted_proxy_hops() -> int:
+    """How many reverse proxies front this BFF.
+
+    ``TRUSTED_PROXY_HOPS`` is the setting. ``TRUST_FORWARDED_FOR=true`` is still honoured
+    as "one hop", because that is what every deployment that set it meant — it named a
+    topology, and the topology has not changed. What changed is which entry of the header
+    gets believed: the old code read the left-most, which is the caller's own text. So a
+    deployment carrying the old flag is *more* correct after this change, not less, and
+    silently ignoring the flag would quietly return it to one shared throttle bucket.
+
+    A non-numeric or negative value reads as 0 — the safe direction, since 0 only ever
+    over-counts a shared proxy address and never trusts a caller-supplied one.
+    """
+    raw = os.getenv("TRUSTED_PROXY_HOPS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 0
+    if os.getenv("TRUST_FORWARDED_FOR", "false").strip().lower() in ("1", "true", "yes"):
+        return 1
+    return 0
+
+
 def _json_map(env_name: str) -> dict:
     """A ``{"group": "scope"}`` map from a JSON env var.
 
@@ -203,7 +231,7 @@ def load_settings() -> Settings:
         cookie_domain=os.getenv("COOKIE_DOMAIN", "").strip(),
         login_max_failures=int(os.getenv("LOGIN_MAX_FAILURES", "5")),
         login_window_seconds=int(os.getenv("LOGIN_WINDOW_SECONDS", "60")),
-        trust_forwarded_for=os.getenv("TRUST_FORWARDED_FOR", "false").lower() in ("1", "true", "yes"),
+        trusted_proxy_hops=_trusted_proxy_hops(),
         # OIDC (federated identity). Disabled unless OIDC_ENABLED is truthy AND an
         # issuer + client id are configured (validated in OIDCClient).
         oidc_enabled=os.getenv("OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),

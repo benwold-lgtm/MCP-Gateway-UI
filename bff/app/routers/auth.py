@@ -62,7 +62,7 @@ async def auth_config(request: Request) -> dict:
 async def login(request: Request, body: LoginBody) -> dict:
     settings = request.app.state.settings
     throttle = request.app.state.login_throttle
-    ip = client_ip(request, trust_forwarded=settings.trust_forwarded_for)
+    ip = client_ip(request, trusted_hops=settings.trusted_proxy_hops)
 
     # Refuse before touching the password once this IP has failed too many times recently
     # (review #3) — brute-force protection the constant-time compare alone can't provide.

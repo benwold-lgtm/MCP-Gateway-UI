@@ -66,13 +66,27 @@ class LoginThrottle:
         self._fails.pop(ip, None)
 
 
-def client_ip(request: Request, *, trust_forwarded: bool) -> str:
-    """The caller's IP for throttling. Uses the direct peer by default; only reads the
-    left-most X-Forwarded-For hop when ``trust_forwarded`` is set (the BFF is behind a
-    trusted proxy that appends it) — otherwise a client could spoof the header to dodge
-    the throttle."""
-    if trust_forwarded:
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+def client_ip(request: Request, *, trusted_hops: int) -> str:
+    """The caller's IP for throttling, counted back from the *right* of X-Forwarded-For.
+
+    ``trusted_hops`` is how many reverse proxies sit in front of this BFF. 0 (the default)
+    ignores the header entirely and uses the direct peer.
+
+    **Why from the right.** A proxy appends; it does not replace. So a client that sends
+    its own ``X-Forwarded-For: 1.2.3.4`` arrives at the app as ``1.2.3.4, <real client>``
+    — the left-most entry is whatever the caller made up, and the right-most is the only
+    one a trusted proxy actually observed. Reading from the left is therefore not a weaker
+    heuristic but an inversion: it hands every caller a free, per-request identity to
+    throttle under, which is worse than not trusting the header at all. With one proxy in
+    front, ``trusted_hops=1`` yields the address nginx saw, spoofed prefix or not.
+
+    A chain shorter than configured means the request did not traverse the proxies it was
+    supposed to — someone reached the pod directly. That falls back to the peer address,
+    which cannot be forged, rather than to an entry the caller may have authored.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if trusted_hops <= 0:
+        return peer
+    hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+    idx = len(hops) - trusted_hops
+    return hops[idx] if 0 <= idx < len(hops) else peer

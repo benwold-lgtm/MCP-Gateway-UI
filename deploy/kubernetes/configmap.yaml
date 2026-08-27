@@ -19,6 +19,20 @@ data:
   CORS_ORIGINS: ""
   # Set true behind TLS so the session cookie is marked Secure.
   COOKIE_SECURE: "true"
+  # How many reverse proxies sit in front of the BFF. These manifests put an ingress in
+  # front, and that is exactly one hop — so "1" is correct for this topology and is what
+  # makes the login throttle count each caller separately.
+  #
+  # At 0 the throttle sees the ingress controller's pod address for EVERY user and
+  # collapses into one shared bucket: one person fumbling a password throttles everyone,
+  # break-glass included, and the audited lockout event names the ingress rather than
+  # whoever was being brute-forced.
+  #
+  # Count the hops that actually exist and no more. The header is a list the caller can
+  # prepend to; each hop claimed beyond the real ones is one entry the caller gets to
+  # write. If you add a CDN or an external load balancer in front of the ingress, raise
+  # this to match — and if you remove one, lower it.
+  TRUSTED_PROXY_HOPS: "1"
   # Federated identity (OIDC SSO, ADR-0007). Set OIDC_ENABLED "true" and fill these to
   # enable SSO; OIDC_CLIENT_SECRET goes in the Secret, not here. Local passwords stay as
   # break-glass. The gateway must run a matching gateway.oidc config (issuer/audience/
