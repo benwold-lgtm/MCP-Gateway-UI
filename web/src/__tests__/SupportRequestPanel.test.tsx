@@ -61,7 +61,9 @@ async function raise(user: ReturnType<typeof userEvent.setup>) {
 
 describe("SupportRequestPanel", () => {
   it("cannot raise until a tenant is picked, a scope is picked and a justification is written", async () => {
-    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
     expect(screen.getByRole("button", { name: /raise request/i })).toBeDisabled();
   });
 
@@ -73,7 +75,9 @@ describe("SupportRequestPanel", () => {
       expires_at: 1,
     });
     pollSupportRequest.mockResolvedValue({ status: "pending" });
-    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
 
     await raise(user);
 
@@ -94,7 +98,9 @@ describe("SupportRequestPanel", () => {
       grant_id: "g1",
       credential: "sgr_secret",
     });
-    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={onGranted} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={onGranted} onReleased={vi.fn()} />,
+    );
 
     await raise(user);
     await act(async () => {
@@ -114,7 +120,9 @@ describe("SupportRequestPanel", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     raiseSupportRequest.mockResolvedValue({ request_id: "r1", requested_scopes: [], expires_at: 1 });
     pollSupportRequest.mockResolvedValue({ status: "rejected" });
-    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
 
     await raise(user);
     await act(async () => {
@@ -176,7 +184,9 @@ describe("SupportRequestPanel", () => {
   // --- ADR-0017 §7b: what the menu offers follows the role ------------------------------
 
   it("offers a monitor only the read scopes it is permitted to request", async () => {
-    render(<SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
 
     expect(await screen.findByLabelText("devices:read")).toBeInTheDocument();
     expect(screen.getByLabelText("metrics:read")).toBeInTheDocument();
@@ -186,7 +196,9 @@ describe("SupportRequestPanel", () => {
   });
 
   it("offers an admin the full routine menu", async () => {
-    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
 
     for (const scope of ["devices:read", "devices:write", "tools:call", "metrics:read"]) {
       expect(await screen.findByLabelText(scope)).toBeInTheDocument();
@@ -197,7 +209,9 @@ describe("SupportRequestPanel", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     raiseSupportRequest.mockResolvedValue({ request_id: "r-1" });
     pollSupportRequest.mockResolvedValue({ status: "pending" });
-    render(<SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(
+      <SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />,
+    );
 
     await user.selectOptions(await screen.findByLabelText("Tenant"), "t-1");
     await user.click(screen.getByLabelText("devices:read"));
