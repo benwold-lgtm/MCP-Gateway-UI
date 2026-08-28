@@ -16,6 +16,11 @@ import { health, ui } from "../tokens";
  * (openapi only) is relative to whatever `base_url` a tenant supplies later, at claim
  * time (slice 4) — never an absolute URL.
  */
+/** The catalog's own `CreateDeviceType.slug` constraint, checked here so the rule is enforced
+ * where the value is typed rather than discovered as a 422 after submitting. Kept identical to
+ * `device_mcp_catalog/app/schemas.py`; `test_catalog_console_slug_rule` asserts they agree. */
+const SLUG_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
 export function CatalogConsole() {
   const [types, setTypes] = useState<DeviceType[]>([]);
   const [selected, setSelected] = useState<DeviceTypeDetail | null>(null);
@@ -124,46 +129,79 @@ function CreateDeviceType({ onCreated }: { onCreated: () => void | Promise<void>
   return (
     <section style={{ border: `1px solid ${ui.rule}`, borderRadius: 6, padding: "12px 16px" }}>
       <h2 style={{ marginTop: 0, fontSize: "1.05em", color: ui.ink }}>Curate a device type</h2>
+      <p style={{ margin: "0 0 10px", color: ui.inkSoft, fontSize: "0.85em", maxWidth: 560 }}>
+        A <strong>template</strong>, not a device. It describes a kind of appliance — no address and no
+        credentials. A tenant supplies those when they claim it, so nothing you enter here can reach a
+        tenant&apos;s stack on its own.
+      </p>
       <form onSubmit={create} style={{ display: "grid", gap: 8 }}>
         <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Slug</span>
+          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>
+            Identifier <span style={{ color: ui.muted }}>— lowercase letters, numbers and hyphens</span>
+          </span>
           <input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
-            placeholder="acme-sensor-x1"
+            placeholder="e.g. nutanix-prism-central"
+            aria-describedby="ct-slug-help"
             required
           />
+          {/* The format was enforced only by the catalog, so a capitalised or spaced value came back
+              as a 422 after submitting. Checked here, where it is typed. */}
+          {slug.trim() !== "" && !SLUG_RE.test(slug.trim()) ? (
+            <span id="ct-slug-help" style={{ fontSize: "0.8em", color: health.fail }}>
+              Use lowercase letters, numbers and hyphens — no spaces or capitals. “Acme Sensor X1” becomes
+              “acme-sensor-x1”.
+            </span>
+          ) : (
+            <span id="ct-slug-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+              A short permanent name used in links and by the API. Tenants see the display name below.
+            </span>
+          )}
         </label>
         <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Name</span>
+          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>
+            Display name <span style={{ color: ui.muted }}>— what tenants see in their catalog</span>
+          </span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Acme Sensor X1"
+            placeholder="e.g. Nutanix Prism Central"
             required
           />
         </label>
         <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Description</span>
-          <input value={description} onChange={(e) => setDescription(e.target.value)} />
+          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>
+            Description <span style={{ color: ui.muted }}>— optional</span>
+          </span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="e.g. Nutanix Prism Central v4 API"
+          />
         </label>
         <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Upstream kind</span>
+          <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>What this appliance speaks</span>
           <select value={upstreamKind} onChange={(e) => setUpstreamKind(e.target.value as UpstreamKind)}>
-            <option value="openapi">openapi</option>
-            <option value="mcp">mcp</option>
+            <option value="openapi">An HTTP API described by an OpenAPI document</option>
+            <option value="mcp">An MCP server</option>
           </select>
         </label>
         {upstreamKind === "openapi" && (
           <label style={{ display: "grid", gap: 4 }}>
             <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>
-              Spec path (relative to the tenant's base_url at claim time)
+              Path to the OpenAPI document <span style={{ color: ui.muted }}>— on the device itself</span>
             </span>
             <input
               value={specPath}
               onChange={(e) => setSpecPath(e.target.value)}
-              placeholder="/openapi.json"
+              placeholder="e.g. /openapi.json"
+              aria-describedby="ct-spec-help"
             />
+            <span id="ct-spec-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+              Relative to the address the tenant enters when claiming, so it must be a path this appliance
+              serves. An appliance that publishes no OpenAPI document of its own cannot be curated yet.
+            </span>
           </label>
         )}
         {error && <p style={{ margin: 0, color: health.fail, fontSize: "0.85em" }}>{error}</p>}
@@ -232,7 +270,15 @@ function DeviceTypeDetailPanel({
       <div style={{ display: "grid", gap: 8, maxWidth: 360 }}>
         <label style={{ display: "grid", gap: 4 }}>
           <span style={{ fontSize: "0.85em", color: ui.inkSoft }}>Tenant id</span>
-          <input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="mcp-t-…" />
+          <input
+            value={tenantId}
+            onChange={(e) => setTenantId(e.target.value)}
+            placeholder="e.g. t-039c899f37b8994d"
+            aria-describedby="ct-tenant-help"
+          />
+          <span id="ct-tenant-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+            The tenant&apos;s identifier, not its namespace — no <code>mcp-</code> prefix.
+          </span>
         </label>
         {error && <p style={{ margin: 0, color: health.fail, fontSize: "0.85em" }}>{error}</p>}
         <div style={{ display: "flex", gap: 8 }}>

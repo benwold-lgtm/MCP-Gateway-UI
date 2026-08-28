@@ -99,8 +99,8 @@ describe("ClaimFromCatalog", () => {
     render(<ClaimFromCatalog onDone={onDone} onCancel={vi.fn()} />);
 
     await user.click(await screen.findByText(/acme-sensor-x1/));
-    await user.type(await screen.findByLabelText(/hostname/i), "sensor-01");
-    await user.type(screen.getByLabelText(/base url/i), "https://sensor-01.local");
+    await user.type(await screen.findByLabelText(/name for this device/i), "sensor-01");
+    await user.type(screen.getByLabelText(/^address$/i), "https://sensor-01.local");
     await user.type(screen.getByLabelText(/^api key$/i), "s3cr3t");
     await user.click(screen.getByRole("button", { name: /^claim$/i }));
 
@@ -121,7 +121,7 @@ describe("ClaimFromCatalog", () => {
     render(<ClaimFromCatalog onDone={vi.fn()} onCancel={vi.fn()} />);
 
     await user.click(await screen.findByText(/acme-sensor-x1/));
-    await screen.findByLabelText(/hostname/i);
+    await screen.findByLabelText(/name for this device/i);
     await user.click(screen.getByRole("button", { name: /^back$/i }));
 
     expect(await screen.findByText(/acme-sensor-x1/)).toBeInTheDocument();

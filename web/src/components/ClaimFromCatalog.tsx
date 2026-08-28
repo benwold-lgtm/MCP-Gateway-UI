@@ -146,8 +146,10 @@ function ClaimForm({
   return (
     <form onSubmit={submit} style={{ marginTop: 8 }}>
       <p style={{ margin: "0 0 12px", color: ui.inkSoft, fontSize: "0.9em" }}>
-        Claiming <strong>{detail.slug}</strong> v{current.version}. Its transport, upstream shape, and
-        fingerprint policy are set by the curated type — only your host and credential are asked for here.
+        Claiming <strong>{detail.name || detail.slug}</strong> v{current.version}. Its transport, upstream
+        shape and fingerprint policy come from the curated type.{" "}
+        <strong>The address and credentials below are yours</strong> — your provider does not supply them and
+        never sees them.
       </p>
       <div
         style={{
@@ -159,23 +161,40 @@ function ClaimForm({
         }}
       >
         <label htmlFor="cc-hostname" style={{ color: ui.inkSoft, fontSize: 14 }}>
-          Hostname
+          Name for this device
         </label>
-        <input id="cc-hostname" value={hostname} onChange={(e) => setHostname(e.target.value)} required />
+        <input
+          id="cc-hostname"
+          value={hostname}
+          onChange={(e) => setHostname(e.target.value)}
+          required
+          placeholder="e.g. prism-dc1"
+          aria-describedby="cc-hostname-help"
+        />
+        <span />
+        <span id="cc-hostname-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+          How it appears in your fleet. Yours to choose — it need not be the appliance&apos;s DNS name.
+        </span>
 
         <label htmlFor="cc-base-url" style={{ color: ui.inkSoft, fontSize: 14 }}>
-          Base URL
+          Address
         </label>
         <input
           id="cc-base-url"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           required
-          placeholder="https://device.local"
+          placeholder="e.g. https://prism.example.internal:9440"
+          aria-describedby="cc-base-url-help"
         />
+        <span />
+        <span id="cc-base-url-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+          Scheme, host and port of <em>your</em> appliance. Reached from your own gateway, so a private
+          address is fine.
+        </span>
 
         <label htmlFor="cc-rate" style={{ color: ui.inkSoft, fontSize: 14 }}>
-          Rate limit (rps)
+          Rate limit
         </label>
         <input
           id="cc-rate"
@@ -184,17 +203,17 @@ function ClaimForm({
           step="0.1"
           value={rateLimit}
           onChange={(e) => setRateLimit(e.target.value)}
-          placeholder="(none)"
+          placeholder="(none) — requests per second"
         />
 
         <label htmlFor="cc-spki" style={{ color: ui.inkSoft, fontSize: 14 }}>
-          Expected TLS SPKI
+          Pin the TLS certificate
         </label>
         <input
           id="cc-spki"
           value={expectedSpki}
           onChange={(e) => setExpectedSpki(e.target.value)}
-          placeholder="(optional, if verified out of band)"
+          placeholder="(optional) base64 SHA-256 of the public key"
         />
 
         {authKind === "api_key" && (
