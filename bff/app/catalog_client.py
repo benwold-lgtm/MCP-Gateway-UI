@@ -13,10 +13,17 @@ a provider-console BFF, and **that tenant's own token** on a tenant-plane BFF. T
 never the same value, and the catalog refuses to start if they are.
 
 The catalog enforces the tenant from the credential, so a tenant BFF configured with the wrong
-*tenant's* token is refused there. The one case it cannot see is a tenant BFF configured with
-the **provider's** token — that request authenticates correctly, as the provider, with every
-tenant's data in reach. `request()` closes it here, by asking `/whoami` once and refusing to
-use a credential that does not answer with this deployment's own tenant.
+*tenant's* token is refused there. The case it could not see on its own is a tenant BFF
+configured with the **provider's** token — that request authenticates correctly, as the
+provider, with every tenant's data in reach.
+
+**§7b closes that on the server, not here.** This client sends `X-Catalog-Tenant` — the tenant
+this deployment believes it serves — on every request, and the catalog refuses when the
+declaration disagrees with the credential. An earlier version of this file asked `/whoami` and
+decided client-side; that was a client-side gate on a server-enforced property, the same
+wrong-layer error ADR-0020 §7a had just corrected one component along. What is left here is
+sending the declaration and translating the server's refusal into a named condition — a client
+that forgot to send it would simply be refused, which is the property that matters.
 
 ADR-0020 §7: the catalog's unavailability must be a **named condition**, never inferred from
 an empty list — a provider console showing no device types because the catalog is down must
@@ -35,13 +42,25 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+#: The §7b declaration header. Must match `device_mcp_catalog.app.auth.TENANT_HEADER` in the
+#: gateway repository — two constants across a process boundary, which is exactly the shape
+#: that drifts, so the catalog answers a request missing it with a named error rather than a
+#: generic 403.
+TENANT_HEADER = "X-Catalog-Tenant"
+
+#: The catalog's §7b refusal codes. Both mean the same thing from here — this deployment's
+#: credential and its identity do not agree, and no request will succeed until that is fixed —
+#: so both map to `CatalogMisconfigured`. They stay distinguishable in the log line because
+#: they point an operator at different fixes: the wrong secret, or an un-updated console.
+_MISDELIVERY_CODES = ("ERR_CREDENTIAL_MISDELIVERY", "ERR_TENANT_NOT_DECLARED")
+
 
 class CatalogUnavailable(Exception):
     """The catalog service is unreachable, or this BFF has no token configured for it."""
 
 
 class CatalogMisconfigured(CatalogUnavailable):
-    """This BFF's catalog credential is not the one this deployment should hold (§7a).
+    """This BFF's catalog credential is not the one this deployment should hold (§7a/§7b).
 
     A subclass of `CatalogUnavailable` so that every existing route already answers it as the
     named 503 condition rather than a 500 — the catalog genuinely is unusable from here, and
@@ -55,77 +74,63 @@ class CatalogMisconfigured(CatalogUnavailable):
 class CatalogClient:
     def __init__(self, settings: Settings) -> None:
         self._configured = bool(settings.catalog_service_url and settings.catalog_api_token)
-        #: The tenant this deployment IS, and only when this deployment is a tenant plane.
-        #: A provider-console BFF (`provider_oidc_enabled`) legitimately holds the privileged
-        #: credential and speaks for no single tenant, so it is not checked against one — the
-        #: check is for the deployment that must NOT hold that credential.
-        self._expect_tenant_id = "" if settings.provider_oidc_enabled else settings.tenant_id
-        #: None = not yet asked. Kept as tri-state on purpose: a failed check must be
-        #: retried (the catalog may simply have been down), while a check that came back
-        #: *wrong* is a configuration fact that will not change until someone redeploys.
-        self._identity_ok: Optional[bool] = None
+        #: The tenant this deployment IS, declared on every request (§7b). Empty on a
+        #: provider-console BFF (`provider_oidc_enabled`), which legitimately holds the
+        #: privileged credential and speaks for no single tenant — a declaration from it
+        #: would itself be the misdelivery signal.
+        self._declared_tenant_id = "" if settings.provider_oidc_enabled else settings.tenant_id
         headers = {}
         if settings.catalog_api_token:
             headers["Authorization"] = f"Bearer {settings.catalog_api_token}"
+        if self._declared_tenant_id:
+            # Set once on the long-lived client rather than per call, so there is no request
+            # path that can omit it — the declaration being unskippable is the whole point.
+            headers[TENANT_HEADER] = self._declared_tenant_id
         self._client = httpx.AsyncClient(
             base_url=settings.catalog_service_url or "http://catalog-not-configured.invalid",
             headers=headers,
             timeout=httpx.Timeout(10.0, read=30.0),
         )
 
-    async def _check_identity(self) -> None:
-        """Confirm once that this deployment's credential speaks for this deployment's tenant.
-
-        Lazy rather than done at startup, deliberately: a startup probe would either make the
-        console's boot depend on the catalog being up — which ADR-0020 §7 refuses — or pass
-        silently whenever the catalog happened to be slow, which is a check that reports
-        success for the wrong reason.
-        """
-        if self._identity_ok is not None:
-            if self._identity_ok:
-                return
-            raise CatalogMisconfigured(
-                "this BFF's catalog credential does not belong to tenant " f"'{self._expect_tenant_id}' (ADR-0020 §7a)"
-            )
+    @staticmethod
+    def _misdelivery_error_code(resp: httpx.Response) -> Optional[str]:
+        """The catalog's §7b refusal codes, if this response is one."""
+        if resp.status_code != 403:
+            return None
         try:
-            resp = await self._client.get("/whoami")
-        except httpx.HTTPError as exc:
-            # Unreachable, not wrong. Leave the check unmade so it runs again later.
-            raise CatalogUnavailable(str(exc)) from exc
-        if resp.status_code != 200:
-            raise CatalogUnavailable(f"catalog rejected this BFF's credential ({resp.status_code})")
-
-        body = resp.json()
-        if body.get("kind") == "tenant" and body.get("tenant_id") == self._expect_tenant_id:
-            self._identity_ok = True
-            return
-
-        self._identity_ok = False
-        logger.error(
-            "catalog credential mismatch: this BFF serves tenant %r but its catalog token "
-            "authenticates as %r/%r. Refusing to use it — a tenant BFF holding the provider's "
-            "credential can read and write every tenant's catalog data (ADR-0020 §7a). "
-            "Disabling catalog features until this deployment is corrected.",
-            self._expect_tenant_id,
-            body.get("kind"),
-            body.get("tenant_id"),
-        )
-        raise CatalogMisconfigured(
-            f"this BFF's catalog credential does not belong to tenant '{self._expect_tenant_id}' (ADR-0020 §7a)"
-        )
+            detail = resp.json().get("detail")
+        except ValueError:
+            return None
+        if isinstance(detail, dict) and detail.get("error_code") in _MISDELIVERY_CODES:
+            return str(detail["error_code"])
+        return None
 
     async def request(self, method: str, path: str, *, json: Optional[Any] = None) -> httpx.Response:
         if not self._configured:
             raise CatalogUnavailable("CATALOG_SERVICE_URL / CATALOG_API_TOKEN not configured on this BFF")
-        # Skipped entirely on a provider console and on a tenant stack with no TENANT_ID
-        # configured — the latter cannot state which tenant it is, so there is nothing to
-        # check the credential against and inventing an expectation would be worse than none.
-        if self._expect_tenant_id:
-            await self._check_identity()
         try:
-            return await self._client.request(method, path, json=json)
+            resp = await self._client.request(method, path, json=json)
         except httpx.HTTPError as exc:
             raise CatalogUnavailable(str(exc)) from exc
+
+        code = self._misdelivery_error_code(resp)
+        if code:
+            # Logged at ERROR every time rather than once: unlike the old client-side check
+            # there is no cached verdict here, and a deployment holding the wrong credential
+            # should keep saying so. The page comes from the catalog's own counter (§7b);
+            # this line is what an operator reading the console's logs will find.
+            logger.error(
+                "catalog refused this BFF's credential (%s): this deployment declares tenant %r. "
+                "The credential is valid and is installed in the wrong console (ADR-0020 §7b) — "
+                "correct the provisioning, not the request. Catalog features are unavailable here "
+                "until it is fixed.",
+                code,
+                self._declared_tenant_id,
+            )
+            raise CatalogMisconfigured(
+                f"the catalog refused this deployment's credential for tenant " f"'{self._declared_tenant_id}' ({code})"
+            )
+        return resp
 
     async def aclose(self) -> None:
         await self._client.aclose()
