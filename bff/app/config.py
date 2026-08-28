@@ -138,6 +138,12 @@ class Settings:
     # inferred from an empty device-type list). Both must be set for provider curation
     # or the tenant claim view to work; see `catalog_client.CatalogClient`.
     catalog_service_url: str = ""
+    # ⚠️ **Per-deployment, not per-estate** (ADR-0020 §7a). On the provider console this is
+    # the privileged catalog credential; on a tenant-plane BFF it is THAT TENANT'S OWN token,
+    # which the provider provisions per tenant. Copying the provider's value into a tenant's
+    # deployment hands that tenant every other tenant's catalog data — the catalog cannot
+    # detect it (the request authenticates correctly, as the provider), so `CatalogClient`
+    # checks its own identity against `tenant_id` on first use instead.
     catalog_api_token: str = ""
 
 
