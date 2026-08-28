@@ -77,9 +77,9 @@ describe("CatalogConsole", () => {
     render(<CatalogConsole />);
     await screen.findByText(/nothing curated yet/i);
 
-    await user.type(screen.getByPlaceholderText("acme-sensor-x1"), "acme-x1");
-    await user.type(screen.getByPlaceholderText("Acme Sensor X1"), "Acme X1");
-    await user.type(screen.getByPlaceholderText("/openapi.json"), "/openapi.json");
+    await user.type(screen.getByPlaceholderText("e.g. nutanix-prism-central"), "acme-x1");
+    await user.type(screen.getByPlaceholderText("e.g. Nutanix Prism Central"), "Acme X1");
+    await user.type(screen.getByPlaceholderText("e.g. /openapi.json"), "/openapi.json");
     await user.click(screen.getByRole("button", { name: /^create$/i }));
 
     await waitFor(() =>
@@ -142,7 +142,7 @@ describe("CatalogConsole", () => {
     await user.click(await screen.findByText(/acme-sensor-x1/));
     await screen.findByText(/version history/i);
 
-    await user.type(screen.getByPlaceholderText(/mcp-t-/), "mcp-t-abc123");
+    await user.type(screen.getByPlaceholderText("e.g. t-039c899f37b8994d"), "mcp-t-abc123");
     await user.click(screen.getByRole("button", { name: /^assign$/i }));
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith("t1", "mcp-t-abc123"));
@@ -157,9 +157,50 @@ describe("CatalogConsole", () => {
     await user.click(await screen.findByText(/acme-sensor-x1/));
     await screen.findByText(/version history/i);
 
-    await user.type(screen.getByPlaceholderText(/mcp-t-/), "mcp-t-abc123");
+    await user.type(screen.getByPlaceholderText("e.g. t-039c899f37b8994d"), "mcp-t-abc123");
     await user.click(screen.getByRole("button", { name: /^revoke$/i }));
 
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("t1", "mcp-t-abc123"));
+  });
+  // --- the identifier's format is enforced where it is typed --------------------------
+
+  it("explains the identifier format instead of letting the catalog answer with a 422", async () => {
+    const user = userEvent.setup();
+    listDeviceTypes.mockResolvedValue({ device_types: [] });
+    render(<CatalogConsole />);
+
+    const id = await screen.findByPlaceholderText("e.g. nutanix-prism-central");
+    await user.type(id, "Acme Sensor X1");
+
+    // The rule lives in the catalog's own schema; before this it was discoverable only by
+    // submitting and reading the 422 that came back.
+    expect(
+      await screen.findByText(/lowercase letters, numbers and hyphens — no spaces or capitals/i),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the console's identifier rule identical to the catalog's own", () => {
+    // device_mcp_catalog/app/schemas.py: CreateDeviceType.slug
+    const CATALOG_RULE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+    for (const good of ["acme-sensor-x1", "nutanix-prism-central", "a", "a1"]) {
+      expect(CATALOG_RULE.test(good)).toBe(true);
+    }
+    for (const bad of ["Acme Sensor X1", "-leading", "trailing-", "has space", "UPPER", ""]) {
+      expect(CATALOG_RULE.test(bad)).toBe(false);
+    }
+  });
+
+  it("asks for a tenant identifier, not a namespace", async () => {
+    listDeviceTypes.mockResolvedValue({ device_types: [TYPE] });
+    getDeviceType.mockResolvedValue({ ...TYPE, versions: [] });
+    const user = userEvent.setup();
+    render(<CatalogConsole />);
+    await user.click(await screen.findByText(/acme-sensor-x1/));
+    await screen.findByText(/version history/i);
+
+    // The old placeholder showed `mcp-t-…`, which is the NAMESPACE. Pasting that names a
+    // tenant no registry knows, and the assign appears to succeed against nothing.
+    expect(screen.getByText(/identifier, not its namespace/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. t-039c899f37b8994d")).toBeInTheDocument();
   });
 });
