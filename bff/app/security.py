@@ -66,6 +66,33 @@ SCOPE_PROVIDER_ADMIN = "provider:admin"
 
 PROVIDER_SCOPES: frozenset[str] = frozenset({SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN})
 
+# The tenant scopes a *monitor* provider session may ask a tenant to grant (ADR-0017 §7b).
+# Read-only by construction: a read-only provider role asking for a capability that can
+# change a tenant's estate is the escalation the split exists to prevent. `tools:call` is
+# deliberately absent — invoking a tool is how a diagnosis is actually performed, but the
+# gateway cannot tell a read-only tool from a destructive one, so it stays admin-raised.
+MONITOR_REQUESTABLE_SCOPES: frozenset[str] = frozenset({"devices:read", "metrics:read"})
+
+
+def requestable_scopes_for(provider_scopes) -> frozenset[str] | None:
+    """Which tenant scopes this provider session may name on a support request, or ``None``
+    for "this plane does not constrain it" (ADR-0017 §7b).
+
+    **Admin is deliberately unconstrained here**, and that is not an oversight. What an
+    admin may ask for is bounded by two things that already exist and are stronger than a
+    list in this process: the tenant's own RBAC on its gateway, and a tenant administrator
+    reading the request and deciding. The console offers a short menu of the routine scopes,
+    but an operator who genuinely needs `backup:*` is not blocked from naming it.
+
+    A monitor is constrained, because for that role the menu *is* the authority statement:
+    without this check, narrowing the checkbox list would be cosmetic and a hand-made POST
+    would carry whatever it liked.
+    """
+    held = set(provider_scopes or [])
+    if SCOPE_PROVIDER_ADMIN in held:
+        return None
+    return MONITOR_REQUESTABLE_SCOPES
+
 
 def provider_scopes_for_groups(groups, mapping: dict[str, str]) -> frozenset[str]:
     """Map provider-IdP groups to provider scopes. **No fallback**: an unmapped group

@@ -32,15 +32,28 @@ from ..security import (
     _persist_session,
     current_session,
     require_provider_scope,
+    requestable_scopes_for,
 )
 
 router = APIRouter(prefix="/provider", tags=["provider"])
 
-_provider_admin = Depends(require_provider_scope(SCOPE_PROVIDER_ADMIN))
+# Every route in this module is monitor-or-admin since §7b. The admin-only dependency that
+# used to sit here is gone rather than left unused — catalog.py keeps its own, and that is
+# the one provider surface still genuinely admin-only.
 # Either scope may read the tenant directory: it's pure navigation (which tenants exist,
 # where to raise a request), not a grant of access to any of them — provider:monitor's
 # "aggregate estate health" is exactly this, and an admin needs the same list before they
 # can raise a request in the first place.
+#
+# ADR-0017 §7b: the same dependency now carries the whole support-request loop. Asking is
+# not itself an authority — the tenant decides — so gating the *ask* on provider:admin only
+# meant a read-only operator had to find an admin to ask on their behalf, which loses the
+# attribution §7 is built to preserve. What a monitor may ask *for* is narrowed instead, by
+# `requestable_scopes_for` on the raise route.
+#
+# Raise, poll, hold and release move together on purpose: a session that may raise but may
+# not poll can ask and never learn the answer, and one that may not release cannot hand
+# back what it holds. Splitting them would produce a role that is worse than either.
 _provider_read = Depends(require_provider_scope(SCOPE_PROVIDER_MONITOR, SCOPE_PROVIDER_ADMIN))
 
 
@@ -86,8 +99,40 @@ def _gateway_for(request: Request, tenant_id: str):
 
 
 @router.post("/support-requests")
-async def raise_support_request(body: RaiseSupportRequestBody, request: Request, session=_provider_admin) -> dict:
+async def raise_support_request(body: RaiseSupportRequestBody, request: Request, session=_provider_read) -> dict:
+    """Raise a request against one tenant's gateway (ADR-0017 §7, §7b).
+
+    The scope check runs **before** the tenant is resolved, so a refusal on authority reads
+    as one rather than as a 404 about the tenant named alongside it.
+
+    This is the only place the monitor constraint can be enforced. The tenant's gateway sees
+    the provider's single `support:request` credential, not which provider operator is
+    behind it, so it cannot tell a monitor's raise from an admin's — and the browser is not
+    a gate. Narrowing the console's checkbox list without this check would be decoration.
+    """
     subject = _provider_subject(session)
+    allowed = requestable_scopes_for(session.get("provider_scopes"))
+    if allowed is not None:
+        above = sorted(set(body.requested_scopes) - allowed)
+        if above:
+            await record_request(
+                request,
+                "provider.support_request.raise",
+                outcome=OUTCOME_DENIED,
+                target=subject,
+                tenant_id=body.tenant_id,
+                reason="scope_above_role",
+                requested_scopes=sorted(body.requested_scopes),
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This provider role may only request: "
+                    + ", ".join(sorted(allowed))
+                    + ". Refused: "
+                    + ", ".join(above)
+                ),
+            )
     gw = _gateway_for(request, body.tenant_id)
     payload = {
         "provider_subject": subject,
@@ -111,7 +156,7 @@ async def raise_support_request(body: RaiseSupportRequestBody, request: Request,
 
 
 @router.get("/support-requests/{request_id}")
-async def poll_support_request(request_id: str, tenant_id: str, request: Request, session=_provider_admin) -> dict:
+async def poll_support_request(request_id: str, tenant_id: str, request: Request, session=_provider_read) -> dict:
     """The raising session's own view. Not audited — a poll is a read, and the gateway's own
     approve/reject already recorded the decision that matters.
 
@@ -143,7 +188,7 @@ async def poll_support_request(request_id: str, tenant_id: str, request: Request
 
 
 @router.get("/support-grant")
-async def current_support_grant(session=_provider_admin) -> dict:
+async def current_support_grant(session=_provider_read) -> dict:
     """Whether this session currently holds a delegated support grant, its id and which
     tenant it is for — never the credential itself, which has no use to the browser and
     every use to an attacker."""
@@ -154,7 +199,7 @@ async def current_support_grant(session=_provider_admin) -> dict:
 
 
 @router.delete("/support-grant")
-async def release_support_grant(request: Request, session=_provider_admin) -> dict:
+async def release_support_grant(request: Request, session=_provider_read) -> dict:
     """End this session's own grant early. Idempotent, like the gateway's own revoke."""
     grant = session.get("support_grant")
     grant_id = grant.get("grant_id") if isinstance(grant, dict) else None

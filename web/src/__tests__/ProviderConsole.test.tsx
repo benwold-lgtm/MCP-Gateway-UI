@@ -93,6 +93,24 @@ describe("ProviderConsole", () => {
     expect(screen.getByRole("button", { name: /^catalog$/i })).toBeEnabled();
   });
 
+  it("hides Catalog from a monitor — every catalog route in the BFF is admin-only", async () => {
+    // The other half of the lab's `provview` finding: the rail item rendered for any mapped
+    // session, but `routers/catalog.py` gates even the reads on provider:admin, so a monitor
+    // clicking it got a panel whose every fetch answered 403.
+    currentSupportGrant.mockResolvedValue({ held: false } satisfies HeldSupportGrant);
+    renderConsole({ ...SESSION, provider_scopes: ["provider:monitor"] });
+    await screen.findByText(/raise a support request/i);
+    expect(screen.queryByRole("button", { name: /^catalog$/i })).not.toBeInTheDocument();
+  });
+
+  it("still gives a monitor the Access panel — it may raise, ADR-0017 §7b", async () => {
+    currentSupportGrant.mockResolvedValue({ held: false } satisfies HeldSupportGrant);
+    renderConsole({ ...SESSION, provider_scopes: ["provider:monitor"] });
+    // Not "signed in but mapped to nothing", and not a disabled form: a monitor raising its
+    // own request is what keeps §7's attribution intact instead of routing it via an admin.
+    expect(await screen.findByText(/raise a support request/i)).toBeInTheDocument();
+  });
+
   it("signs out", async () => {
     currentSupportGrant.mockResolvedValue({ held: false } satisfies HeldSupportGrant);
     const onSignOut = vi.fn();

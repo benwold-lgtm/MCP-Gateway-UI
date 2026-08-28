@@ -4,7 +4,7 @@ import { api, ApiError } from "../api";
 import type { HeldSupportGrant, TenantSummary } from "../types";
 import { health, ui } from "../tokens";
 
-/** The tenant vocabulary a provider operator may request (ADR-0017 §7).
+/** The tenant vocabulary a provider **admin** may request (ADR-0017 §7).
  *
  * Deliberately narrower than the gateway's own grantable range, which also includes
  * `backup:*`: a support grant reaching a tenant's backup archive is a heavier-weight case
@@ -12,7 +12,16 @@ import { health, ui } from "../tokens";
  * genuinely needs it is not blocked — the gateway still accepts a raise naming it — this
  * panel just does not make it one checkbox away from the routine ones.
  */
-const OFFERED_SCOPES = ["devices:read", "devices:write", "tools:call", "metrics:read"] as const;
+const ADMIN_SCOPES = ["devices:read", "devices:write", "tools:call", "metrics:read"] as const;
+
+/** What a `provider:monitor` session may request (ADR-0017 §7b).
+ *
+ * Unlike ADMIN_SCOPES this list is **not** a convenience menu — the BFF refuses a raise
+ * naming anything outside it (`requestable_scopes_for`, `security.py`). Kept in step with
+ * that constant by `test_provider_monitor_raise.py`, which asserts the two agree rather
+ * than trusting this file to be updated alongside it.
+ */
+const MONITOR_SCOPES = ["devices:read", "metrics:read"] as const;
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -38,13 +47,19 @@ type Phase =
  */
 export function SupportRequestPanel({
   held,
+  providerScopes,
   onGranted,
   onReleased,
 }: {
   held: HeldSupportGrant | null;
+  providerScopes: string[];
   onGranted: (grant: HeldSupportGrant) => void;
   onReleased: () => void;
 }) {
+  // Which checkboxes to offer. The narrowing is real authority on the BFF side, not a
+  // presentation choice — offering a box a monitor's raise would be refused for is the
+  // drift this panel was found in (a "Raise" button that answered Forbidden).
+  const offeredScopes = providerScopes.includes("provider:admin") ? ADMIN_SCOPES : MONITOR_SCOPES;
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [scopes, setScopes] = useState<Set<string>>(new Set());
   const [justification, setJustification] = useState("");
@@ -183,7 +198,7 @@ export function SupportRequestPanel({
         </select>
       </label>
       <div style={{ display: "grid", gap: 4 }}>
-        {OFFERED_SCOPES.map((scope) => (
+        {offeredScopes.map((scope) => (
           <label key={scope} style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={scopes.has(scope)} onChange={() => toggleScope(scope)} />
             {scope}

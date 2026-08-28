@@ -52,6 +52,14 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
 
   // Signed in but mapped to nothing: saying so beats every route answering 403.
   const scopes = session.provider_scopes ?? [];
+  const isAdmin = scopes.includes("provider:admin");
+
+  // A monitor has no catalog rail item to click, but state can still arrive there (a
+  // session whose scopes narrowed under it, a future deep link). Fall back rather than
+  // render a panel whose every fetch 403s.
+  useEffect(() => {
+    setView((v) => (v === "catalog" && !isAdmin ? "access" : v));
+  }, [isAdmin]);
 
   const held = heldGrant?.held ?? false;
 
@@ -79,8 +87,11 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
         hint={!held ? "needs an approved support grant" : undefined}
         onClick={() => setView("backup")}
       />
-      {/* Not gated on anything above — see the module doc. */}
-      <RailItem label="Catalog" active={view === "catalog"} onClick={() => setView("catalog")} />
+      {/* Not gated on the grant — see the module doc — but it *is* gated on provider:admin:
+          every catalog route in the BFF, the reads included, is admin-only
+          (`routers/catalog.py`). Rendering it for a monitor produced a rail item whose every
+          tab answered 403. */}
+      {isAdmin && <RailItem label="Catalog" active={view === "catalog"} onClick={() => setView("catalog")} />}
     </>
   );
 
@@ -109,13 +120,14 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
       {view === "access" && (
         <SupportRequestPanel
           held={heldGrant}
+          providerScopes={scopes}
           onGranted={setHeldGrant}
           onReleased={() => setHeldGrant({ held: false })}
         />
       )}
       {view === "backup" && held && <BackupPanel />}
       {(view === "devices" || view === "monitoring") && held && <TenantViews view={view} />}
-      {view === "catalog" && <CatalogConsole />}
+      {view === "catalog" && isAdmin && <CatalogConsole />}
     </Shell>
   );
 }
