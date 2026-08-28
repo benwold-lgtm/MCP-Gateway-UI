@@ -17,9 +17,10 @@ bounded by evicting the oldest tracked IP past ``max_tracked``.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections import OrderedDict, deque
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from fastapi import Request
 
@@ -66,27 +67,91 @@ class LoginThrottle:
         self._fails.pop(ip, None)
 
 
-def client_ip(request: Request, *, trusted_hops: int) -> str:
-    """The caller's IP for throttling, counted back from the *right* of X-Forwarded-For.
+_IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
-    ``trusted_hops`` is how many reverse proxies sit in front of this BFF. 0 (the default)
-    ignores the header entirely and uses the direct peer.
 
-    **Why from the right.** A proxy appends; it does not replace. So a client that sends
-    its own ``X-Forwarded-For: 1.2.3.4`` arrives at the app as ``1.2.3.4, <real client>``
-    — the left-most entry is whatever the caller made up, and the right-most is the only
-    one a trusted proxy actually observed. Reading from the left is therefore not a weaker
-    heuristic but an inversion: it hands every caller a free, per-request identity to
-    throttle under, which is worse than not trusting the header at all. With one proxy in
-    front, ``trusted_hops=1`` yields the address nginx saw, spoofed prefix or not.
+def parse_trusted_proxy_cidrs(values: Sequence[str]) -> list[_IPNetwork]:
+    """Parse ``TRUSTED_PROXY_CIDRS`` into networks, raising on anything invalid.
 
-    A chain shorter than configured means the request did not traverse the proxies it was
-    supposed to — someone reached the pod directly. That falls back to the peer address,
-    which cannot be forged, rather than to an entry the caller may have authored.
+    A bare address is accepted as a single-host range (``10.0.0.5`` -> ``10.0.0.5/32``) so an
+    operator naming one ingress IP need not write the mask. Invalid entries raise rather than
+    being skipped: a typo'd CIDR silently dropped from the trust set is exactly the quiet
+    mis-config that re-opens the hole it exists to close.
+
+    Deliberately the same shape as the gateway's ``ratelimit.parse_trusted_proxy_cidrs`` --
+    one concept, one spelling across both halves of the system.
+    """
+    nets: list[_IPNetwork] = []
+    for raw in values:
+        text = str(raw).strip()
+        if not text:
+            continue
+        # strict=False so "10.0.0.5/24" reads as its containing network rather than being
+        # rejected for having host bits set.
+        nets.append(ipaddress.ip_network(text, strict=False))
+    return nets
+
+
+def _parse_ip(text: str):
+    """An address from a header entry or peer, or None if it is not one.
+
+    Strips an IPv6 scope id, then unwraps an IPv4-mapped IPv6 address to the IPv4 it really
+    is, so ``::ffff:10.0.0.5`` matches a ``10.0.0.0/8`` trust entry.
+    """
+    try:
+        ip = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
+def _is_trusted(text: str, nets: Sequence[_IPNetwork]) -> bool:
+    ip = _parse_ip(text)
+    if ip is None:
+        return False
+    return any(ip.version == net.version and ip in net for net in nets)
+
+
+def client_ip(request: Request, *, trusted_cidrs: Sequence[_IPNetwork]) -> str:
+    """The caller's IP for throttling, resolved from the end of the chain we can vouch for.
+
+    Behind an ingress ``request.client.host`` is the controller, so every user shares one
+    throttle bucket and the real client has to come from ``X-Forwarded-For``. That header is
+    a list the caller can prepend to, so *which* entry is believed is the whole question.
+
+    **This replaces a hop count, and the difference is not cosmetic.** Counting a fixed
+    number of entries back from the right closes the spoofed-prefix case but still trusts the
+    header of whoever is connected -- so a caller who reaches this pod *directly*, skipping
+    the proxy entirely, supplies their own bucket key and gets a fresh one per request. The
+    walk below starts at the TCP peer and pops entries off the right only while each hop is
+    infrastructure we own, so an attacker who skips the proxy fails at the very first step:
+    their peer is untrusted, the walk never starts, and their header is never read. One
+    behind the proxy gets only the entry the proxy itself appended -- their real address --
+    and whatever they prepended sits to the left of it and is never reached.
+
+    Falls back to the peer when there is no header, when every hop is trusted (no client to
+    identify), or when the resolved hop is not a valid address -- a junk entry must never
+    become an arbitrary, attacker-chosen bucket key.
+
+    An empty trust set ignores the header entirely. That is the safe direction: it
+    over-counts a shared proxy address and never trusts a caller-supplied one.
+
+    This is the gateway's ``ratelimit.client_ip_key_func`` logic, deliberately mirrored. The
+    BFF originally grew its own weaker answer to a problem this system had already solved.
     """
     peer = request.client.host if request.client else "unknown"
-    if trusted_hops <= 0:
+    if not trusted_cidrs:
         return peer
-    hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
-    idx = len(hops) - trusted_hops
-    return hops[idx] if 0 <= idx < len(hops) else peer
+    xff = request.headers.get("x-forwarded-for")
+    if not xff:
+        return peer
+
+    entries = [e.strip() for e in xff.split(",") if e.strip()]
+    hop = peer
+    # Pop from the right while the hop we just came from is infrastructure we own.
+    while entries and _is_trusted(hop, trusted_cidrs):
+        hop = entries.pop()
+    if _is_trusted(hop, trusted_cidrs) or _parse_ip(hop) is None:
+        return peer
+    return hop

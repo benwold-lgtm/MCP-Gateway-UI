@@ -768,11 +768,19 @@ def test_successful_login_resets_failure_streak(app_client):
     assert c.post("/auth/login", json={"password": "wrong"}).status_code == 401
 
 
-def test_throttle_is_per_ip_via_trusted_forwarded_for(monkeypatch):
+def test_throttle_is_per_ip_behind_a_trusted_proxy(monkeypatch):
+    """Two users behind the ingress get separate budgets rather than one shared bucket.
+
+    The client address matters as much as the header here: `client_ip` walks from the TCP
+    peer, so the request has to *arrive from* a trusted range for the header to be read at
+    all. A TestClient defaults to the peer "testclient", which is not an address and would
+    collapse both users into the peer bucket -- the test would still pass its first
+    assertion and prove nothing about per-IP separation.
+    """
     monkeypatch.setenv("LOGIN_MAX_FAILURES", "2")
-    monkeypatch.setenv("TRUST_FORWARDED_FOR", "true")
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.244.0.0/16")
     app = create_app()
-    with TestClient(app) as c:
+    with TestClient(app, client=("10.244.0.125", 51234)) as c:
         a = {"X-Forwarded-For": "203.0.113.1"}
         b = {"X-Forwarded-For": "203.0.113.2"}
         for _ in range(2):
@@ -780,6 +788,18 @@ def test_throttle_is_per_ip_via_trusted_forwarded_for(monkeypatch):
         assert c.post("/auth/login", json={"password": "wrong"}, headers=a).status_code == 429
         # A different source IP has its own budget and is unaffected.
         assert c.post("/auth/login", json={"password": "wrong"}, headers=b).status_code == 401
+
+
+def test_a_caller_that_skips_the_proxy_shares_the_peer_bucket(monkeypatch):
+    """The complement, and the reason this is a trust set rather than a hop count: a caller
+    connecting straight to the pod cannot mint a fresh bucket per request by rotating the
+    header. Both attempts land on the peer's budget, so the second is throttled."""
+    monkeypatch.setenv("LOGIN_MAX_FAILURES", "1")
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.244.0.0/16")
+    app = create_app()
+    with TestClient(app, client=("203.0.113.9", 51234)) as c:
+        assert c.post("/auth/login", json={"password": "w"}, headers={"X-Forwarded-For": "1.1.1.1"}).status_code == 401
+        assert c.post("/auth/login", json={"password": "w"}, headers={"X-Forwarded-For": "2.2.2.2"}).status_code == 429
 
 
 def test_login_throttle_window_rolls_off(monkeypatch):

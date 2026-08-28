@@ -29,20 +29,23 @@ data:
   CORS_ORIGINS: ""
   # Set true behind TLS so the session cookie is marked Secure.
   COOKIE_SECURE: "true"
-  # How many reverse proxies sit in front of the BFF. These manifests put an ingress in
-  # front, and that is exactly one hop — so "1" is correct for this topology and is what
-  # makes the login throttle count each caller separately.
+  # Address ranges of the reverse proxies in front of the BFF. These manifests put an
+  # ingress in front, so this must cover wherever that controller's traffic comes FROM --
+  # its pod IP on the pod network, or the node IP when it runs host-network. Check with:
+  #   kubectl -n <ns> logs deploy/device-mcp-ui-bff | grep POST\ /auth/login
+  # and read the source address; that is the value that has to fall inside these ranges.
   #
-  # At 0 the throttle sees the ingress controller's pod address for EVERY user and
-  # collapses into one shared bucket: one person fumbling a password throttles everyone,
-  # break-glass included, and the audited lockout event names the ingress rather than
-  # whoever was being brute-forced.
+  # Empty ignores X-Forwarded-For and throttles on the direct peer -- behind an ingress
+  # that is the controller's address for EVERY user, so one person fumbling a password
+  # throttles everyone, break-glass included, and the audited lockout names the ingress
+  # rather than whoever was being brute-forced.
   #
-  # Count the hops that actually exist and no more. The header is a list the caller can
-  # prepend to; each hop claimed beyond the real ones is one entry the caller gets to
-  # write. If you add a CDN or an external load balancer in front of the ingress, raise
-  # this to match — and if you remove one, lower it.
-  TRUSTED_PROXY_HOPS: "1"
+  # Ranges, not a hop count. A count says how far along the header to walk but not whether
+  # the request came through the proxy at all, so a caller reaching the pod directly still
+  # picks their own throttle bucket. Same setting shape as the gateway's
+  # `security.trusted_proxy_cidrs`. Widen this only to ranges you actually operate: every
+  # address you trust is one whose X-Forwarded-For you have agreed to believe.
+  TRUSTED_PROXY_CIDRS: "10.244.0.0/16"
   # Federated identity (OIDC SSO, ADR-0007). Set OIDC_ENABLED "true" and fill these to
   # enable SSO; OIDC_CLIENT_SECRET goes in the Secret, not here. Local passwords stay as
   # break-glass. The gateway must run a matching gateway.oidc config (issuer/audience/

@@ -47,13 +47,17 @@ class Settings:
     # attempts from one client IP within login_window_seconds, further attempts get 429.
     login_max_failures: int = 5
     login_window_seconds: int = 60
-    # How many reverse proxies sit in front of this BFF. 0 ignores X-Forwarded-For and
-    # throttles on the direct peer. Behind an ingress that is the *controller's* address
-    # for every user, which collapses the throttle into one shared bucket: one person
-    # fumbling a password then throttles everyone, break-glass included. Set it to the
-    # real hop count so each caller is counted separately — and no higher, since every hop
-    # you claim beyond the ones that exist is one the caller gets to write for you.
-    trusted_proxy_hops: int = 0
+    # The address ranges of the reverse proxies in front of this BFF. Empty (the default)
+    # ignores X-Forwarded-For and throttles on the direct peer — behind an ingress that is
+    # the *controller's* address for every user, collapsing the throttle into one shared
+    # bucket where one person fumbling a password throttles everyone, break-glass included.
+    #
+    # Ranges rather than a hop count, matching the gateway's `security.trusted_proxy_cidrs`
+    # (`ratelimit.py`) — one concept, one spelling across both halves. A count says how far
+    # to walk but not whether the request came through the proxy at all, so a caller who
+    # reaches this pod directly still supplies their own bucket key. A trust set answers
+    # both: the walk starts at the TCP peer and only proceeds while each hop is ours.
+    trusted_proxy_cidrs: list[str] = field(default_factory=list)
     # Federated identity (OIDC, ADR-0007). When enabled, the BFF runs an Authorization
     # Code + PKCE login against the IdP and relays the user's access token upstream
     # (Mode A token passthrough), so the gateway authorizes the real user. Local
@@ -166,28 +170,45 @@ def _secret(env_name: str, file_env: str) -> str:
     return ""
 
 
-def _trusted_proxy_hops() -> int:
-    """How many reverse proxies front this BFF.
+class ProxyTrustError(ValueError):
+    """Raised at startup for a proxy-trust configuration that cannot be honoured safely."""
 
-    ``TRUSTED_PROXY_HOPS`` is the setting. ``TRUST_FORWARDED_FOR=true`` is still honoured
-    as "one hop", because that is what every deployment that set it meant — it named a
-    topology, and the topology has not changed. What changed is which entry of the header
-    gets believed: the old code read the left-most, which is the caller's own text. So a
-    deployment carrying the old flag is *more* correct after this change, not less, and
-    silently ignoring the flag would quietly return it to one shared throttle bucket.
 
-    A non-numeric or negative value reads as 0 — the safe direction, since 0 only ever
-    over-counts a shared proxy address and never trusts a caller-supplied one.
+def _trusted_proxy_cidrs() -> list[str]:
+    """The proxy ranges to trust in X-Forwarded-For.
+
+    ``TRUSTED_PROXY_CIDRS`` is the setting: a comma-separated list of networks or bare
+    addresses (``10.244.0.0/16, 172.18.0.5``). Empty means the header is ignored entirely.
+
+    ``TRUST_FORWARDED_FOR`` and ``TRUSTED_PROXY_HOPS`` are recognised **only so that setting
+    them fails loudly**, the same treatment ``COOKIE_DOMAIN`` gets above. Both said "trust
+    this header" without saying whose hops are yours, and trusting it without that is what
+    lets any caller choose their own throttle bucket. Silently ignoring them would be worse
+    than refusing: the deployment would boot, look configured, and quietly return every user
+    to one shared bucket. Refusing names the replacement instead.
+
+    Invalid entries raise rather than being skipped -- a typo'd CIDR dropped from the trust
+    set re-opens the hole it exists to close.
     """
-    raw = os.getenv("TRUSTED_PROXY_HOPS", "").strip()
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            return 0
-    if os.getenv("TRUST_FORWARDED_FOR", "false").strip().lower() in ("1", "true", "yes"):
-        return 1
-    return 0
+    raw = os.getenv("TRUSTED_PROXY_CIDRS", "").strip()
+    values = _split(raw)
+    if values:
+        return values
+    legacy = [
+        name
+        for name in ("TRUST_FORWARDED_FOR", "TRUSTED_PROXY_HOPS")
+        if os.getenv(name, "").strip() not in ("", "false", "0", "no")
+    ]
+    if legacy:
+        raise ProxyTrustError(
+            f"{' and '.join(legacy)} is set but is no longer honoured. Trusting "
+            "X-Forwarded-For without knowing which hops are yours lets any caller choose "
+            "their own throttle bucket, so a hop count is not enough. Set "
+            "TRUSTED_PROXY_CIDRS to the address range(s) of your reverse proxies instead "
+            "(e.g. TRUSTED_PROXY_CIDRS=10.244.0.0/16), and remove "
+            f"{' and '.join(legacy)}. Leave it empty to throttle on the direct peer."
+        )
+    return []
 
 
 def _json_map(env_name: str) -> dict:
@@ -249,7 +270,7 @@ def load_settings() -> Settings:
         cookie_domain=os.getenv("COOKIE_DOMAIN", "").strip(),
         login_max_failures=int(os.getenv("LOGIN_MAX_FAILURES", "5")),
         login_window_seconds=int(os.getenv("LOGIN_WINDOW_SECONDS", "60")),
-        trusted_proxy_hops=_trusted_proxy_hops(),
+        trusted_proxy_cidrs=_trusted_proxy_cidrs(),
         # OIDC (federated identity). Disabled unless OIDC_ENABLED is truthy AND an
         # issuer + client id are configured (validated in OIDCClient).
         oidc_enabled=os.getenv("OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),

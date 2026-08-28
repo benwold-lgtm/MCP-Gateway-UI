@@ -29,7 +29,7 @@ from .oidc import OIDCClient
 from .routers import api, auth, catalog, provider, support
 from .sessions import MemorySessionStore, RedisSessionStore
 from .tenant_registry import TenantRegistryError, load_tenant_registry
-from .throttle import LoginThrottle
+from .throttle import LoginThrottle, parse_trusted_proxy_cidrs
 
 
 def create_app() -> FastAPI:
@@ -131,6 +131,10 @@ def create_app() -> FastAPI:
         max_failures=settings.login_max_failures,
         window=settings.login_window_seconds,
     )
+    # Parsed once here, not per request: an invalid CIDR must stop the deployment at
+    # startup, where it is attributable, rather than raising on some later login attempt --
+    # and re-parsing a trust set on every request to a login route is work with no purpose.
+    app.state.trusted_proxy_cidrs = parse_trusted_proxy_cidrs(settings.trusted_proxy_cidrs)
     # Hash-chained audit (gateway F-57 model, ADR-0013 §9/§10). Built here rather than
     # lazily so the chain re-seeds from its own tail once, at startup, instead of racing
     # the first request.
