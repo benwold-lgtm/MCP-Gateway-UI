@@ -28,6 +28,11 @@ vi.mock("../api", () => ({
   },
 }));
 
+// The role whose menu each pre-existing case assumes. Made explicit at ADR-0017 §7b, when
+// what the panel offers stopped being the same for every provider session.
+const ADMIN = ["provider:admin"];
+const MONITOR = ["provider:monitor"];
+
 const TENANTS = [
   { tenant_id: "t-1", display_name: "Acme Inc" },
   { tenant_id: "t-2", display_name: "Zeta Corp" },
@@ -56,7 +61,7 @@ async function raise(user: ReturnType<typeof userEvent.setup>) {
 
 describe("SupportRequestPanel", () => {
   it("cannot raise until a tenant is picked, a scope is picked and a justification is written", async () => {
-    render(<SupportRequestPanel held={null} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
     expect(screen.getByRole("button", { name: /raise request/i })).toBeDisabled();
   });
 
@@ -68,7 +73,7 @@ describe("SupportRequestPanel", () => {
       expires_at: 1,
     });
     pollSupportRequest.mockResolvedValue({ status: "pending" });
-    render(<SupportRequestPanel held={null} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
 
     await raise(user);
 
@@ -89,7 +94,7 @@ describe("SupportRequestPanel", () => {
       grant_id: "g1",
       credential: "sgr_secret",
     });
-    render(<SupportRequestPanel held={null} onGranted={onGranted} onReleased={vi.fn()} />);
+    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={onGranted} onReleased={vi.fn()} />);
 
     await raise(user);
     await act(async () => {
@@ -109,7 +114,7 @@ describe("SupportRequestPanel", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     raiseSupportRequest.mockResolvedValue({ request_id: "r1", requested_scopes: [], expires_at: 1 });
     pollSupportRequest.mockResolvedValue({ status: "rejected" });
-    render(<SupportRequestPanel held={null} onGranted={vi.fn()} onReleased={vi.fn()} />);
+    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
 
     await raise(user);
     await act(async () => {
@@ -127,6 +132,7 @@ describe("SupportRequestPanel", () => {
   it("shows the held tenant's display name and never renders the credential itself", async () => {
     render(
       <SupportRequestPanel
+        providerScopes={ADMIN}
         held={{ held: true, grant_id: "g1", tenant_id: "t-1" }}
         onGranted={vi.fn()}
         onReleased={vi.fn()}
@@ -141,6 +147,7 @@ describe("SupportRequestPanel", () => {
     listTenants.mockResolvedValue({ tenants: [] });
     render(
       <SupportRequestPanel
+        providerScopes={ADMIN}
         held={{ held: true, grant_id: "g1", tenant_id: "unknown-tenant" }}
         onGranted={vi.fn()}
         onReleased={vi.fn()}
@@ -155,6 +162,7 @@ describe("SupportRequestPanel", () => {
     releaseSupportGrant.mockResolvedValue({ released: "g1" });
     render(
       <SupportRequestPanel
+        providerScopes={ADMIN}
         held={{ held: true, grant_id: "g1", tenant_id: "t-1" }}
         onGranted={vi.fn()}
         onReleased={onReleased}
@@ -164,5 +172,57 @@ describe("SupportRequestPanel", () => {
     await user.click(screen.getByRole("button", { name: /release grant/i }));
 
     await waitFor(() => expect(onReleased).toHaveBeenCalled());
+  });
+  // --- ADR-0017 §7b: what the menu offers follows the role ------------------------------
+
+  it("offers a monitor only the read scopes it is permitted to request", async () => {
+    render(<SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />);
+
+    expect(await screen.findByLabelText("devices:read")).toBeInTheDocument();
+    expect(screen.getByLabelText("metrics:read")).toBeInTheDocument();
+    // The lab finding, inverted: a box offered here is a raise the BFF would refuse.
+    expect(screen.queryByLabelText("devices:write")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("tools:call")).not.toBeInTheDocument();
+  });
+
+  it("offers an admin the full routine menu", async () => {
+    render(<SupportRequestPanel held={null} providerScopes={ADMIN} onGranted={vi.fn()} onReleased={vi.fn()} />);
+
+    for (const scope of ["devices:read", "devices:write", "tools:call", "metrics:read"]) {
+      expect(await screen.findByLabelText(scope)).toBeInTheDocument();
+    }
+  });
+
+  it("lets a monitor actually raise — the panel is not read-only for it", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    raiseSupportRequest.mockResolvedValue({ request_id: "r-1" });
+    pollSupportRequest.mockResolvedValue({ status: "pending" });
+    render(<SupportRequestPanel held={null} providerScopes={MONITOR} onGranted={vi.fn()} onReleased={vi.fn()} />);
+
+    await user.selectOptions(await screen.findByLabelText("Tenant"), "t-1");
+    await user.click(screen.getByLabelText("devices:read"));
+    await user.type(screen.getByRole("textbox"), "INC-9");
+    await user.click(screen.getByRole("button", { name: /raise/i }));
+
+    await waitFor(() =>
+      expect(raiseSupportRequest).toHaveBeenCalledWith({
+        tenant_id: "t-1",
+        requested_scopes: ["devices:read"],
+        justification: "INC-9",
+      }),
+    );
+  });
+
+  it("treats a session holding both scopes as an admin", async () => {
+    render(
+      <SupportRequestPanel
+        held={null}
+        providerScopes={["provider:monitor", "provider:admin"]}
+        onGranted={vi.fn()}
+        onReleased={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByLabelText("tools:call")).toBeInTheDocument();
   });
 });

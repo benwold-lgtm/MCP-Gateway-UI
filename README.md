@@ -283,14 +283,36 @@ request the provider raised. That is a different mechanism, not a stronger versi
 one — porting the act-on-tenant machinery forward and then replacing it would have meant
 maintaining two authorization models in parallel for no benefit. The replacement (raising a
 request, polling for approval, the credential the gateway hands back) is ADR-0017 slice 7
-(BFF) and slice 8 (UI); neither has shipped here yet, so the provider console currently shows
-Devices/Monitoring/Backup as visible-but-disabled rather than reachable.
+(BFF) and slice 8 (UI); **both have since shipped**, so Devices/Monitoring/Backup are
+reachable once a grant is held and visible-but-disabled until then.
 
 This is a real, temporary regression in what the provider console can do — and a deliberately
 safe one. Refusing unconditionally is a fail-closed interim, not a silent gap: nothing here
 was left half-migrated, and no route quietly stopped checking anything. See
 [ADR-0017](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0017-provider-authority-is-delegated.md)
 and the gateway repo's `docs/adr/README.md` item 7 for the full slice-by-slice history.
+
+### Who may raise a support request (ADR-0017 §7b)
+
+Both provider roles may raise, poll, hold and release a support request. What differs is the
+**tenant vocabulary each may name on it**:
+
+| Provider scope | May raise | May request | Catalog |
+|---|---|---|---|
+| `provider:monitor` | yes | `devices:read`, `metrics:read` only | no |
+| `provider:admin` | yes | unconstrained — the tenant's RBAC and its admin's approval are the bound | yes |
+
+Asking is not itself an authority: nothing is granted until a tenant administrator approves
+the request in their own console, and the scopes they approve are the scopes the grant
+carries. Gating the *ask* on `provider:admin` only meant a read-only operator had to find an
+admin to ask on their behalf — and then `provider_subject` named the admin rather than the
+operator who would use the grant, which is the identity collapse ADR-0017 §7 exists to avoid.
+
+The monitor constraint is enforced **here, in the BFF** (`security.requestable_scopes_for`),
+because it is the only component that knows both the authenticated operator's provider scopes
+and the request being raised: the tenant's gateway sees only the provider organisation's
+single `support:request` credential (§7a), and the browser is not a gate. A refused raise is
+audited as `denied`/`scope_above_role` and never reaches the tenant.
 
 ### Catalog (ADR-0020)
 
