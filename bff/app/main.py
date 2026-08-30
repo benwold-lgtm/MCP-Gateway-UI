@@ -26,7 +26,7 @@ from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .gateway_pool import TenantGatewayPool
 from .oidc import OIDCClient
-from .routers import api, auth, catalog, provider, support
+from .routers import api, auth, catalog, enrolment, provider, support
 from .sessions import MemorySessionStore, RedisSessionStore
 from .tenant_registry import TenantRegistryError, load_tenant_registry
 from .throttle import LoginThrottle, parse_trusted_proxy_cidrs
@@ -196,6 +196,10 @@ def create_app() -> FastAPI:
     if settings.provider_oidc_enabled:
         app.include_router(provider.router)
         app.include_router(catalog.router)
+        # ADR-0024 §10: redeeming a tenant's invitation. Provider-plane by construction, like
+        # the two above — enrolling is the provider's act, and the tenant's half of the
+        # handshake happens in the tenant's own console.
+        app.include_router(enrolment.router)
     else:
         app.include_router(support.router)
 
