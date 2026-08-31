@@ -23,6 +23,7 @@ import httpx
 from fastapi import HTTPException, Request
 
 from . import sessions
+from .gateway_pool import TenantUnreachable
 from .security import PLANE_PROVIDER, _persist_session, current_session, session_plane, upstream_bearer
 
 
@@ -107,12 +108,18 @@ async def _gateway_for(request: Request):
             detail="This provider session's support grant has no recorded tenant to relay to.",
         )
     try:
-        return request.app.state.gateway_pool.get(tenant_id)
+        return await request.app.state.gateway_pool.get(tenant_id)
     except KeyError:
         raise HTTPException(
             status_code=500,
             detail=f"This provider session's support grant names a tenant the registry no longer has: {tenant_id!r}.",
         ) from None
+    except TenantUnreachable as exc:
+        # Distinct from the KeyError above on purpose: the tenant IS known, and the relay
+        # cannot proceed because its credential could not be fetched. A 503 says the estate is
+        # intact and something upstream is down, where the 500 above says the grant points at
+        # a tenant that no longer exists.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 async def relay_get(request: Request, path: str) -> httpx.Response:

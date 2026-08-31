@@ -37,6 +37,11 @@ class TenantEntry:
     # which is a legitimate state (a dev/lab tenant gateway with no auth configured), not an
     # error — mirrors how an empty `gateway_token` already behaves for a single-tenant BFF.
     gateway_token_file: str = ""
+    #: True for an entry learned from the catalog's tenant registry (ADR-0024 §11) rather than
+    #: from `PROVIDER_TENANT_REGISTRY`. Its gateway credential is deliberately **not** carried
+    #: here: it is held encrypted in the catalog and fetched when the tenant is actually
+    #: contacted, never as part of a listing. A listing is a screen left open.
+    from_catalog: bool = False
 
 
 class TenantRegistryError(ValueError):

@@ -83,7 +83,7 @@ def provider_console(monkeypatch, tmp_path):
     app = create_app()
     gw = _Gateway()
 
-    def _fake_pool_get(tenant_id):
+    async def _fake_pool_get(tenant_id):
         if tenant_id != TENANT_ID:
             raise KeyError(tenant_id)
         return gw

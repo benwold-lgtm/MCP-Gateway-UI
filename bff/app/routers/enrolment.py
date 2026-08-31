@@ -7,10 +7,13 @@ A tenant administrator issues a one-time invitation in their own console and han
 of band, along with their gateway's URL. A provider operator pastes both here, and this route
 performs the three steps that were nine manual ones:
 
-1. **Mint that tenant's catalog credential** (ADR-0020 §7a) on the catalog service.
+1. **Record the tenant and mint its catalog credential** (ADR-0020 §7a, ADR-0024 §11) — one
+   call, one transaction in the catalog, so the registry entry and the credential cannot
+   half-land.
 2. **Redeem the invitation** against the tenant's gateway, handing over the catalog's address
    and that credential, and receiving the provider's own standing credential in return.
-3. **Verify the tenant is who we minted for**, and revoke the credential if not.
+3. **Verify the tenant is who we minted for**, and withdraw the whole enrolment if not.
+4. **Record the provider's credential** against the registry entry, completing it.
 
 **Step 3 is not decoration.** The operator types the tenant id when minting, and a typo would
 mint a credential for tenant A and install it in tenant B's console — the misdelivery ADR-0020
@@ -21,9 +24,16 @@ catches it here, before the credential is ever installed. The gateway reports it
 all if it has none.
 
 **Failures compensate.** A credential minted in step 1 and orphaned by a failure in step 2 is a
-live credential for a tenant that was never enrolled — so it is revoked before the error is
-returned. That leaves the operator with a plain failure to retry rather than a caller table
-slowly filling with credentials nobody can account for.
+live credential for a tenant that was never enrolled — so the enrolment is withdrawn before the
+error is returned, which under §11 removes the registry entry and revokes the credential in one
+act. That leaves the operator with a plain failure to retry rather than a caller table slowly
+filling with credentials nobody can account for.
+
+**Step 4 is the exception, and deliberately so.** By then the tenant's gateway holds a live
+enrolment, and withdrawing would destroy the provider's only copy of the credential it just
+received while leaving that enrolment standing. So a failure there leaves the tenant *listed and
+unreachable* — a state the estate shows, which an operator can see and repair by enrolling
+again. §11 argues that at length: a visible incomplete state beats an invisible one.
 """
 
 from __future__ import annotations
@@ -57,24 +67,42 @@ def _provider_subject(session) -> str:
 _REDEEM_TIMEOUT = httpx.Timeout(10.0, read=20.0)
 
 
-async def _mint_catalog_credential(request: Request, tenant_id: str, label: str) -> tuple[str, str]:
-    """Step 1. Returns `(credential_id, credential)` — the plaintext exists only here."""
-    resp = await request.app.state.catalog.request("POST", f"/tenants/{tenant_id}/credentials", json={"label": label})
+async def _enrol_in_catalog(request: Request, tenant_id: str, display_name: str, gateway_url: str, label: str) -> str:
+    """Step 1 (ADR-0024 §11). Returns the tenant's catalog credential — the plaintext exists
+    only here, on its way to the tenant's gateway.
+
+    One call rather than "mint a credential, then have an operator add a registry entry". That
+    second half used to be a line in this route's own response telling a human what to go and
+    edit; it is now the other statement in the same transaction.
+    """
+    resp = await request.app.state.catalog.request(
+        "POST",
+        "/tenants",
+        json={
+            "tenant_id": tenant_id,
+            "display_name": display_name or tenant_id,
+            "gateway_url": gateway_url,
+            "label": label,
+        },
+    )
     if resp.status_code != 201:
         raise HTTPException(
             status_code=502,
-            detail=f"the catalog would not issue a credential for '{tenant_id}' ({resp.status_code})",
+            detail=f"the catalog would not enrol '{tenant_id}' ({resp.status_code})",
         )
-    body = resp.json()
-    return body["id"], body["credential"]
+    return str(resp.json()["credential"])
 
 
-async def _revoke_catalog_credential(request: Request, tenant_id: str, credential_id: str) -> None:
-    """Compensate for a redemption that did not complete. Best-effort by necessity — if this
-    fails too, the operator is told, because a credential we could not withdraw is exactly the
-    thing they need to know exists."""
+async def _withdraw_from_catalog(request: Request, tenant_id: str) -> None:
+    """Compensate for a redemption that did not complete: remove the registry entry and revoke
+    the credential, which §11 makes one transaction rather than two calls this route would have
+    to sequence and could be interrupted between.
+
+    Best-effort by necessity — if this fails too the operator is told, because an enrolment we
+    could not withdraw is exactly the thing they need to know exists.
+    """
     try:
-        await request.app.state.catalog.request("DELETE", f"/tenants/{tenant_id}/credentials/{credential_id}")
+        await request.app.state.catalog.request("DELETE", f"/tenants/{tenant_id}")
     except CatalogUnavailable:
         pass
 
@@ -87,6 +115,7 @@ async def redeem(request: Request, session=_provider_admin):
     gateway_url = str(body.get("gateway_url", "")).strip().rstrip("/")
     tenant_id = str(body.get("tenant_id", "")).strip()
     label = str(body.get("label", "")).strip() or "enrolment"
+    display_name = str(body.get("display_name", "")).strip()
 
     missing = [n for n, v in (("code", code), ("gateway_url", gateway_url), ("tenant_id", tenant_id)) if not v]
     if missing:
@@ -99,9 +128,9 @@ async def redeem(request: Request, session=_provider_admin):
             detail="this console has no catalog configured, so it cannot issue the tenant's credential",
         )
 
-    # --- 1. mint ---------------------------------------------------------------------------
+    # --- 1. record the tenant and mint its credential, in one transaction --------------------
     try:
-        credential_id, catalog_credential = await _mint_catalog_credential(request, tenant_id, label)
+        catalog_credential = await _enrol_in_catalog(request, tenant_id, display_name, gateway_url, label)
     except CatalogUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -124,12 +153,12 @@ async def redeem(request: Request, session=_provider_admin):
         # if the enrolment did happen it now holds a dead catalog credential, which the tenant
         # sees as a named "catalog unavailable" condition and can resolve by re-enrolling —
         # strictly better than a live credential belonging to an enrolment nobody recorded.
-        await _revoke_catalog_credential(request, tenant_id, credential_id)
+        await _withdraw_from_catalog(request, tenant_id)
         await record_request(request, "provider.enrolment.redeem", outcome="failure", target=tenant_id)
         raise HTTPException(status_code=502, detail=f"could not reach the tenant's gateway: {exc}") from exc
 
     if redeemed.status_code != 201:
-        await _revoke_catalog_credential(request, tenant_id, credential_id)
+        await _withdraw_from_catalog(request, tenant_id)
         await record_request(request, "provider.enrolment.redeem", outcome="failure", target=tenant_id)
         detail: Any
         try:
@@ -143,7 +172,7 @@ async def redeem(request: Request, session=_provider_admin):
     # --- 3. verify -------------------------------------------------------------------------
     reported = str(enrolled.get("tenant_id", ""))
     if reported != tenant_id:
-        await _revoke_catalog_credential(request, tenant_id, credential_id)
+        await _withdraw_from_catalog(request, tenant_id)
         await record_request(request, "provider.enrolment.misdelivered", outcome="failure", target=tenant_id)
         raise HTTPException(
             status_code=409,
@@ -157,16 +186,52 @@ async def redeem(request: Request, session=_provider_admin):
             },
         )
 
+    # --- 4. complete the registry entry ------------------------------------------------------
+    # The provider's own standing credential for this tenant's gateway. It is recorded rather
+    # than returned: handing it to the operator to paste somewhere was the manual step §11
+    # exists to remove, and it is the one secret in this flow whose whole purpose is to be
+    # presented again later. It does not appear in this response or in the audit record.
+    enrolment_id = str(enrolled.get("enrolment_id") or "")
+    try:
+        recorded = await request.app.state.catalog.request(
+            "PUT",
+            f"/tenants/{tenant_id}/gateway-credential",
+            json={"gateway_credential": enrolled.get("credential") or "", "enrolment_id": enrolment_id},
+        )
+        completed = recorded.status_code == 200
+    except CatalogUnavailable:
+        completed = False
+
+    if not completed:
+        # Deliberately NOT withdrawn — see the module docstring. The tenant's gateway holds a
+        # live enrolment now, and withdrawing here would revoke the credential it is using while
+        # destroying our only copy of the one it gave us. The tenant stays listed and
+        # unreachable, which the estate shows, and re-enrolling repairs it.
+        await record_request(request, "provider.enrolment.incomplete", outcome="failure", target=tenant_id)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "ERR_ENROLMENT_NOT_RECORDED",
+                "message": (
+                    f"tenant '{tenant_id}' was enrolled on its gateway, but the catalog would not "
+                    "record the credential it returned. The tenant is listed and unreachable "
+                    "until it is enrolled again with a fresh invitation (ADR-0024 §11)."
+                ),
+            },
+        )
+
+    # The pool may hold a client built from this tenant's previous credential — re-enrolment
+    # issues a new one, and a cached client would keep presenting the old until it was revoked
+    # and then fail for a reason nothing in this process would connect to this enrolment.
+    request.app.state.gateway_pool.invalidate(tenant_id)
+    await request.app.state.tenant_directory.refresh(request.app.state.catalog)
+
     await record_request(request, "provider.enrolment.redeem", outcome="success", target=tenant_id)
     return {
         "tenant_id": reported,
-        "enrolment_id": enrolled.get("enrolment_id"),
+        "enrolment_id": enrolment_id,
         "approved_by": enrolled.get("approved_by"),
         "approved_at": enrolled.get("approved_at"),
         "gateway_url": gateway_url,
-        # The provider's own standing credential for this tenant's gateway. Returned to the
-        # operator rather than stored: this console has no persistent store of its own
-        # (ADR-0020 §7 keeps storage out of the BFF), and the registry that should hold it is
-        # still static config — see the route's own note in the console UI.
-        "credential": enrolled.get("credential"),
+        "recorded": True,
     }
