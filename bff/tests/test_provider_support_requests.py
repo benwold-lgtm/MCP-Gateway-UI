@@ -22,6 +22,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.audit import OUTCOME_DENIED  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 PROVIDER_ISS = "https://provider-idp.example.com"
@@ -34,12 +35,22 @@ class _Gateway:
     def __init__(self):
         self.calls: list[dict] = []
         self.responses: dict[tuple[str, str], httpx.Response] = {}
+        self.raises: Exception | None = None
 
     def when(self, method: str, path: str, response: httpx.Response) -> None:
         self.responses[(method, path)] = response
 
+    def fails_with(self, exc: Exception) -> None:
+        """Make the next and every call raise — a tenant that cannot be reached at all.
+
+        A canned `httpx.Response` cannot express this: the failures that matter here (DNS,
+        refused connection, timeout) happen before there is any response to return."""
+        self.raises = exc
+
     async def request(self, method, path, *, json=None, bearer=None, headers=None):
         self.calls.append({"method": method, "path": path, "json": json, "bearer": bearer})
+        if self.raises is not None:
+            raise self.raises
         return self.responses.get((method, path), httpx.Response(200, json={}))
 
     async def get(self, path, *, bearer=None):
@@ -50,7 +61,11 @@ TENANT_ID = "t-1"
 
 
 @pytest.fixture
-def provider_console(monkeypatch):
+def provider_console(monkeypatch, tmp_path):
+    # AUDIT_PATH is set so `app.state.audit.read()` returns something. Without it records
+    # chain correctly and land nowhere, so any assertion that an action WAS audited passes
+    # vacuously — the trap test_bff.py's `audited_client` docstring already calls out.
+    monkeypatch.setenv("AUDIT_PATH", str(tmp_path / "audit.log"))
     monkeypatch.setenv("OIDC_ENABLED", "false")
     monkeypatch.setenv("PROVIDER_OIDC_ENABLED", "true")
     monkeypatch.setenv("PROVIDER_OIDC_ISSUER", PROVIDER_ISS)
@@ -246,3 +261,87 @@ def test_a_tenant_session_cannot_reach_these_routes(provider_console):
     )
 
     assert resp.status_code == 403
+
+
+# --- An unreachable tenant (found in the browser, 2026-08-31) --------------------------------
+#
+# `_gateway_for` separates "no such tenant" (404) from "known, credential unfetchable" (503),
+# and `test_raising_against_an_unknown_tenant_is_a_404_not_a_500` above pins the first. Then
+# every call site awaited `gw.request` bare, so a transport failure REACHING the tenant escaped
+# as a raw httpx error and FastAPI rendered **500**.
+#
+# Seen live: a provider raise against a real tenant returned Internal Server Error from
+# `[Errno -5] No address associated with hostname`, and succeeded on retry minutes later. The
+# operator's reading of a 500 is "the console is broken"; the truth was "try again".
+#
+# Not reachable through the fake gateway as it stood — a canned Response cannot express a
+# connection that was never made, which is why every one of these needed `fails_with`.
+
+
+def test_raising_against_an_unreachable_tenant_is_503_not_500(provider_console):
+    """The sibling of the unknown-tenant test: known tenant, dead network."""
+    client, app, gw = provider_console
+    _seed_provider_session(client, app, sub="op-14")
+    gw.fails_with(httpx.ConnectError("[Errno -5] No address associated with hostname"))
+
+    resp = client.post(
+        "/provider/support-requests",
+        json={"tenant_id": TENANT_ID, "requested_scopes": ["devices:read"], "justification": "INC-9001"},
+    )
+
+    assert resp.status_code == 503, "a tenant we could not reach read as a server fault"
+    assert TENANT_ID in resp.json()["detail"], "a console reaching several tenants must say which one"
+
+
+def test_a_raise_that_could_not_reach_the_tenant_is_still_audited(provider_console):
+    """The worse half of the 500. The audit write came *after* the relay, so a transport
+    failure skipped it — leaving no trace on either plane: not in the provider's audit, and
+    not in the tenant's, which never saw the request. An attempt an operator made and an
+    attempt they never made must not look identical afterwards."""
+    client, app, gw = provider_console
+    _seed_provider_session(client, app, sub="op-14")
+    gw.fails_with(httpx.ConnectError("boom"))
+
+    client.post(
+        "/provider/support-requests",
+        json={"tenant_id": TENANT_ID, "requested_scopes": ["devices:read"], "justification": "INC-9001"},
+    )
+
+    raises = [
+        r["content"] for r in app.state.audit.read() if r["content"]["action"] == "provider.support_request.raise"
+    ]
+    assert len(raises) == 1, "the attempt left no audit record at all"
+    assert raises[0]["outcome"] == OUTCOME_DENIED
+    assert raises[0]["detail"]["reason"] == "tenant_unreachable"
+    assert raises[0]["detail"]["tenant_id"] == TENANT_ID
+    assert raises[0]["target"] == "op-14", "the operator who tried is not recorded"
+
+
+def test_polling_an_unreachable_tenant_is_503_not_500(provider_console):
+    client, app, gw = provider_console
+    _seed_provider_session(client, app, sub="op-14")
+    gw.fails_with(httpx.ReadTimeout("timed out"))
+
+    resp = client.get(f"/provider/support-requests/r1?tenant_id={TENANT_ID}")
+
+    assert resp.status_code == 503
+
+
+def test_releasing_a_grant_on_an_unreachable_tenant_does_not_claim_it_was_released(provider_console):
+    """Asserted in the direction that costs something. The tempting fix is to swallow the
+    error and clear the session anyway — which would report a grant as released while it is
+    still live on the tenant and still attributed to this operator. The console would be lying
+    about the one thing a release is for, so 503 stands and the session keeps its grant."""
+    client, app, gw = provider_console
+    _seed_provider_session(client, app, sub="op-14")
+    store = app.state.sessions
+    sid = next(iter(store._data))
+    expires, sess = store._data[sid]
+    sess["support_grant"] = {"tenant_id": TENANT_ID, "grant_id": "g1", "credential": "sup_x"}
+    store._data[sid] = (expires, sess)
+    gw.fails_with(httpx.ConnectError("boom"))
+
+    resp = client.delete("/provider/support-grant")
+
+    assert resp.status_code == 503
+    assert client.get("/provider/support-grant").json()["held"] is True, "reported released, still live"

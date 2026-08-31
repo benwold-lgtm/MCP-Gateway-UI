@@ -128,6 +128,32 @@ async def redeem(request: Request, session=_provider_admin):
             detail="this console has no catalog configured, so it cannot issue the tenant's credential",
         )
 
+    # ⚠️ The address handed to the TENANT is not the one this BFF dials.
+    #
+    # `catalog_service_url` is routinely an in-cluster ClusterIP name — `http://device-mcp-
+    # catalog:8100` in this repo's own manifests. Sending that as `catalog_url` tells the
+    # tenant to resolve a name that exists only inside the provider's cluster, and it did:
+    # a tenant enrolled through the console got "Temporary failure in name resolution" from
+    # every catalog read, forever, while the enrolment itself reported complete success.
+    #
+    # Refused rather than defaulted. A fallback to `catalog_service_url` is exactly the shape
+    # §10 singles out as the failure to avoid — it fails quietly and reads as the catalog being
+    # down while it is healthy. Failing here, loudly, naming the field, is §10's step 5 model.
+    public_catalog_url = settings.public_catalog_url
+    if not public_catalog_url:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "ERR_PUBLIC_CATALOG_URL_NOT_SET",
+                "message": (
+                    "PUBLIC_CATALOG_URL is not set on this console, so it cannot tell a tenant "
+                    "where to reach the catalog. It must be the address a TENANT can resolve, "
+                    "which is not CATALOG_SERVICE_URL — that one is this console's own "
+                    "in-cluster address. Nothing was enrolled (ADR-0024 §10)."
+                ),
+            },
+        )
+
     # --- 1. record the tenant and mint its credential, in one transaction --------------------
     try:
         catalog_credential = await _enrol_in_catalog(request, tenant_id, display_name, gateway_url, label)
@@ -143,7 +169,7 @@ async def redeem(request: Request, session=_provider_admin):
                 headers={"Authorization": f"Bearer {code}"},
                 json={
                     "provider_subject": provider_subject,
-                    "catalog_url": settings.catalog_service_url,
+                    "catalog_url": public_catalog_url,
                     "catalog_credential": catalog_credential,
                 },
             )

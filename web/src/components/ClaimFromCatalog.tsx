@@ -108,12 +108,21 @@ function ClaimForm({
 
   const [hostname, setHostname] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [rateLimit, setRateLimit] = useState("");
+  // Pre-filled from the curated recommendation. Editable, and a tenant who changes it is
+  // obeyed — it is a recommendation, not a ceiling (ADR-0020 §2).
+  const [rateLimit, setRateLimit] = useState(
+    current.recommended_rate_limit_rps != null ? String(current.recommended_rate_limit_rps) : "",
+  );
   const [expectedSpki, setExpectedSpki] = useState("");
   // api_key
   const [apiKey, setApiKey] = useState("");
-  const [apiKeyName, setApiKeyName] = useState("X-API-Key");
-  const [apiKeyLocation, setApiKeyLocation] = useState("header");
+  // Curated when the provider has said, asked for when they have not. The old default was a
+  // hardcoded "X-API-Key" — a plausible guess that is wrong for plenty of appliances and
+  // fails as a 401 at first contact, reading like a bad key rather than a misplaced one.
+  const curatedKeyName = current.api_key_name ?? null;
+  const curatedKeyLocation = current.api_key_location ?? null;
+  const [apiKeyName, setApiKeyName] = useState(curatedKeyName ?? "X-API-Key");
+  const [apiKeyLocation, setApiKeyLocation] = useState(curatedKeyLocation ?? "header");
   // oauth2
   const [tokenEndpoint, setTokenEndpoint] = useState("");
   const [clientId, setClientId] = useState("");
@@ -228,22 +237,38 @@ function ClaimForm({
               onChange={(e) => setApiKey(e.target.value)}
               required
             />
-            <label htmlFor="cc-api-loc" style={{ color: ui.inkSoft, fontSize: 14 }}>
-              Location
-            </label>
-            <select
-              id="cc-api-loc"
-              value={apiKeyLocation}
-              onChange={(e) => setApiKeyLocation(e.target.value)}
-            >
-              <option value="header">header</option>
-              <option value="query">query</option>
-              <option value="cookie">cookie</option>
-            </select>
-            <label htmlFor="cc-api-name" style={{ color: ui.inkSoft, fontSize: 14 }}>
-              Name
-            </label>
-            <input id="cc-api-name" value={apiKeyName} onChange={(e) => setApiKeyName(e.target.value)} />
+            {/* Stated, not asked, when the provider has curated it — the BFF overrides
+                whatever is sent anyway, so an editable control here would be a field that
+                appears to do something and does not. Shown rather than hidden because an
+                operator debugging a 401 needs to know where the key is going. */}
+            {curatedKeyLocation && curatedKeyName ? (
+              <>
+                <span style={{ color: ui.inkSoft, fontSize: 14 }}>Sent as</span>
+                <span data-testid="cc-api-curated">
+                  <code>{curatedKeyName}</code> in the {curatedKeyLocation}
+                  <span style={{ color: ui.muted }}> — set by your provider</span>
+                </span>
+              </>
+            ) : (
+              <>
+                <label htmlFor="cc-api-loc" style={{ color: ui.inkSoft, fontSize: 14 }}>
+                  Location
+                </label>
+                <select
+                  id="cc-api-loc"
+                  value={apiKeyLocation}
+                  onChange={(e) => setApiKeyLocation(e.target.value as "header" | "query" | "cookie")}
+                >
+                  <option value="header">header</option>
+                  <option value="query">query</option>
+                  <option value="cookie">cookie</option>
+                </select>
+                <label htmlFor="cc-api-name" style={{ color: ui.inkSoft, fontSize: 14 }}>
+                  Name
+                </label>
+                <input id="cc-api-name" value={apiKeyName} onChange={(e) => setApiKeyName(e.target.value)} />
+              </>
+            )}
           </>
         )}
 

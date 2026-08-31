@@ -342,6 +342,16 @@ export type DeviceTypeVersion = {
   auth_kind: AuthKind;
   fingerprint_policy?: FingerprintPolicy | null;
   changelog?: string | null;
+  /** Where the tenant's API key goes — a property of the appliance's API, not of anyone's
+   *  deployment of it (ADR-0020 §2). The key's VALUE is never curated; only its position.
+   *  `null`/absent means the curator has not said, which is not the same as "no header":
+   *  versions curated before these fields existed have no answer, so the form asks. */
+  api_key_location?: "header" | "query" | "cookie" | null;
+  api_key_name?: string | null;
+  /** What the provider knows the appliance tolerates. A recommendation: it pre-fills the
+   *  claim form and constrains nothing, since a provider enforcing a limit on the tenant's
+   *  own gateway would reach across the plane boundary §2 keeps. */
+  recommended_rate_limit_rps?: number | null;
   created_at: string;
 };
 
@@ -404,3 +414,16 @@ export type UpgradeOffer = {
 };
 
 export type UpgradeOffersResponse = { offers: UpgradeOffer[] };
+
+// What redeeming a tenant's invitation returns (POST /provider/enrolment/redeem,
+// ADR-0024 §10/§11). Deliberately carries NO credential: the provider's own standing
+// credential for the tenant's gateway is recorded straight into the catalog, because handing
+// it to an operator to paste somewhere was the manual step §11 exists to remove.
+export type RedeemedEnrolment = {
+  tenant_id: string;
+  enrolment_id: string;
+  approved_by: string | null;
+  approved_at: number | null;
+  gateway_url: string;
+  recorded: boolean;
+};

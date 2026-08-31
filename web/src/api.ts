@@ -34,6 +34,7 @@ import type {
 } from "./types";
 import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
 import type { Enrolment, EnrolmentInvitation, IssuedInvitation } from "./types";
+import type { RedeemedEnrolment } from "./types";
 
 /** Almost every gateway/BFF error's `detail` is a plain string. `ERR_PLAN_STALE`
  *  (ADR-0018 §6) is the one exception: a dict carrying `message` alongside `error_code`
@@ -190,6 +191,22 @@ export const api = {
     // to a tenant are provider-plane acts on the provider's OWN storage (ADR-0020 §2),
     // never a write into any tenant's registry — so unlike Devices/Monitoring/Backup
     // above, this rail entry needs no act.
+    // --- enrolling a tenant (ADR-0024 §10/§11) ---------------------------------
+    // The provider's half of the handshake the tenant console issues an invitation for.
+    // One call performs what were nine manual steps: mint the tenant's catalog credential,
+    // redeem the invitation, verify the gateway reports the tenant we minted for, and record
+    // the credential it returns. Admin-only, like catalog below — `routers/enrolment.py`
+    // gates it on `provider:admin`.
+    enrolment: {
+      redeem: (body: {
+        code: string;
+        gateway_url: string;
+        tenant_id: string;
+        display_name?: string;
+        label?: string;
+      }) => req<RedeemedEnrolment>("POST", "/provider/enrolment/redeem", body),
+    },
+
     catalog: {
       listDeviceTypes: () => req<DeviceTypeListResponse>("GET", "/provider/catalog/device-types"),
       getDeviceType: (id: string) => req<DeviceTypeDetail>("GET", `/provider/catalog/device-types/${id}`),
@@ -251,6 +268,12 @@ export const api = {
       }),
     revokeInvitation: (codeHash: string) =>
       req<unknown>("DELETE", `/api/enrolment/invitations/${encodeURIComponent(codeHash)}`),
+    // What this tenant must hand its provider alongside the code. Its own id and the
+    // externally reachable gateway address — neither of which the console could show before,
+    // so "invite a provider" produced one of the three values §10 needs and left the operator
+    // to find the other two outside the product.
+    thisTenant: () =>
+      req<{ tenant_id: string; public_gateway_url: string }>("GET", "/api/enrolment/this-tenant"),
     enrolments: () => req<{ enrolments: Enrolment[] }>("GET", "/api/enrolment/enrolments"),
     revoke: (enrolmentId: string) =>
       req<unknown>("DELETE", `/api/enrolment/enrolments/${encodeURIComponent(enrolmentId)}`),

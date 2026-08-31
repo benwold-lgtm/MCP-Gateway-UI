@@ -232,11 +232,31 @@ async def claim_device_type(type_id: str, request: Request) -> JSONResponse:
         root = base_url if base_url.endswith("/") else base_url + "/"
         merged["spec_url"] = urljoin(root, current["spec_path"].lstrip("/"))
     if current["auth_kind"] != "none":
-        merged["auth"] = body.get("auth")
+        auth = dict(body.get("auth") or {})
+        # WHERE the key goes is the provider's fact; the key itself is the tenant's. So the
+        # curated position overrides whatever the browser sent, exactly as `transport` and
+        # `spec_path` already do — a tenant who guesses `Authorization` instead of `X-API-Key`
+        # gets a 401 at first contact that reads like a bad credential, not a misplaced one.
+        #
+        # Only when the curator actually said. `None` means a version predating these fields,
+        # and falling back to the tenant's answer is right there: the alternative is
+        # overwriting a working claim with a null.
+        if current["auth_kind"] == "api_key":
+            if current.get("api_key_location"):
+                auth["location"] = current["api_key_location"]
+            if current.get("api_key_name"):
+                auth["name"] = current["api_key_name"]
+        merged["auth"] = auth
     if current.get("fingerprint_policy"):
         merged["fingerprint_policy"] = current["fingerprint_policy"]
+    # The tenant's answer wins — the curated figure is a RECOMMENDATION and pre-fills the
+    # form, so what arrives here is already the tenant's decision, whether they kept it or
+    # lowered it. Falling back to the recommendation only when nothing was sent covers the
+    # API caller that never saw a form.
     if body.get("rate_limit_rps") is not None:
         merged["rate_limit_rps"] = body["rate_limit_rps"]
+    elif current.get("recommended_rate_limit_rps") is not None:
+        merged["rate_limit_rps"] = current["recommended_rate_limit_rps"]
     if body.get("expected_tls_spki_sha256"):
         merged["expected_tls_spki_sha256"] = body["expected_tls_spki_sha256"]
 

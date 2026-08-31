@@ -24,6 +24,7 @@ was the whole argument for moving off config.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Optional
 
 from .catalog_client import CatalogUnavailable
@@ -46,9 +47,29 @@ class TenantDirectory:
         Catalog wins on a collision because it is the one that can have changed since boot: a
         tenant present in both is one whose config entry predates its enrolment, and preferring
         the stale copy would silently route to a gateway URL the tenant has since moved from.
+
+        **`display_name` is the one exception, and it is not a softening of that rule.** The
+        catalog stores `display_name or tenant_id` at enrolment, so an operator who left the
+        optional name blank produces an entry whose "name" is the id. That value does not mean
+        *the name is now the id* — it means *nobody supplied one*. Letting it win replaced a
+        real configured name with an opaque identifier, which is what enrolling an
+        already-configured tenant did: "Tenant One" became `t-039c899f37b8994d` everywhere in
+        the provider console.
+
+        Catalog still wins for every field that can actually have changed, `gateway_url`
+        included. The narrow rule is that a placeholder does not outrank a real value.
         """
         merged = dict(self._configured)
-        merged.update(self._enrolled)
+        for tenant_id, enrolled in self._enrolled.items():
+            configured = merged.get(tenant_id)
+            if (
+                configured is not None
+                and enrolled.display_name == tenant_id
+                and configured.display_name
+                and configured.display_name != tenant_id
+            ):
+                enrolled = replace(enrolled, display_name=configured.display_name)
+            merged[tenant_id] = enrolled
         return merged
 
     def get(self, tenant_id: str) -> TenantEntry:

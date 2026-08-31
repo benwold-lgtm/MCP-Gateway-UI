@@ -23,10 +23,69 @@ export function EnrolmentPanel() {
   const [reload, setReload] = useState(0);
   return (
     <div style={{ display: "grid", gap: 20, maxWidth: 720, marginTop: 20 }}>
+      <HandoverDetails />
       <IssueInvitation onIssued={() => setReload((n) => n + 1)} />
       <OutstandingInvitations reload={reload} />
       <LiveEnrolments />
     </div>
+  );
+}
+
+// --- what the provider needs from us -------------------------------------------------------
+
+/** This tenant's id and public gateway address, shown beside the invitation form.
+ *
+ * §10's handshake needs three values and the console used to produce exactly one. The other
+ * two were in a ConfigMap, so issuing an invitation left an admin to source the rest from
+ * outside the product and read a tenant id off a deployment by hand.
+ *
+ * Renders a **named absence** rather than a guess when the deployment has no
+ * `PUBLIC_GATEWAY_URL`. The BFF knows an in-cluster gateway address, and showing that would
+ * be worse than showing nothing: it looks like an answer and fails at redemption, in the
+ * provider's console, with an error naming neither this field nor this tenant.
+ */
+function HandoverDetails() {
+  const [info, setInfo] = useState<{ tenant_id: string; public_gateway_url: string } | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api.enrolment
+      .thisTenant()
+      .then(setInfo)
+      .catch(() => setFailed(true));
+  }, []);
+
+  if (failed || !info) return null;
+
+  return (
+    <section>
+      <h3 style={{ marginBottom: 4 }}>What your provider needs</h3>
+      <p style={{ margin: "0 0 8px", color: ui.muted, fontSize: "0.9em" }}>
+        Send these two alongside the invitation code. Neither is a secret.
+      </p>
+      <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 12px", margin: 0 }}>
+        <dt style={{ color: ui.muted }}>Tenant id</dt>
+        <dd style={{ margin: 0 }}>
+          {info.tenant_id ? (
+            <code>{info.tenant_id}</code>
+          ) : (
+            <span style={{ color: health.stale }}>
+              not configured — set <code>TENANT_ID</code> on this console
+            </span>
+          )}
+        </dd>
+        <dt style={{ color: ui.muted }}>Gateway URL</dt>
+        <dd style={{ margin: 0 }}>
+          {info.public_gateway_url ? (
+            <code>{info.public_gateway_url}</code>
+          ) : (
+            <span style={{ color: health.stale }}>
+              not configured — set <code>PUBLIC_GATEWAY_URL</code> to the address your provider can reach
+            </span>
+          )}
+        </dd>
+      </dl>
+    </section>
   );
 }
 

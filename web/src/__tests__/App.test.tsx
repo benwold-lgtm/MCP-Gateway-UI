@@ -23,6 +23,7 @@ vi.mock("../api", () => ({
     enrolment: {
       invitations: vi.fn().mockResolvedValue({ invitations: [] }),
       enrolments: vi.fn().mockResolvedValue({ enrolments: [] }),
+      thisTenant: vi.fn().mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "https://gw.example" }),
     },
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     catalog: { upgrades: vi.fn().mockResolvedValue({ offers: [] }) },

@@ -128,3 +128,58 @@ describe("ClaimFromCatalog", () => {
     expect(claim).not.toHaveBeenCalled();
   });
 });
+
+// --- product facts the curator supplies (ADR-0020 §2) ---------------------------------------
+//
+// Where the API key goes and what the appliance tolerates are properties of the PRODUCT. The
+// form used to ask for both, defaulting the header name to a hardcoded "X-API-Key" — a
+// plausible guess that is wrong for plenty of appliances and fails as a 401 at first contact,
+// reading like a bad key rather than a misplaced one.
+
+describe("curated product facts", () => {
+  async function openForm(version: Record<string, unknown>) {
+    listAssigned.mockResolvedValue({ device_types: [TYPE] });
+    getDeviceType.mockResolvedValue({ ...TYPE, versions: [{ ...VERSION_API_KEY, ...version }] });
+    const user = userEvent.setup();
+    render(<ClaimFromCatalog onDone={vi.fn()} onCancel={vi.fn()} />);
+    await user.click(await screen.findByText(/acme-sensor-x1/));
+    await screen.findByLabelText(/api key/i);
+    return user;
+  }
+
+  it("states where the key goes instead of asking, when the provider has said", async () => {
+    await openForm({ api_key_location: "header", api_key_name: "X-Acme-Token" });
+
+    expect(screen.getByTestId("cc-api-curated")).toHaveTextContent("X-Acme-Token");
+    // Not merely pre-filled: an editable control would be a field that appears to do
+    // something and does not, since the BFF overrides whatever is sent.
+    expect(screen.queryByLabelText(/^name$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^location$/i)).not.toBeInTheDocument();
+  });
+
+  it("still asks when the provider has not said", async () => {
+    // The direction that catches the feature being wired nowhere: a version predating these
+    // fields must keep working exactly as before.
+    await openForm({ api_key_location: null, api_key_name: null });
+
+    expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^location$/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("cc-api-curated")).not.toBeInTheDocument();
+  });
+
+  it("pre-fills the recommended rate limit, and lets the tenant change it", async () => {
+    const user = await openForm({ recommended_rate_limit_rps: 10.5 });
+    const rate = screen.getByLabelText(/rate limit/i);
+    expect(rate).toHaveValue(10.5);
+
+    // A recommendation, not a ceiling — the control must remain the tenant's.
+    await user.clear(rate);
+    await user.type(rate, "2");
+    expect(rate).toHaveValue(2);
+  });
+
+  it("leaves the rate limit empty when there is no recommendation", async () => {
+    await openForm({ recommended_rate_limit_rps: null });
+    expect(screen.getByLabelText(/rate limit/i)).toHaveValue(null);
+  });
+});

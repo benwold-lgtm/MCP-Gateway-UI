@@ -16,16 +16,19 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EnrolmentPanel } from "../components/EnrolmentPanel";
 
-const { invitations, createInvitation, revokeInvitation, enrolments, revoke } = vi.hoisted(() => ({
-  invitations: vi.fn(),
-  createInvitation: vi.fn(),
-  revokeInvitation: vi.fn(),
-  enrolments: vi.fn(),
-  revoke: vi.fn(),
-}));
+const { invitations, createInvitation, revokeInvitation, enrolments, revoke, thisTenant } = vi.hoisted(
+  () => ({
+    invitations: vi.fn(),
+    thisTenant: vi.fn(),
+    createInvitation: vi.fn(),
+    revokeInvitation: vi.fn(),
+    enrolments: vi.fn(),
+    revoke: vi.fn(),
+  }),
+);
 
 vi.mock("../api", () => ({
-  api: { enrolment: { invitations, createInvitation, revokeInvitation, enrolments, revoke } },
+  api: { enrolment: { invitations, createInvitation, revokeInvitation, enrolments, revoke, thisTenant } },
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -53,6 +56,7 @@ beforeEach(() => {
   user = userEvent.setup();
   invitations.mockResolvedValue({ invitations: [] });
   enrolments.mockResolvedValue({ enrolments: [] });
+  thisTenant.mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "https://gw.example" });
   createInvitation.mockResolvedValue({
     code: "inv_one-time-secret",
     provider_label: "Acme MSP",
@@ -206,5 +210,36 @@ describe("enrolled providers", () => {
     const { container } = render(<EnrolmentPanel />);
     await screen.findByText(/never used/i);
     expect(container.textContent).not.toMatch(/credential/i);
+  });
+});
+
+// --- what the provider needs from us --------------------------------------------------------
+//
+// §10's handshake needs three values and this panel used to produce one. The other two lived
+// in a ConfigMap, so "invite a provider" handed an admin a code and left them to find a tenant
+// id and a reachable gateway address outside the product.
+
+describe("handover details", () => {
+  it("shows this tenant's id and public gateway URL beside the invitation form", async () => {
+    render(<EnrolmentPanel />);
+    expect(await screen.findByText("t-1")).toBeInTheDocument();
+    expect(screen.getByText("https://gw.example")).toBeInTheDocument();
+  });
+
+  it("names the missing setting rather than showing a guessed address", async () => {
+    // The BFF knows an in-cluster gateway URL. Substituting it would look like an answer and
+    // fail in the *provider's* console at redemption, naming neither this field nor this
+    // tenant — so an unset value is reported as unset.
+    thisTenant.mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "" });
+    render(<EnrolmentPanel />);
+    expect(await screen.findByText(/PUBLIC_GATEWAY_URL/)).toBeInTheDocument();
+  });
+
+  it("does not break the rest of the panel when the lookup fails", async () => {
+    // A section that cannot load must not take the invitation form down with it — issuing a
+    // code is still useful when the console cannot state its own address.
+    thisTenant.mockRejectedValue(new Error("nope"));
+    render(<EnrolmentPanel />);
+    expect(await screen.findByRole("heading", { name: /invite a provider/i })).toBeInTheDocument();
   });
 });
