@@ -25,6 +25,19 @@ wrong-layer error ADR-0020 §7a had just corrected one component along. What is 
 sending the declaration and translating the server's refusal into a named condition — a client
 that forgot to send it would simply be refused, which is the property that matters.
 
+**Where the credential comes from changed again in ADR-0024 §10.** Env is still read first and
+still wins when set — an operator who configured `CATALOG_API_TOKEN` deliberately should not
+have it silently overridden by a value fetched from somewhere else, and every existing
+deployment behaves exactly as it did. But a tenant that has *enrolled* now has its catalog
+address and credential held by its own gateway, minted during the handshake, and this client
+will ask for them when env gave it nothing. That is what makes enrolling sufficient on its own:
+the tenant gains catalog access without a redeploy, which was §10's whole point.
+
+Resolution is **lazy and repeatable**, not a startup step. A console whose gateway is briefly
+down at boot must not be permanently catalog-less, and a tenant that enrols an hour after its
+console started must not need a restart to notice. It is also retried once on a 401, which is
+what a revoked-and-re-enrolled credential looks like from here.
+
 ADR-0020 §7: the catalog's unavailability must be a **named condition**, never inferred from
 an empty list — a provider console showing no device types because the catalog is down must
 not look like a provider who has curated none. `CatalogUnavailable` is what lets a route tell
@@ -33,8 +46,10 @@ the two apart; see `routers/catalog.py`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Optional
+import time
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
@@ -54,6 +69,15 @@ TENANT_HEADER = "X-Catalog-Tenant"
 #: they point an operator at different fixes: the wrong secret, or an un-updated console.
 _MISDELIVERY_CODES = ("ERR_CREDENTIAL_MISDELIVERY", "ERR_TENANT_NOT_DECLARED")
 
+#: How long to wait before asking the gateway again after a resolution that produced nothing.
+#: Long enough that a console whose tenant has not enrolled is not asking on every page load,
+#: short enough that enrolling is felt as "it works now" rather than "restart the console".
+#: A *successful* resolution is not re-attempted at all until a 401 says the credential died.
+RESOLVE_COOLDOWN_SECONDS = 30.0
+
+#: Returns ``(catalog_url, catalog_credential)``, or None when there is nothing to learn.
+CatalogResolver = Callable[[], Awaitable[Optional[tuple[str, str]]]]
+
 
 class CatalogUnavailable(Exception):
     """The catalog service is unreachable, or this BFF has no token configured for it."""
@@ -72,8 +96,14 @@ class CatalogMisconfigured(CatalogUnavailable):
 
 
 class CatalogClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, resolver: Optional[CatalogResolver] = None) -> None:
         self._configured = bool(settings.catalog_service_url and settings.catalog_api_token)
+        #: Where to learn the address and credential when env gave none (ADR-0024 §10). Never
+        #: consulted while `_configured` — explicit configuration wins, so installing a
+        #: resolver cannot change how an already-working deployment behaves.
+        self._resolver = resolver
+        self._resolve_lock = asyncio.Lock()
+        self._resolve_attempted_at = 0.0
         #: The tenant this deployment IS, declared on every request (§7b). Empty on a
         #: provider-console BFF (`provider_oidc_enabled`), which legitimately holds the
         #: privileged credential and speaks for no single tenant — a declaration from it
@@ -115,13 +145,81 @@ class CatalogClient:
         """
         return self._configured
 
+    async def _resolve(self, *, force: bool = False) -> bool:
+        """Ask the resolver for this deployment's catalog address and credential (§10).
+
+        Returns whether the client is configured afterwards. Serialised by a lock so a burst of
+        concurrent requests on a cold console produces one gateway call, not one per request —
+        and rate-limited by a cooldown so a tenant that has not enrolled is not asking on every
+        page load. `force` is the 401 path: the credential we hold has stopped working, which is
+        what a revoked-and-re-enrolled relationship looks like from here, so the cooldown is
+        bypassed once rather than making the console wait it out.
+        """
+        if self._resolver is None:
+            return self._configured
+        async with self._resolve_lock:
+            # Re-checked inside the lock: while this coroutine waited, another may have already
+            # done the work, and the point of the lock is that only one call goes out.
+            if self._configured and not force:
+                return True
+            now = time.monotonic()
+            if not force and now - self._resolve_attempted_at < RESOLVE_COOLDOWN_SECONDS:
+                return self._configured
+            self._resolve_attempted_at = now
+            try:
+                found = await self._resolver()
+            except Exception as exc:
+                # Never fatal. A gateway that cannot answer leaves the catalog unconfigured,
+                # which every route already renders as a named condition — the same posture
+                # ADR-0020 §7 takes towards a catalog outage, applied one step earlier.
+                logger.warning("could not learn this tenant's catalog configuration: %s", exc)
+                return self._configured
+            if not found:
+                return self._configured
+            url, credential = found
+            if not url or not credential:
+                return self._configured
+            self._adopt(url, credential)
+            logger.info("learned this tenant's catalog configuration from its enrolment (ADR-0024 §10)")
+            return True
+
+    def _adopt(self, url: str, credential: str) -> None:
+        """Point the live client at a newly learned address and credential.
+
+        Mutates the existing `AsyncClient` rather than replacing it: a replacement would orphan
+        the connection pool of any request in flight. The tenant declaration is deliberately
+        left alone — it comes from this deployment's own identity (§7b), never from anything
+        handed to it, and a credential arriving with the power to change what tenant this
+        console claims to be would defeat the check.
+        """
+        self._client.base_url = httpx.URL(url)
+        self._client.headers["Authorization"] = f"Bearer {credential}"
+        self._configured = True
+
     async def request(self, method: str, path: str, *, json: Optional[Any] = None) -> httpx.Response:
         if not self._configured:
-            raise CatalogUnavailable("CATALOG_SERVICE_URL / CATALOG_API_TOKEN not configured on this BFF")
+            await self._resolve()
+        if not self._configured:
+            raise CatalogUnavailable(
+                "this BFF has no catalog: CATALOG_SERVICE_URL / CATALOG_API_TOKEN are unset and "
+                "this tenant has no enrolment to learn them from (ADR-0024 §10)"
+            )
         try:
             resp = await self._client.request(method, path, json=json)
         except httpx.HTTPError as exc:
             raise CatalogUnavailable(str(exc)) from exc
+
+        if resp.status_code == 401 and self._resolver is not None:
+            # The credential we hold has stopped being accepted. Re-enrolling is the ordinary
+            # way a tenant repairs this, and it mints a NEW credential — so ask once, and retry
+            # only if we actually learned something different. Without this the console would
+            # keep presenting a dead credential until someone restarted it.
+            before = self._client.headers.get("Authorization")
+            if await self._resolve(force=True) and self._client.headers.get("Authorization") != before:
+                try:
+                    resp = await self._client.request(method, path, json=json)
+                except httpx.HTTPError as exc:
+                    raise CatalogUnavailable(str(exc)) from exc
 
         code = self._misdelivery_error_code(resp)
         if code:
