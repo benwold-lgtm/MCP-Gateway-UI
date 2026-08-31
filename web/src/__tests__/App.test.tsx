@@ -18,6 +18,12 @@ vi.mock("../api", () => ({
       grants: vi.fn().mockResolvedValue({ grants: [] }),
       standingConsent: vi.fn().mockResolvedValue({ enabled: false }),
     },
+    // The Support tab renders the enrolment panel alongside the inbox (ADR-0024 §10), so
+    // this mock has to answer for both — the two are one authority, `support:administer`.
+    enrolment: {
+      invitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      enrolments: vi.fn().mockResolvedValue({ enrolments: [] }),
+    },
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     catalog: { upgrades: vi.fn().mockResolvedValue({ offers: [] }) },
   },

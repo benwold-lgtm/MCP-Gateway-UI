@@ -12,6 +12,7 @@ import { ClaimFromCatalog } from "./components/ClaimFromCatalog";
 import { UpgradeOffers } from "./components/UpgradeOffers";
 import { Dashboard } from "./components/Dashboard";
 import { SupportRequestsInbox } from "./components/SupportRequestsInbox";
+import { EnrolmentPanel } from "./components/EnrolmentPanel";
 import { BackupPanel } from "./components/BackupPanel";
 
 type FormState = { mode: "create" } | { mode: "edit"; hostname: string } | { mode: "claim" };
@@ -135,7 +136,15 @@ export function App() {
       {view === "backup" ? (
         <BackupPanel />
       ) : view === "support" ? (
-        <SupportRequestsInbox />
+        // Both halves of "this tenant's relationship with its provider" under one tab: the
+        // support inbox and the enrolment that makes a provider able to raise a request at
+        // all. `support:administer` is the single scope behind both, which is the grouping
+        // the gateway chose and the BFF mirrors — a second tab would split one authority
+        // across two places for no reason a reader could infer.
+        <>
+          <SupportRequestsInbox />
+          <EnrolmentPanel />
+        </>
       ) : view === "monitoring" ? (
         <Dashboard />
       ) : (

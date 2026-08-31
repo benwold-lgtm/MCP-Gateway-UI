@@ -180,6 +180,40 @@ export type TenantNotification = {
   created_at: number;
 };
 
+// --- enrolment: this tenant's relationship with its provider (ADR-0024 §10) ---------------
+
+// An invitation that has been handed out and not yet redeemed. Carries `code_hash`, never the
+// code: §10 keeps only the hash, and the plaintext exists once, in the response that minted it.
+export type EnrolmentInvitation = {
+  code_hash: string;
+  provider_label: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number;
+};
+
+// The one-time response to minting. `code` is shown once and is not recoverable — there is no
+// route that re-shows it, because a store that can re-show a credential can leak one.
+export type IssuedInvitation = {
+  code: string;
+  provider_label: string;
+  expires_at: number;
+  created_by: string;
+};
+
+// A live relationship. `last_used_at` is null when the provider has not used this enrolment
+// since it was approved — the signal the listing exists for, because §10 chose revocation over
+// expiry and a dormant relationship is otherwise only discoverable by looking.
+export type Enrolment = {
+  enrolment_id: string;
+  provider_subject: string;
+  provider_label: string;
+  approved_by: string;
+  approved_at: number;
+  catalog_url: string;
+  last_used_at: number | null;
+};
+
 // Monitoring — the BFF's /monitoring/meta plus the Prometheus/Loki proxy responses.
 // No gateway OpenAPI schema backs these (they describe external systems), so they
 // are declared here.

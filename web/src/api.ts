@@ -33,6 +33,7 @@ import type {
   UpstreamKind,
 } from "./types";
 import type { DeadLetterList, LokiResponse, MonitoringMeta, PromQueryResponse } from "./types";
+import type { Enrolment, EnrolmentInvitation, IssuedInvitation } from "./types";
 
 /** Almost every gateway/BFF error's `detail` is a plain string. `ERR_PLAN_STALE`
  *  (ADR-0018 §6) is the one exception: a dict carrying `message` alongside `error_code`
@@ -236,6 +237,23 @@ export const api = {
         },
       ),
     disableStandingConsent: () => req<unknown>("DELETE", "/api/support/standing-consent"),
+  },
+  // --- tenant-plane enrolment (ADR-0024 §10) --------------------------------------------
+  // The tenant's half of the handshake: issue an invitation, see who holds one, see who is
+  // enrolled, end either. Same admin gate as `support` above, which is the grouping the
+  // gateway itself chose — `support:administer` covers both.
+  enrolment: {
+    invitations: () => req<{ invitations: EnrolmentInvitation[] }>("GET", "/api/enrolment/invitations"),
+    createInvitation: (providerLabel: string, ttlSeconds?: number) =>
+      req<IssuedInvitation>("POST", "/api/enrolment/invitations", {
+        provider_label: providerLabel,
+        ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}),
+      }),
+    revokeInvitation: (codeHash: string) =>
+      req<unknown>("DELETE", `/api/enrolment/invitations/${encodeURIComponent(codeHash)}`),
+    enrolments: () => req<{ enrolments: Enrolment[] }>("GET", "/api/enrolment/enrolments"),
+    revoke: (enrolmentId: string) =>
+      req<unknown>("DELETE", `/api/enrolment/enrolments/${encodeURIComponent(enrolmentId)}`),
   },
   notifications: () => req<{ notifications: TenantNotification[] }>("GET", "/api/notifications"),
 };
