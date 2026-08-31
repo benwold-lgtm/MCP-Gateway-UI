@@ -22,6 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .audit import AuditLog, Pseudonymizer, TenantKeyring
 from .bootstrap import apply_first_run_bootstrap
 from .catalog_client import CatalogClient
+from .catalog_enrolment import gateway_resolver
 from .config import DEFAULT_SESSION_SECRET, load_settings
 from .gateway_client import GatewayClient
 from .gateway_pool import TenantGatewayPool
@@ -106,7 +107,13 @@ def create_app() -> FastAPI:
     # ADR-0020. Constructed unconditionally (like GatewayClient) — CatalogClient itself
     # reports "not configured" as CatalogUnavailable per-call, rather than this being a
     # None the routers below would each have to check for separately.
-    app.state.catalog = CatalogClient(settings)
+    # ADR-0024 §10: on a tenant console, when env named no catalog, learn it from this
+    # tenant's own enrolment instead — enrolling becomes sufficient on its own, with no
+    # credential to copy and no restart. Never on a provider console: it holds the privileged
+    # credential from its own configuration and is the party others enrol *with*, so asking a
+    # gateway for one would be the misdelivery ADR-0020 §7b exists to catch.
+    resolver = None if settings.provider_oidc_enabled else gateway_resolver(app.state.gateway)
+    app.state.catalog = CatalogClient(settings, resolver=resolver)
     app.state.tenant_registry = tenant_registry
     # ADR-0024 §11: config is the floor, the catalog's `tenants` table is the live source. The
     # directory starts holding only what config named and learns the enrolled estate on its
