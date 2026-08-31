@@ -38,6 +38,7 @@ from app.security import PLANE_PROVIDER, SCOPE_PROVIDER_ADMIN  # noqa: E402
 TENANT = "t-aaaa"
 GATEWAY_URL = "https://tenant-a.gateway.example"
 CATALOG_URL = "http://catalog.internal"
+PUBLIC_CATALOG_URL = "https://catalog.provider.example"
 CREDENTIAL_ID = "11111111-1111-1111-1111-111111111111"
 
 
@@ -57,6 +58,10 @@ def console(monkeypatch, tmp_path):
     monkeypatch.setenv("PROVIDER_GROUP_SCOPES", '{"provider-support": "provider:admin"}')
     monkeypatch.setenv("AUDIT_PATH", str(tmp_path / "audit.log"))
     monkeypatch.setenv("CATALOG_SERVICE_URL", CATALOG_URL)
+    # Distinct from CATALOG_SERVICE_URL on purpose, in the fixture as well as in the tests
+    # that assert on it: if the two were equal here, the bug this pair exists to prevent —
+    # handing a tenant the address only the provider can resolve — would be invisible.
+    monkeypatch.setenv("PUBLIC_CATALOG_URL", PUBLIC_CATALOG_URL)
     monkeypatch.setenv("CATALOG_API_TOKEN", "catalog-token")
     monkeypatch.delenv("BFF_STATE_DIR", raising=False)
     app = create_app()
@@ -255,7 +260,11 @@ def test_the_operator_never_names_their_own_subject(console):
     finally:
         restore()
     assert seen["provider_subject"] == "u-real-operator"
-    assert seen["catalog_url"] == CATALOG_URL
+    # Was `== CATALOG_URL` until 2026-08-31, which pinned the defect in place: this line
+    # asserted that the tenant is handed the address the PROVIDER dials. It passed for exactly
+    # as long as the bug existed, and a test written to check that a client cannot spoof a
+    # subject had quietly become the thing defending the wrong catalog address.
+    assert seen["catalog_url"] == PUBLIC_CATALOG_URL
 
 
 # --- the two failures that would otherwise be silent ---------------------------------------
@@ -350,3 +359,59 @@ def test_an_incomplete_enrolment_is_refused_before_anything_is_minted(console, m
     assert resp.status_code == 400
     assert missing in resp.json()["detail"]
     assert app.state.catalog.calls == []
+
+
+# --- the address handed to the tenant is not the one we dial --------------------------------
+#
+# Found in the browser. A tenant enrolled through the console received
+# `http://device-mcp-catalog:8100` as its catalog address — the provider's own in-cluster
+# ClusterIP name — and every catalog read in that tenant's console then failed with
+# "Temporary failure in name resolution", forever, while the enrolment reported success.
+#
+# The exact mirror of the tenant-side GATEWAY_URL / PUBLIC_GATEWAY_URL split: an address that
+# is correct for the process holding it and meaningless to anyone else.
+
+
+def _recording_gateway(seen: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        seen.append(_json.loads(request.content))
+        return _ok_gateway()(request)
+
+    return handler
+
+
+def test_the_tenant_is_given_the_public_catalog_url_not_the_one_we_dial(console):
+    client, app = console
+    _seed_session(client, app, _provider_session())
+    app.state.catalog = _FakeCatalog()
+    seen: list = []
+    restore = _gateway_responder(app, _recording_gateway(seen))
+    try:
+        resp = _redeem(client)
+    finally:
+        restore()
+
+    assert resp.status_code == 200, resp.text
+    [handed] = seen
+    assert handed["catalog_url"] == PUBLIC_CATALOG_URL
+    assert handed["catalog_url"] != CATALOG_URL, "the tenant was handed the address WE dial"
+
+
+def test_enrolment_is_refused_when_no_public_catalog_url_is_set(console, monkeypatch):
+    """Refused, never defaulted. Falling back to CATALOG_SERVICE_URL produces an enrolment that
+    looks completely successful and leaves the tenant permanently unable to reach the catalog —
+    §10's step 9, which "fails quietly and reads as the catalog being down while it is
+    healthy"."""
+    monkeypatch.delenv("PUBLIC_CATALOG_URL", raising=False)
+    app = create_app()
+    with TestClient(app) as client:
+        _seed_session(client, app, _provider_session())
+        app.state.catalog = _FakeCatalog()
+        resp = _redeem(client)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error_code"] == "ERR_PUBLIC_CATALOG_URL_NOT_SET"
+    # Refused BEFORE step 1, so there is no orphaned credential to compensate for.
+    assert ("POST", "/tenants") not in app.state.catalog.calls

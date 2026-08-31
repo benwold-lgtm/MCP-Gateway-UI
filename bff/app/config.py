@@ -91,6 +91,17 @@ class Settings:
     #: invented here would be handed to a provider and fail at redemption, which is a worse
     #: outcome than admitting the deployment never configured one.
     public_gateway_url: str = ""
+    #: Where a TENANT reaches this provider's catalog from outside the provider's cluster.
+    #: The exact mirror of `public_gateway_url` above, and needed for the same reason:
+    #: `catalog_service_url` is the address THIS BFF dials, and handing it to a tenant during
+    #: enrolment tells them to resolve a name that exists only in the provider's cluster.
+    #:
+    #: Enrolment REFUSES rather than falling back to `catalog_service_url`. A fallback here
+    #: produces an enrolment that looks completely successful and leaves the tenant's console
+    #: unable to reach the catalog forever, reporting a DNS error that names nothing an
+    #: operator could act on (ADR-0024 §10's step 9 — "fails quietly, and reads as the catalog
+    #: being down while it is healthy").
+    public_catalog_url: str = ""
 
     # --- Provider plane (ADR-0013 §2/§3) --------------------------------------
     # A SECOND IdP, for the provider's own operators. Configuring it turns this BFF into
@@ -302,6 +313,7 @@ def load_settings() -> Settings:
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
         tenant_id=os.getenv("TENANT_ID", "").strip(),
         public_gateway_url=os.getenv("PUBLIC_GATEWAY_URL", "").strip().rstrip("/"),
+        public_catalog_url=os.getenv("PUBLIC_CATALOG_URL", "").strip().rstrip("/"),
         # Provider plane (ADR-0013). Absent → this BFF serves the tenant plane only, which
         # is what a tenant-stack deployment should look like.
         provider_oidc_enabled=os.getenv("PROVIDER_OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),
