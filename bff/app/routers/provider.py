@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -114,6 +115,34 @@ async def _gateway_for(request: Request, tenant_id: str):
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
+async def _call_tenant(gw, method: str, path: str, *, tenant_id: str, json=None) -> httpx.Response:
+    """Send one request to a tenant's gateway, turning a transport failure into 503.
+
+    `_gateway_for` above is careful to separate "no such tenant" (404) from "known but its
+    credential could not be fetched" (503) — and then every call site threw that care away by
+    awaiting `gw.request` bare. A DNS blip, a refused connection or a timeout reaching the
+    tenant escaped as a raw `httpx.ConnectError`, which FastAPI renders as **500 with a stack
+    trace in the log**. An operator reading that concludes the console is broken; the truth is
+    that the tenant is unreachable and the next attempt will very likely work.
+
+    Observed live on 2026-08-31: a provider raise against tenant1 returned Internal Server
+    Error from `[Errno -5] No address associated with hostname`, and the same call succeeded
+    on retry minutes later.
+
+    503 is the same answer `_gateway_for` already gives for the other half of "we could not
+    ask", so the two failures an operator cannot act on differently do not arrive as different
+    status codes. The tenant is named in the message because a console reaching several
+    tenants must say WHICH one is unreachable.
+    """
+    try:
+        return await gw.request(method, path, json=json) if json is not None else await gw.request(method, path)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not reach tenant {tenant_id!r}'s gateway: {exc}",
+        ) from exc
+
+
 @router.post("/support-requests")
 async def raise_support_request(body: RaiseSupportRequestBody, request: Request, session=_provider_read) -> dict:
     """Raise a request against one tenant's gateway (ADR-0017 §7, §7b).
@@ -157,7 +186,25 @@ async def raise_support_request(body: RaiseSupportRequestBody, request: Request,
     }
     if body.public_key:
         payload["public_key"] = body.public_key
-    resp = await gw.request("POST", "/support-requests", json=payload)
+    try:
+        resp = await _call_tenant(gw, "POST", "/support-requests", tenant_id=body.tenant_id, json=payload)
+    except HTTPException as exc:
+        # Audited before re-raising. Previously the transport error escaped from here, so the
+        # `record_request` below never ran and a raise that failed on the network left **no
+        # trace on either plane** — not in the provider's audit, and not in the tenant's, which
+        # never saw the request at all. An attempt an operator made and an attempt they never
+        # made must not look identical afterwards.
+        await record_request(
+            request,
+            "provider.support_request.raise",
+            outcome=OUTCOME_DENIED,
+            target=subject,
+            tenant_id=body.tenant_id,
+            reason="tenant_unreachable",
+            requested_scopes=sorted(body.requested_scopes),
+            status=exc.status_code,
+        )
+        raise
     await record_request(
         request,
         "provider.support_request.raise",
@@ -187,7 +234,12 @@ async def poll_support_request(request_id: str, tenant_id: str, request: Request
     """
     subject = _provider_subject(session)
     gw = await _gateway_for(request, tenant_id)
-    resp = await gw.request("GET", f"/support-requests/{request_id}?provider_subject={quote(subject, safe='')}")
+    resp = await _call_tenant(
+        gw,
+        "GET",
+        f"/support-requests/{request_id}?provider_subject={quote(subject, safe='')}",
+        tenant_id=tenant_id,
+    )
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=_detail(resp))
     body = resp.json()
@@ -226,7 +278,13 @@ async def release_support_grant(request: Request, session=_provider_read) -> dic
     released = None
     if grant_id and tenant_id:
         gw = await _gateway_for(request, tenant_id)
-        await gw.request("DELETE", f"/support-grants/{grant_id}")
+        # Deliberately NOT swallowed so the local session can be cleared anyway. Dropping our
+        # copy of the credential while the grant is still live on the tenant would report
+        # "released" for a grant that is still usable and still attributed to this operator —
+        # the console would be lying about the one thing a release is for. 503 says plainly
+        # that nothing was revoked; the grant's own TTL and the tenant's revoke remain, and a
+        # retry is the repair.
+        await _call_tenant(gw, "DELETE", f"/support-grants/{grant_id}", tenant_id=tenant_id)
         released = grant_id
     sess = await current_session(request)
     if isinstance(sess, dict) and sess.pop("support_grant", None) is not None:
