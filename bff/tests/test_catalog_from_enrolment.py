@@ -317,3 +317,68 @@ def test_a_tenant_console_does_install_one(monkeypatch, tmp_path):
     app = create_app()
     with TestClient(app):
         assert app.state.catalog._resolver is not None
+
+
+# --- a stale address must not outlive the enrolment that supplied it -------------------------
+#
+# Found in the browser, after two other fixes had already made the data correct. A tenant
+# console had adopted the provider's in-cluster catalog address, the enrolment was then
+# repaired to carry the right one, and the console kept answering
+# `[Errno -3] Temporary failure in name resolution` — because `_resolve` returns early while
+# `_configured` is true and only a 401 forced it. The address survived for the life of the pod.
+#
+# "The catalog is unreachable at the address I remember" is as much a sign the relationship
+# changed as "my credential was rejected", so it triggers the same re-resolve.
+
+
+class _MovingGateway:
+    """A gateway whose enrolment is repaired between calls — a provider that fixed the address
+    it hands out, which is exactly the situation the retry exists for."""
+
+    def __init__(self, urls: list[str]):
+        self._urls = list(urls)
+        self.calls = 0
+
+    async def get(self, path: str, *, bearer=None):
+        self.calls += 1
+        url = self._urls[min(self.calls, len(self._urls)) - 1]
+        await asyncio.sleep(0)
+        return httpx.Response(200, json={"catalog_url": url, "catalog_credential": CREDENTIAL, "enrolment_id": "e-1"})
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_re_resolves_and_retries():
+    gateway = _MovingGateway(["http://old.invalid", "http://new.example"])
+    client = _catalog(_Settings(), gateway)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if "old.invalid" in str(request.url):
+            raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+        return httpx.Response(200, json={"device_types": []})
+
+    _transport(client, handler)
+    resp = await client.request("GET", "/tenants/t-1/assignments")
+
+    assert resp.status_code == 200, "the corrected address was never tried"
+    assert any("old.invalid" in u for u in seen) and any("new.example" in u for u in seen)
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_that_learns_nothing_new_reports_the_original_error():
+    """No retry when re-resolving returns the same address: a second attempt fails identically,
+    and reporting the retry's error would only restate the first."""
+    gateway = _MovingGateway(["http://same.invalid"])
+    client = _catalog(_Settings(), gateway)
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(str(request.url))
+        raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+    _transport(client, handler)
+    with pytest.raises(CatalogUnavailable, match="Temporary failure in name resolution"):
+        await client.request("GET", "/tenants/t-1/assignments")
+
+    assert len(attempts) == 1, "retried against an address that had not changed"

@@ -207,7 +207,29 @@ class CatalogClient:
         try:
             resp = await self._client.request(method, path, json=json)
         except httpx.HTTPError as exc:
-            raise CatalogUnavailable(str(exc)) from exc
+            # A transport failure is a re-resolve trigger, exactly like the 401 below.
+            #
+            # The address we hold came from an enrolment, and an enrolment can be replaced —
+            # so "the catalog is unreachable at the address I remember" is as much a sign that
+            # the relationship changed as "my credential was rejected". Without this, a console
+            # that once adopted a wrong or stale `catalog_url` kept it for the life of the
+            # process: `_resolve` returns early while `_configured` is true, and only a 401
+            # forced it. Re-enrolling correctly changed nothing until someone restarted the pod.
+            #
+            # Observed: a tenant enrolled with the provider's in-cluster catalog address kept
+            # answering `[Errno -3] Temporary failure in name resolution` after the enrolment
+            # had been repaired, because the pod was still holding the address it learned first.
+            if self._resolver is None:
+                raise CatalogUnavailable(str(exc)) from exc
+            before = self._client.base_url
+            if not (await self._resolve(force=True) and self._client.base_url != before):
+                # Nothing new was learned, so a retry would fail identically. Report the
+                # original failure rather than a second one that says the same thing.
+                raise CatalogUnavailable(str(exc)) from exc
+            try:
+                resp = await self._client.request(method, path, json=json)
+            except httpx.HTTPError as retry_exc:
+                raise CatalogUnavailable(str(retry_exc)) from retry_exc
 
         if resp.status_code == 401 and self._resolver is not None:
             # The credential we hold has stopped being accepted. Re-enrolling is the ordinary
