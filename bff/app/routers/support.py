@@ -184,3 +184,30 @@ async def revoke_enrolment(enrolment_id: str, request: Request) -> JSONResponse:
     right now, and a button that errors on the second click fails when it matters."""
     resp = await relay_request(request, "DELETE", f"/enrolments/{enrolment_id}")
     return await _audited(request, resp, "tenant.enrolment.revoke", target=enrolment_id)
+
+
+@router.get("/enrolment/this-tenant", dependencies=[_admin])
+async def this_tenant(request: Request) -> JSONResponse:
+    """What a tenant admin has to hand their provider, alongside an invitation code.
+
+    The three things §10's handshake needs are the code, this gateway's externally reachable
+    address, and this tenant's id — and until now the console showed only the first. The other
+    two lived in a Kubernetes ConfigMap and a lab notebook, so "invite a provider" produced a
+    credential and left the operator to source two more values from outside the product.
+
+    Deliberately reports what is MISSING rather than substituting anything. `gateway_url` is
+    the in-cluster service address and would be actively wrong to show here; an unset
+    `PUBLIC_GATEWAY_URL` therefore returns empty, and the console names the setting instead of
+    printing something that would fail at redemption.
+
+    Admin-only, matching the rest of this module: it is one screen with the invitation form
+    and the same `support:administer` authority covers both. Neither value is a secret — the
+    gate is consistency, not confidentiality.
+    """
+    settings = request.app.state.settings
+    return JSONResponse(
+        {
+            "tenant_id": settings.tenant_id or "",
+            "public_gateway_url": settings.public_gateway_url or "",
+        }
+    )

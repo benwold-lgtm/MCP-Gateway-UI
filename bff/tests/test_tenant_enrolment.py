@@ -255,3 +255,44 @@ def test_the_provider_console_does_not_serve_the_tenants_half(monkeypatch, tmp_p
 
     with TestClient(create_app()) as c:
         assert c.get("/api/enrolment/enrolments").status_code == 404
+
+
+# --- what the provider needs from us --------------------------------------------------------
+#
+# §10's handshake needs three values: the invitation code, this tenant's id, and the gateway
+# address a provider can actually reach. The console produced the first and showed neither of
+# the others, so issuing an invitation left an admin to read a tenant id out of a ConfigMap.
+
+
+def test_the_console_can_tell_an_admin_what_to_hand_over(console, monkeypatch):
+    monkeypatch.setenv("TENANT_ID", "t-abc")
+    monkeypatch.setenv("PUBLIC_GATEWAY_URL", "https://gw.tenant.example")
+    app = create_app()
+    with TestClient(app) as client:
+        _login(client)
+        resp = client.get("/api/enrolment/this-tenant")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"tenant_id": "t-abc", "public_gateway_url": "https://gw.tenant.example"}
+
+
+def test_an_unconfigured_public_url_is_reported_empty_never_guessed(console, monkeypatch):
+    """The BFF knows an in-cluster GATEWAY_URL, and substituting it here would be worse than
+    saying nothing: it looks like an answer and fails at redemption, in the *provider's*
+    console, with an error naming neither this field nor this tenant."""
+    monkeypatch.setenv("TENANT_ID", "t-abc")
+    monkeypatch.delenv("PUBLIC_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("GATEWAY_URL", "http://device-mcp-gateway.internal.svc.cluster.local:8000")
+    app = create_app()
+    with TestClient(app) as client:
+        _login(client)
+        body = client.get("/api/enrolment/this-tenant").json()
+
+    assert body["public_gateway_url"] == ""
+    assert "cluster.local" not in str(body), "the in-cluster address leaked into the handover details"
+
+
+def test_handover_details_are_admin_only_like_the_rest_of_enrolment(console):
+    client, _app, _gw = console
+    _login(client, role="viewer")
+    assert client.get("/api/enrolment/this-tenant").status_code == 403

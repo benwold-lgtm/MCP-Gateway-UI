@@ -268,6 +268,12 @@ export const api = {
       }),
     revokeInvitation: (codeHash: string) =>
       req<unknown>("DELETE", `/api/enrolment/invitations/${encodeURIComponent(codeHash)}`),
+    // What this tenant must hand its provider alongside the code. Its own id and the
+    // externally reachable gateway address — neither of which the console could show before,
+    // so "invite a provider" produced one of the three values §10 needs and left the operator
+    // to find the other two outside the product.
+    thisTenant: () =>
+      req<{ tenant_id: string; public_gateway_url: string }>("GET", "/api/enrolment/this-tenant"),
     enrolments: () => req<{ enrolments: Enrolment[] }>("GET", "/api/enrolment/enrolments"),
     revoke: (enrolmentId: string) =>
       req<unknown>("DELETE", `/api/enrolment/enrolments/${encodeURIComponent(enrolmentId)}`),

@@ -81,6 +81,16 @@ class Settings:
     # Deliberately the same name the gateway uses for the same concept (`gateway.tenant_id`,
     # ADR-0013 §11): one name for one thing across both halves.
     tenant_id: str = ""
+    #: Where a PROVIDER reaches this tenant's gateway from outside the cluster — the ingress,
+    #: not `gateway_url`. The two are routinely different and must not be derived from each
+    #: other: `gateway_url` is the in-cluster service address this BFF dials, which is
+    #: unreachable and meaningless to anyone else. Shown to a tenant admin so they can hand it
+    #: to their provider alongside an enrolment invitation (ADR-0024 §10).
+    #:
+    #: Empty is a legitimate state, and the console says so rather than guessing: an address
+    #: invented here would be handed to a provider and fail at redemption, which is a worse
+    #: outcome than admitting the deployment never configured one.
+    public_gateway_url: str = ""
 
     # --- Provider plane (ADR-0013 §2/§3) --------------------------------------
     # A SECOND IdP, for the provider's own operators. Configuring it turns this BFF into
@@ -291,6 +301,7 @@ def load_settings() -> Settings:
         oidc_post_login_redirect=os.getenv("OIDC_POST_LOGIN_REDIRECT", "/"),
         oidc_post_logout_redirect=os.getenv("OIDC_POST_LOGOUT_REDIRECT", ""),
         tenant_id=os.getenv("TENANT_ID", "").strip(),
+        public_gateway_url=os.getenv("PUBLIC_GATEWAY_URL", "").strip().rstrip("/"),
         # Provider plane (ADR-0013). Absent → this BFF serves the tenant plane only, which
         # is what a tenant-stack deployment should look like.
         provider_oidc_enabled=os.getenv("PROVIDER_OIDC_ENABLED", "false").lower() in ("1", "true", "yes"),

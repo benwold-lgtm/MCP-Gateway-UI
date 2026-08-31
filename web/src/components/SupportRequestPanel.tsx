@@ -160,6 +160,15 @@ export function SupportRequestPanel({
           ). Devices, Monitoring and Backup are reachable while it lasts — the tenant can end it at any time
           from their own console.
         </p>
+        {/* Saying why the raise form is gone, rather than just not rendering it. A session
+            holds one grant at a time: raising another would overwrite this one on the session
+            (see `routers/provider.py`), so the form is withheld to stop a silent swap rather
+            than because raising is forbidden. Withholding it without explanation read as the
+            console losing a feature. */}
+        <p style={{ color: ui.muted, fontSize: "0.9em", margin: 0 }}>
+          One grant is held per session, so there is no request form while this one is live. Release it to
+          raise a request against another tenant — releasing revokes this grant, it does not park it.
+        </p>
         <button onClick={() => void release()} disabled={busy} style={{ justifySelf: "start" }}>
           Release grant
         </button>

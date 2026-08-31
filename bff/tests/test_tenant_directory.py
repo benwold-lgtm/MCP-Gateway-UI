@@ -220,3 +220,56 @@ async def test_a_config_tenant_never_asks_the_catalog_for_anything():
     pool = TenantGatewayPool(TenantDirectory(CONFIGURED), gateway_api_prefix="/v1", catalog=catalog)
     await pool.get("t-config")
     assert catalog.paths == []
+
+
+# --- a placeholder display name must not displace a real one --------------------------------
+#
+# Found in the browser: enrolling tenant1, which was already in PROVIDER_TENANT_REGISTRY as
+# "Tenant One", made the provider console show `t-039c899f37b8994d` everywhere instead.
+#
+# The catalog stores `display_name or tenant_id` at enrolment, so leaving the optional name
+# blank produces a row whose name IS the id — and `refresh` reproduces that fallback.
+# Catalog-wins then replaced a real name with a placeholder. "Catalog is more current" is right
+# for anything that can change; it is not a reason for "nobody supplied one" to outrank
+# "Tenant One".
+#
+# Driven through `refresh` rather than by assigning `_enrolled`, so the `display_name or
+# tenant_id` step that MAKES the placeholder is inside the test rather than assumed by it.
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_placeholder_name_does_not_displace_the_configured_one():
+    directory = TenantDirectory(
+        {"t-1": TenantEntry(tenant_id="t-1", display_name="Tenant One", gateway_url="http://old:8000")}
+    )
+    # display_name omitted entirely — exactly what POST /tenants stores when the operator
+    # leaves the optional field blank.
+    await directory.refresh(_Catalog(tenants=[{"tenant_id": "t-1", "gateway_url": "http://new:8000"}]))
+
+    entry = directory.get("t-1")
+    assert entry.display_name == "Tenant One", "an unnamed enrolment overwrote a real name"
+    # The narrowness is the point: everything that CAN have changed still comes from the
+    # catalog. A fix that preferred the whole config entry would keep routing to the old
+    # gateway, which is the failure the catalog-wins rule exists to prevent.
+    assert entry.gateway_url == "http://new:8000"
+
+
+@pytest.mark.asyncio
+async def test_a_real_catalog_name_still_wins():
+    """The direction that makes this a rule rather than a preference: a tenant renamed at
+    enrolment must show its new name, not the boot-time config."""
+    directory = TenantDirectory(
+        {"t-1": TenantEntry(tenant_id="t-1", display_name="Old Name", gateway_url="http://a:8000")}
+    )
+    await directory.refresh(_Catalog(tenants=[_row("t-1", display_name="New Name")]))
+
+    assert directory.get("t-1").display_name == "New Name"
+
+
+@pytest.mark.asyncio
+async def test_an_unnamed_enrolment_with_no_config_entry_keeps_the_id():
+    """There is nothing better to show, and inventing something would be worse."""
+    directory = TenantDirectory({})
+    await directory.refresh(_Catalog(tenants=[{"tenant_id": "t-2", "gateway_url": "http://b:8000"}]))
+
+    assert directory.get("t-2").display_name == "t-2"
