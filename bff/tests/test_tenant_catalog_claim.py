@@ -409,3 +409,98 @@ def test_accept_upgrade_requires_an_authenticated_admin_session(console):
     resp = client.post("/api/catalog/upgrades/sensor-01/accept", json={"device_type_id": "t1", "version": 2})
 
     assert resp.status_code == 401
+
+
+# --- product facts the curator supplies (ADR-0020 §2) ---------------------------------------
+#
+# Where the API key goes and what the appliance tolerates are properties of the PRODUCT, not
+# of anyone's deployment of it. The tenant was typing both from a vendor PDF; getting
+# `api_key_name` wrong yields a 401 at first contact that reads like a bad key.
+#
+# The credential VALUE stays the tenant's half throughout — only its position is curated.
+
+
+def _curated(**over) -> dict:
+    version = {**DEVICE_TYPE_DETAIL["versions"][0], "auth_kind": "api_key", **over}
+    return {**DEVICE_TYPE_DETAIL, "versions": [version]}
+
+
+def test_the_curated_api_key_position_overrides_what_the_browser_sent(console):
+    """Overridden, not merely defaulted. `transport` and `spec_path` already work this way —
+    a curated fact is not something a claim form gets to contradict."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_curated(api_key_location="header", api_key_name="X-API-Key")))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={
+            "hostname": "sensor-01",
+            "base_url": "https://sensor-01.local",
+            "auth": {"api_key": "s3cr3t", "location": "query", "name": "wrong"},
+        },
+    )
+
+    assert resp.status_code == 201
+    auth = gateway.calls[0]["json"]["auth"]
+    assert auth["location"] == "header" and auth["name"] == "X-API-Key"
+    # The one part that is emphatically NOT curated.
+    assert auth["api_key"] == "s3cr3t"
+
+
+def test_a_version_that_never_said_leaves_the_tenants_answer_alone(console):
+    """`None` is "the curator has not said" — a version predating these fields. Overwriting a
+    working claim with a null would break every device type curated before them."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_curated(api_key_location=None, api_key_name=None)))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post(
+        "/api/catalog/t1/claim",
+        json={
+            "hostname": "sensor-01",
+            "base_url": "https://sensor-01.local",
+            "auth": {"api_key": "s3cr3t", "location": "query", "name": "apikey"},
+        },
+    )
+
+    auth = gateway.calls[0]["json"]["auth"]
+    assert auth["location"] == "query" and auth["name"] == "apikey"
+
+
+def test_the_recommended_rate_limit_fills_in_only_when_the_tenant_sent_nothing(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_curated(recommended_rate_limit_rps=10.5)))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert gateway.calls[0]["json"]["rate_limit_rps"] == 10.5
+
+
+def test_the_tenants_rate_limit_wins_over_the_recommendation(console):
+    """It is a RECOMMENDATION. A provider enforcing a ceiling on the tenant's own gateway
+    would reach across the plane boundary §2 keeps — so a tenant who lowers it is obeyed, and
+    so is one who raises it."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_curated(recommended_rate_limit_rps=10.5)))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post(
+        "/api/catalog/t1/claim",
+        json={
+            "hostname": "sensor-01",
+            "base_url": "https://sensor-01.local",
+            "auth": {"api_key": "k"},
+            "rate_limit_rps": 2,
+        },
+    )
+
+    assert gateway.calls[0]["json"]["rate_limit_rps"] == 2

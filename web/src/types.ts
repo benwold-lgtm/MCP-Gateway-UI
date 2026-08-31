@@ -342,6 +342,16 @@ export type DeviceTypeVersion = {
   auth_kind: AuthKind;
   fingerprint_policy?: FingerprintPolicy | null;
   changelog?: string | null;
+  /** Where the tenant's API key goes — a property of the appliance's API, not of anyone's
+   *  deployment of it (ADR-0020 §2). The key's VALUE is never curated; only its position.
+   *  `null`/absent means the curator has not said, which is not the same as "no header":
+   *  versions curated before these fields existed have no answer, so the form asks. */
+  api_key_location?: "header" | "query" | "cookie" | null;
+  api_key_name?: string | null;
+  /** What the provider knows the appliance tolerates. A recommendation: it pre-fills the
+   *  claim form and constrains nothing, since a provider enforcing a limit on the tenant's
+   *  own gateway would reach across the plane boundary §2 keeps. */
+  recommended_rate_limit_rps?: number | null;
   created_at: string;
 };
 
