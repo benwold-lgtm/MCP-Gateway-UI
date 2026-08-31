@@ -260,37 +260,60 @@ other's session ids. Session keys are therefore namespaced per deployment
 (`bff:sess:provider:…` / `bff:sess:tenant:<tenant>:…`) — and the plane wall is kept as well
 as the refusal, not instead of it, because it is what still holds if a session does cross.
 
-### The provider plane today (ADR-0017 slice 6)
+### What the provider console can reach
 
 | | |
 |---|---|
 | Holds | `provider:*` scopes, mapped from provider-IdP groups (`PROVIDER_GROUP_SCOPES`) |
-| Never holds | any gateway scope; the two vocabularies are reported separately by `/auth/me` |
-| Tenant data plane (`/api/*`) | **refused unconditionally**, for now |
-| Catalog (`/provider/catalog/*`) | reachable — see below, unaffected |
+| Never holds | any gateway scope of its own; the two vocabularies are reported separately by `/auth/me` |
+| Tenant data plane (`/api/*`) | reachable **only while a support grant is held** — visible-but-disabled until then |
+| Catalog (`/provider/catalog/*`) | `provider:admin` only; never gated on a grant |
+| Enrolment (`/provider/enrolment/*`) | `provider:admin` only; never gated on a grant |
 
-ADR-0013's **act-on-tenant** grant — cross-tenant power exercised, not held, for a bounded,
-justified, audited window — and the **elevated grant** layered on top of it (a step-up
-gating tool invocation) are both removed as of ADR-0017 slice 6. `app/grants.py` and
-`app/routers/provider.py` are gone; `security.require_role` now refuses every provider-plane
-session on the tenant data plane outright, rather than checking a grant that no longer
-exists.
+> **Superseded text, if you have read an older copy.** This section used to say the tenant
+> data plane was *"refused unconditionally, for now"* and describe a *"real, temporary
+> regression"*. That was accurate at ADR-0017 slice 6 and is not accurate now: slices 7 (BFF)
+> and 8 (UI) shipped, so the data plane is reachable through a grant the tenant issued.
+> ADR-0013's **act-on-tenant** grant and the **elevated grant** layered on it
+> (`provider:invoke`, `provider:credentials`) were deleted outright and exist nowhere.
 
-**Why remove rather than harden.** ADR-0017 inverts who asserts provider authority over a
-tenant: instead of the provider's own console minting a grant and presenting it, the
-*tenant's own gateway* mints a short-lived support credential once a tenant admin approves a
-request the provider raised. That is a different mechanism, not a stronger version of this
-one — porting the act-on-tenant machinery forward and then replacing it would have meant
-maintaining two authorization models in parallel for no benefit. The replacement (raising a
-request, polling for approval, the credential the gateway hands back) is ADR-0017 slice 7
-(BFF) and slice 8 (UI); **both have since shipped**, so Devices/Monitoring/Backup are
-reachable once a grant is held and visible-but-disabled until then.
+**Why they were removed rather than hardened.** ADR-0017 inverts who asserts provider
+authority over a tenant. Instead of the provider's console minting a grant and presenting it,
+the *tenant's own gateway* mints a short-lived support credential once a tenant admin approves
+a request the provider raised. That is a different mechanism, not a stronger version of the
+old one — porting the act-on-tenant machinery forward and then replacing it would have meant
+maintaining two authorization models in parallel for no benefit.
 
-This is a real, temporary regression in what the provider console can do — and a deliberately
-safe one. Refusing unconditionally is a fail-closed interim, not a silent gap: nothing here
-was left half-migrated, and no route quietly stopped checking anything. See
-[ADR-0017](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0017-provider-authority-is-delegated.md)
-and the gateway repo's `docs/adr/README.md` item 7 for the full slice-by-slice history.
+**Nothing in the console asserts authority over a tenant.** Devices, Monitoring and Backup are
+gated on `heldGrant`, which the tenant issued and can revoke; the console never decides for
+itself that it may reach a tenant. Losing the grant ejects from anything it was holding open,
+because a screen of a tenant's fleet that outlives the authority to see it is
+indistinguishable from a live one.
+
+### Enrolling a tenant (ADR-0024 §10/§11)
+
+Before any of the above, the provider and tenant have to be related — and that relationship is
+an object with a lifecycle, not configuration on both sides.
+
+1. A tenant administrator issues a **one-time invitation** in their own console (Support tab),
+   and hands it over out of band with their gateway address and tenant id. The tenant console
+   shows all three; none is a secret.
+2. A `provider:admin` redeems it under **Enrolment**. One call records the tenant, issues that
+   tenant's catalog credential, checks the gateway reports the tenant the provider minted for,
+   and stores the `support:request` credential the tenant hands back.
+3. The tenant revokes the enrolment whenever they choose.
+
+**No credential is ever shown to the operator.** The provider's credential for that tenant's
+gateway goes straight into the catalog's registry — handing it to a human to paste somewhere
+was the manual step §11 exists to remove.
+
+Two settings are easy to get wrong and are worth stating plainly, because both fail as a DNS
+error rather than as a configuration error:
+
+| Setting | What it must be |
+|---|---|
+| `PUBLIC_CATALOG_URL` (provider) | The catalog address a **tenant** can resolve. **Not** `CATALOG_SERVICE_URL`, which is this console's own in-cluster address. Enrolment refuses without it rather than falling back. |
+| `PUBLIC_GATEWAY_URL` (tenant) | The gateway address a **provider** can resolve. **Not** `GATEWAY_URL`, which is the in-cluster service the tenant's BFF dials. |
 
 ### Who may raise a support request (ADR-0017 §7b)
 
@@ -317,12 +340,18 @@ audited as `denied`/`scope_above_role` and never reaches the tenant.
 ### Catalog (ADR-0020)
 
 `provider:admin` also reaches `/provider/catalog/*` — curating device types and assigning
-them to tenants — and this was never gated on act-on-tenant in the first place: curation and
-assignment write to the catalog service's own storage, not a tenant's registry (§2:
-"assignment is an offer"), so there was no tenant authority to hold. The BFF relays every
-call to a separate service (`device_mcp_catalog/` in the gateway repo,
-`CATALOG_SERVICE_URL`/`CATALOG_API_TOKEN` above) and holds none of it itself. Entirely
-unaffected by the removal above.
+them to tenants — and this is **not gated on a support grant**, because there is no tenant
+authority to hold: curation and assignment write to the catalog service's own storage, never
+to a tenant's registry (§2: "assignment is an offer"). The BFF relays every call to a separate
+service (`device_mcp_catalog/` in the gateway repo,
+`CATALOG_SERVICE_URL`/`CATALOG_API_TOKEN` above) and holds none of it itself.
+
+A curated version carries facts about the **product** — transport, spec path, fingerprint
+policy, where its API key goes (`api_key_location`/`api_key_name`) and what request rate it
+tolerates. It never carries the tenant's half: the address and the credential are the
+tenant's to supply at claim time, and the rate limit is a *recommendation* that pre-fills the
+claim form and constrains nothing — a provider enforcing a limit on the tenant's own gateway
+would reach across the boundary §2 draws.
 
 `assigned_by` on an assignment is filled in from the session's own subject, never taken from
 the request body — an unverified client-supplied actor would be worthless as an audit
