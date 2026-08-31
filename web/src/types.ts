@@ -404,3 +404,16 @@ export type UpgradeOffer = {
 };
 
 export type UpgradeOffersResponse = { offers: UpgradeOffer[] };
+
+// What redeeming a tenant's invitation returns (POST /provider/enrolment/redeem,
+// ADR-0024 §10/§11). Deliberately carries NO credential: the provider's own standing
+// credential for the tenant's gateway is recorded straight into the catalog, because handing
+// it to an operator to paste somewhere was the manual step §11 exists to remove.
+export type RedeemedEnrolment = {
+  tenant_id: string;
+  enrolment_id: string;
+  approved_by: string | null;
+  approved_at: number | null;
+  gateway_url: string;
+  recorded: boolean;
+};

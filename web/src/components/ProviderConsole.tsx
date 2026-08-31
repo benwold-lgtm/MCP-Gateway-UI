@@ -5,6 +5,7 @@ import type { HeldSupportGrant, Overview, Session } from "../types";
 import { health, ui } from "../tokens";
 import { Shell, RailItem } from "./Shell";
 import { CatalogConsole } from "./CatalogConsole";
+import { ProviderEnrolment } from "./ProviderEnrolment";
 import { SupportRequestPanel } from "./SupportRequestPanel";
 import { DeviceList } from "./DeviceList";
 import { DeviceDetail } from "./DeviceDetail";
@@ -31,7 +32,7 @@ import { BackupPanel } from "./BackupPanel";
  * provider-plane acts on the provider's own storage (ADR-0020 §2), never a write into any
  * tenant's registry, so it never depended on act-on-tenant in the first place.
  */
-type View = "access" | "devices" | "monitoring" | "backup" | "catalog";
+type View = "access" | "devices" | "monitoring" | "backup" | "catalog" | "enrolment";
 
 export function ProviderConsole({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [view, setView] = useState<View>("access");
@@ -47,7 +48,9 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
   // Losing the grant ejects from anything it was holding open — a screen of a tenant's
   // fleet that outlives the authority to see it is indistinguishable from a live one.
   useEffect(() => {
-    setView((v) => (!heldGrant?.held && v !== "catalog" && v !== "access" ? "access" : v));
+    setView((v) =>
+      !heldGrant?.held && v !== "catalog" && v !== "access" && v !== "enrolment" ? "access" : v,
+    );
   }, [heldGrant]);
 
   // Signed in but mapped to nothing: saying so beats every route answering 403.
@@ -58,7 +61,7 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
   // session whose scopes narrowed under it, a future deep link). Fall back rather than
   // render a panel whose every fetch 403s.
   useEffect(() => {
-    setView((v) => (v === "catalog" && !isAdmin ? "access" : v));
+    setView((v) => ((v === "catalog" || v === "enrolment") && !isAdmin ? "access" : v));
   }, [isAdmin]);
 
   const held = heldGrant?.held ?? false;
@@ -92,6 +95,12 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
           (`routers/catalog.py`). Rendering it for a monitor produced a rail item whose every
           tab answered 403. */}
       {isAdmin && <RailItem label="Catalog" active={view === "catalog"} onClick={() => setView("catalog")} />}
+      {/* Admin-only for the same reason, and gated on nothing else: enrolling a tenant is
+          what CREATES the relationship a support grant is later raised within, so requiring
+          a grant to reach it would be circular — there is no tenant to raise against yet. */}
+      {isAdmin && (
+        <RailItem label="Enrolment" active={view === "enrolment"} onClick={() => setView("enrolment")} />
+      )}
     </>
   );
 
@@ -128,6 +137,7 @@ export function ProviderConsole({ session, onSignOut }: { session: Session; onSi
       {view === "backup" && held && <BackupPanel />}
       {(view === "devices" || view === "monitoring") && held && <TenantViews view={view} />}
       {view === "catalog" && isAdmin && <CatalogConsole />}
+      {view === "enrolment" && isAdmin && <ProviderEnrolment />}
     </Shell>
   );
 }
