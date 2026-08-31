@@ -1,18 +1,22 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""ADR-0024 §10 — the provider console redeems a tenant's invitation.
+"""ADR-0024 §10 and §11 — the provider console redeems a tenant's invitation.
 
-Three steps that were nine manual ones: mint the tenant's catalog credential, redeem the
-invitation against the tenant's gateway, and verify the gateway reports the tenant we minted
-for. What is tested hardest here is not the happy path but the two ways it can go wrong without
-anyone noticing:
+Four steps that were nine manual ones: record the tenant and mint its catalog credential (one
+transaction, §11), redeem the invitation against the tenant's gateway, verify the gateway
+reports the tenant we minted for, and record the credential it returned. What is tested hardest
+here is not the happy path but the ways it can go wrong without anyone noticing:
 
-* a **credential orphaned** by a redemption that failed after minting — a live credential for a
-  tenant that was never enrolled, which nothing else in the estate would ever attribute;
+* an **enrolment orphaned** by a redemption that failed after minting — a live credential and a
+  registry entry for a tenant that was never enrolled, which nothing else in the estate would
+  ever attribute;
 * a **tenant mismatch**, where an operator's typo mints for tenant A and installs in tenant B.
   ADR-0020 §7b catches that later, at the tenant's first catalog call, as a page. This catches
-  it before the credential is ever installed.
+  it before the credential is ever installed;
+* the **secret escaping**: §11's whole point is that the provider's credential is recorded, not
+  handed to an operator to place. A response that still carried it would leave the manual step
+  in the flow while the record claimed it was gone.
 """
 
 from __future__ import annotations
@@ -69,29 +73,45 @@ def _seed_session(client, app, data: dict) -> None:
 
 
 class _FakeCatalog:
-    """Answers the two catalog calls this flow makes and records both, so a test can assert an
-    orphaned credential was actually withdrawn rather than merely intended to be."""
+    """Answers the catalog calls this flow makes and records every one with its body, so a test
+    can assert an orphaned enrolment was actually withdrawn — and that the provider's credential
+    was actually recorded — rather than merely intended to be."""
 
-    def __init__(self, *, issue_status: int = 201) -> None:
+    configured = True
+
+    def __init__(self, *, enrol_status: int = 201, record_status: int = 200) -> None:
         self.calls: list[tuple[str, str]] = []
-        self._issue_status = issue_status
+        self.bodies: list[tuple[str, str, dict | None]] = []
+        self._enrol_status = enrol_status
+        self._record_status = record_status
 
     async def request(self, method: str, path: str, *, json=None):
         self.calls.append((method, path))
-        if method == "POST":
+        self.bodies.append((method, path, json))
+        if method == "POST" and path == "/tenants":
             return httpx.Response(
-                self._issue_status,
-                json={"id": CREDENTIAL_ID, "tenant_id": TENANT, "label": "enrolment", "credential": "cat_secret"},
+                self._enrol_status,
+                json={"tenant_id": TENANT, "credential_id": CREDENTIAL_ID, "credential": "cat_secret"},
             )
-        return httpx.Response(204)
+        if method == "PUT":
+            return httpx.Response(self._record_status, json={"tenant_id": TENANT, "recorded": True})
+        if method == "GET" and path == "/tenants":
+            return httpx.Response(200, json={"tenants": [{"tenant_id": TENANT, "display_name": "Acme"}]})
+        return httpx.Response(200, json={"tenant_id": TENANT, "removed": True, "credentials_revoked": 1})
 
     async def aclose(self) -> None:
         """The app's shutdown closes whatever is on `state.catalog`; a double that omitted this
         turned every test into a teardown error while still reporting the assertions passed."""
 
     @property
-    def revoked(self) -> bool:
-        return ("DELETE", f"/tenants/{TENANT}/credentials/{CREDENTIAL_ID}") in self.calls
+    def withdrawn(self) -> bool:
+        """§11 makes ending a relationship one call: the registry entry and the credential go
+        together. So the compensation this asserts is a single DELETE, not a credential revoke
+        the caller would then have to follow with a registry edit."""
+        return ("DELETE", f"/tenants/{TENANT}") in self.calls
+
+    def body_of(self, method: str, path: str) -> dict:
+        return next(body for m, p, body in self.bodies if m == method and p == path) or {}
 
 
 def _gateway_responder(app, handler):
@@ -133,7 +153,7 @@ def _ok_gateway(tenant_id: str = TENANT):
 # --- the happy path, and what it hands back ------------------------------------------------
 
 
-def test_redeeming_mints_then_redeems_and_returns_the_provider_credential(console, monkeypatch):
+def test_redeeming_enrols_the_tenant_and_records_the_credential_it_receives(console, monkeypatch):
     client, app = console
     _seed_session(client, app, _provider_session())
     app.state.catalog = _FakeCatalog()
@@ -146,9 +166,72 @@ def test_redeeming_mints_then_redeems_and_returns_the_provider_credential(consol
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["tenant_id"] == TENANT
-    assert body["credential"] == "enr_provider_secret"
-    assert ("POST", f"/tenants/{TENANT}/credentials") in app.state.catalog.calls
-    assert not app.state.catalog.revoked
+    assert body["recorded"] is True
+
+    # One call, one transaction in the catalog — not "mint a credential, then tell a human to
+    # edit PROVIDER_TENANT_REGISTRY", which is the step §11 exists to remove.
+    assert ("POST", "/tenants") in app.state.catalog.calls
+    enrolled = app.state.catalog.body_of("POST", "/tenants")
+    assert enrolled["tenant_id"] == TENANT and enrolled["gateway_url"] == GATEWAY_URL
+    assert not app.state.catalog.withdrawn
+
+
+def test_the_provider_credential_is_recorded_and_never_returned(console):
+    """§11's point, stated as a test. The credential the tenant's gateway hands back is the one
+    secret in this flow whose purpose is to be presented again later — so it goes into the
+    registry, and a response still carrying it would leave the manual step in place while the
+    record claimed it was gone."""
+    client, app = console
+    _seed_session(client, app, _provider_session())
+    app.state.catalog = _FakeCatalog()
+    restore = _gateway_responder(app, _ok_gateway())
+    try:
+        resp = _redeem(client)
+    finally:
+        restore()
+
+    recorded = app.state.catalog.body_of("PUT", f"/tenants/{TENANT}/gateway-credential")
+    assert recorded["gateway_credential"] == "enr_provider_secret"
+    assert recorded["enrolment_id"] == "e-1"
+    assert "enr_provider_secret" not in resp.text
+    assert "credential" not in resp.json()
+
+
+def test_a_catalog_that_will_not_record_the_credential_does_not_withdraw(console):
+    """The one failure that must NOT compensate. By this point the tenant's gateway holds a live
+    enrolment; withdrawing would revoke the credential it is using while destroying our only
+    copy of the one it just gave us. The tenant is left listed and unreachable — visible, and
+    repairable by enrolling again — which §11 argues is strictly better than an invisible gap."""
+    client, app = console
+    _seed_session(client, app, _provider_session())
+    app.state.catalog = _FakeCatalog(record_status=500)
+    restore = _gateway_responder(app, _ok_gateway())
+    try:
+        resp = _redeem(client)
+    finally:
+        restore()
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["error_code"] == "ERR_ENROLMENT_NOT_RECORDED"
+    assert not app.state.catalog.withdrawn, "the tenant's live enrolment must not be torn down here"
+    assert "enr_provider_secret" not in resp.text
+
+
+def test_a_successful_enrolment_drops_any_cached_client_for_that_tenant(console):
+    """Re-enrolling issues a NEW credential for the same gateway. A pool still holding the
+    client it built from the old one would keep working until that credential was revoked, then
+    fail for a reason nothing in this process would connect to the enrolment that caused it."""
+    client, app = console
+    _seed_session(client, app, _provider_session())
+    app.state.catalog = _FakeCatalog()
+    invalidated: list[str] = []
+    app.state.gateway_pool.invalidate = invalidated.append
+    restore = _gateway_responder(app, _ok_gateway())
+    try:
+        _redeem(client)
+    finally:
+        restore()
+    assert invalidated == [TENANT]
 
 
 def test_the_operator_never_names_their_own_subject(console):
@@ -178,7 +261,7 @@ def test_the_operator_never_names_their_own_subject(console):
 # --- the two failures that would otherwise be silent ---------------------------------------
 
 
-def test_a_tenant_mismatch_revokes_the_credential_and_enrols_nothing(console):
+def test_a_tenant_mismatch_withdraws_the_enrolment_and_leaves_nothing(console):
     """The operator's typo. ADR-0020 §7b would catch this later as a page at the tenant's first
     catalog call; here it is caught before the credential is ever installed."""
     client, app = console
@@ -192,13 +275,13 @@ def test_a_tenant_mismatch_revokes_the_credential_and_enrols_nothing(console):
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error_code"] == "ERR_ENROLMENT_TENANT_MISMATCH"
-    assert app.state.catalog.revoked, "a credential minted for the wrong tenant must not survive"
+    assert app.state.catalog.withdrawn, "an enrolment recorded for the wrong tenant must not survive"
 
 
-def test_a_refused_redemption_revokes_the_credential_it_minted(console):
-    """An expired or already-redeemed invitation. Without the compensation, the catalog's caller
-    table fills with live credentials belonging to tenants that were never enrolled — which
-    nothing else in the estate would ever attribute to anything."""
+def test_a_refused_redemption_withdraws_the_enrolment_it_recorded(console):
+    """An expired or already-redeemed invitation. Without the compensation, the catalog fills
+    with registry entries and live credentials belonging to tenants that were never enrolled —
+    which nothing else in the estate would ever attribute to anything."""
     client, app = console
     _seed_session(client, app, _provider_session())
     app.state.catalog = _FakeCatalog()
@@ -213,10 +296,10 @@ def test_a_refused_redemption_revokes_the_credential_it_minted(console):
         restore()
 
     assert resp.status_code == 401
-    assert app.state.catalog.revoked
+    assert app.state.catalog.withdrawn
 
 
-def test_an_unreachable_gateway_revokes_the_credential_too(console):
+def test_an_unreachable_gateway_withdraws_the_enrolment_too(console):
     """The ambiguous case: we cannot tell whether the enrolment was created before the
     connection failed. Revoking anyway is the safe direction — a dead catalog credential reads
     to the tenant as a named unavailable condition they can re-enrol out of, where a live one
@@ -235,7 +318,7 @@ def test_an_unreachable_gateway_revokes_the_credential_too(console):
         restore()
 
     assert resp.status_code == 502
-    assert app.state.catalog.revoked
+    assert app.state.catalog.withdrawn
 
 
 # --- authority -----------------------------------------------------------------------------

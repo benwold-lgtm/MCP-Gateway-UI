@@ -28,6 +28,7 @@ from .gateway_pool import TenantGatewayPool
 from .oidc import OIDCClient
 from .routers import api, auth, catalog, enrolment, provider, support
 from .sessions import MemorySessionStore, RedisSessionStore
+from .tenant_directory import TenantDirectory
 from .tenant_registry import TenantRegistryError, load_tenant_registry
 from .throttle import LoginThrottle, parse_trusted_proxy_cidrs
 
@@ -107,7 +108,15 @@ def create_app() -> FastAPI:
     # None the routers below would each have to check for separately.
     app.state.catalog = CatalogClient(settings)
     app.state.tenant_registry = tenant_registry
-    app.state.gateway_pool = TenantGatewayPool(tenant_registry, gateway_api_prefix=settings.gateway_api_prefix)
+    # ADR-0024 §11: config is the floor, the catalog's `tenants` table is the live source. The
+    # directory starts holding only what config named and learns the enrolled estate on its
+    # first refresh, so a console whose catalog is down at boot still knows its tenants.
+    app.state.tenant_directory = TenantDirectory(tenant_registry)
+    app.state.gateway_pool = TenantGatewayPool(
+        app.state.tenant_directory,
+        gateway_api_prefix=settings.gateway_api_prefix,
+        catalog=app.state.catalog,
+    )
     # Server-side session store: memory for a single replica (lite/dev); Redis when
     # SESSION_REDIS_URL is set, which multi-replica deploys need (no session affinity).
     # Namespaced per deployment. The startup refusal above is per-process and the store is

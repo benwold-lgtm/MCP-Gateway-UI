@@ -67,7 +67,7 @@ def provider_console(monkeypatch):
     # The pool builds a real per-tenant GatewayClient lazily; these tests fake the whole
     # pool rather than reach inside it, since resolving the *right* tenant is exactly the
     # property slice 2 introduced and these tests exercise it via `TENANT_ID`.
-    def _fake_pool_get(tenant_id):
+    async def _fake_pool_get(tenant_id):
         if tenant_id != TENANT_ID:
             raise KeyError(tenant_id)
         return gw

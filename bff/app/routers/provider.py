@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..audit import OUTCOME_DENIED, OUTCOME_SUCCESS, outcome_for, record_request
+from ..gateway_pool import TenantUnreachable
 from ..security import (
     SCOPE_PROVIDER_ADMIN,
     SCOPE_PROVIDER_MONITOR,
@@ -66,13 +67,20 @@ async def list_tenants(request: Request, session=_provider_read) -> dict:
     `gateway_url` is deliberately never returned: the frontend only ever needs a `tenant_id`
     to pass back into the raise/poll routes, and the registry's internal topology is not
     something the browser needs to see.
+
+    Refreshed from the catalog on each call (ADR-0024 §11), because an estate that only changed
+    at boot is the config-shaped registry §11 replaced — a tenant enrolled or withdrawn a minute
+    ago has to be right here. `stale` reports a refresh that could not reach the catalog, so the
+    console can say it is showing the last known estate rather than presenting it as current.
     """
-    registry = request.app.state.tenant_registry
+    directory = request.app.state.tenant_directory
+    await directory.refresh(request.app.state.catalog)
     return {
         "tenants": [
             {"tenant_id": entry.tenant_id, "display_name": entry.display_name}
-            for entry in sorted(registry.values(), key=lambda entry: entry.display_name)
-        ]
+            for entry in sorted(directory.entries().values(), key=lambda entry: entry.display_name)
+        ],
+        "stale": directory.stale,
     }
 
 
@@ -88,14 +96,22 @@ def _provider_subject(session) -> str:
     return str((session or {}).get("sub") or "unknown")
 
 
-def _gateway_for(request: Request, tenant_id: str):
+async def _gateway_for(request: Request, tenant_id: str):
     """The pool resolves an unknown tenant_id to ``KeyError`` — translated to a 404 here,
     never a 500: the operator named a tenant this registry doesn't know (a stale bookmark,
-    a typo), which is a client error, not a server fault."""
+    a typo), which is a client error, not a server fault.
+
+    ``TenantUnreachable`` is the other half of that distinction (ADR-0024 §11): the tenant is
+    known and enrolled, and its credential could not be fetched from the catalog. 503, because
+    "we could not ask" is an outage and "there is no such tenant" is a typo, and an operator
+    working an incident should not have to tell them apart from a single status code.
+    """
     try:
-        return request.app.state.gateway_pool.get(tenant_id)
+        return await request.app.state.gateway_pool.get(tenant_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown tenant: {tenant_id!r}") from None
+    except TenantUnreachable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.post("/support-requests")
@@ -133,7 +149,7 @@ async def raise_support_request(body: RaiseSupportRequestBody, request: Request,
                     + ", ".join(above)
                 ),
             )
-    gw = _gateway_for(request, body.tenant_id)
+    gw = await _gateway_for(request, body.tenant_id)
     payload = {
         "provider_subject": subject,
         "requested_scopes": body.requested_scopes,
@@ -170,7 +186,7 @@ async def poll_support_request(request_id: str, tenant_id: str, request: Request
     than one tenant at once is deferred to the next slice, not solved by this one.
     """
     subject = _provider_subject(session)
-    gw = _gateway_for(request, tenant_id)
+    gw = await _gateway_for(request, tenant_id)
     resp = await gw.request("GET", f"/support-requests/{request_id}?provider_subject={quote(subject, safe='')}")
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=_detail(resp))
@@ -209,7 +225,7 @@ async def release_support_grant(request: Request, session=_provider_read) -> dic
     # either) must not be echoed back as released when no DELETE call was ever made.
     released = None
     if grant_id and tenant_id:
-        gw = _gateway_for(request, tenant_id)
+        gw = await _gateway_for(request, tenant_id)
         await gw.request("DELETE", f"/support-grants/{grant_id}")
         released = grant_id
     sess = await current_session(request)

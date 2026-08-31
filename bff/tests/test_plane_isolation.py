@@ -287,7 +287,7 @@ def test_a_provider_session_holding_a_support_grant_reaches_the_data_plane(provi
     async def _boom(path, bearer=None):
         raise AssertionError("a provider session's call reached app.state.gateway, not the pool")
 
-    def _pool_get(tenant_id):
+    async def _pool_get(tenant_id):
         assert tenant_id == TENANT_ID
         return SimpleNamespace(get=_ok)
 
@@ -368,7 +368,10 @@ def test_a_401d_support_grant_is_cleared_from_the_session(provider_console):
     async def _dead(path, bearer=None):
         return httpx.Response(401, json={"detail": "invalid or missing token"})
 
-    app.state.gateway_pool.get = lambda tenant_id: SimpleNamespace(get=_dead)
+    async def _dead_pool_get(tenant_id):
+        return SimpleNamespace(get=_dead)
+
+    app.state.gateway_pool.get = _dead_pool_get
     _seed_session(
         c,
         app,

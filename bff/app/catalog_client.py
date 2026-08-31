@@ -105,6 +105,16 @@ class CatalogClient:
             return str(detail["error_code"])
         return None
 
+    @property
+    def configured(self) -> bool:
+        """Whether this BFF has a catalog to talk to at all.
+
+        Distinct from "the catalog is down": a deployment with no catalog configured is a
+        supported arrangement, not a degraded one, and a caller that conflated them would show
+        every such deployment a permanent outage warning.
+        """
+        return self._configured
+
     async def request(self, method: str, path: str, *, json: Optional[Any] = None) -> httpx.Response:
         if not self._configured:
             raise CatalogUnavailable("CATALOG_SERVICE_URL / CATALOG_API_TOKEN not configured on this BFF")

@@ -93,7 +93,12 @@ def test_lists_tenants_sorted_by_display_name_without_gateway_url(provider_conso
         "tenants": [
             {"tenant_id": "t-1", "display_name": "Acme Inc"},
             {"tenant_id": "t-2", "display_name": "Zeta Corp"},
-        ]
+        ],
+        # ADR-0024 §11: config is the floor and the catalog is the live source. With no catalog
+        # configured this console is not degraded, it is a supported arrangement — so `stale` is
+        # False. A permanent warning on every deployment that has not adopted enrolment would be
+        # the opposite of what §11 promised that audience.
+        "stale": False,
     }
 
 
@@ -110,7 +115,7 @@ def test_an_empty_registry_lists_no_tenants(monkeypatch):
         _seed_provider_session(c, app, scopes=["provider:admin"])
         resp = c.get("/provider/tenants")
     assert resp.status_code == 200
-    assert resp.json() == {"tenants": []}
+    assert resp.json() == {"tenants": [], "stale": False}
 
 
 def test_a_malformed_registry_refuses_to_boot(monkeypatch):
