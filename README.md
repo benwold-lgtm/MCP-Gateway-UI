@@ -145,6 +145,21 @@ audit is most often asked. Reads are deliberately **not** recorded — per-user 
 gateway's own chain already has them, so duplicating would add noise rather than
 accountability. That changes when a provider session's reads reach a tenant (§9).
 
+### One id from the click to the appliance
+
+A human's action starts here, so the correlation id does too. The BFF takes the browser's
+`X-Request-Id` or mints one, records it on its own audit row, returns it in the response, and
+puts it on **every** outbound hop — the tenant gateway, another tenant's gateway through the
+relay pool, and the catalog. The gateway honours an inbound id and carries it onward onto the
+wire to the device.
+
+That last part is why this is a requirement rather than tidiness. A device authenticates the
+*gateway*, not the person: one service account per device, permanently
+([ADR-0026](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0026-service-identity-per-device.md)).
+So "which person caused this change on the appliance?" is answered by joining three logs — this
+console's audit, the gateway's audit, and the device's own — and the request id is the only
+value all three share.
+
 Three properties, per
 [ADR-0013](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md)
 §9/§10:

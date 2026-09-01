@@ -56,6 +56,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .correlation import current_request_id
+
 RECORD_VERSION = 1
 EVENT_NAME = "bff.audit"
 
@@ -452,7 +454,11 @@ async def record_request(request: Any, action: str, *, outcome: str, target: str
             actor_kind=actor_kind,
             outcome=outcome,
             target=target,
-            rid=request.headers.get("x-request-id"),
+            # ADR-0026: the id in scope, which the front-door middleware minted when the
+            # browser sent none. Reading only the inbound header left this null on almost
+            # every real request — browsers do not send one — so the BFF's audit row shared
+            # no key with the gateway's.
+            rid=current_request_id() or request.headers.get("x-request-id"),
             **detail,
         )
     except Exception as exc:  # pragma: no cover - defensive; the writer reports its own

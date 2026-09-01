@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..audit import record_request
 from ..catalog_client import CatalogUnavailable
+from ..correlation import with_correlation_hook
 from ..security import SCOPE_PROVIDER_ADMIN, require_provider_scope
 
 router = APIRouter(prefix="/provider/enrolment", tags=["provider", "enrolment"])
@@ -163,7 +164,9 @@ async def redeem(request: Request, session=_provider_admin):
     # --- 2. redeem -------------------------------------------------------------------------
     provider_subject = _provider_subject(session)
     try:
-        async with httpx.AsyncClient(timeout=_REDEEM_TIMEOUT) as client:
+        # ADR-0026: the provider's redeem call reaches a *tenant's* gateway, so it is an
+        # outbound hop like any other and carries the id this request runs under.
+        async with httpx.AsyncClient(timeout=_REDEEM_TIMEOUT, event_hooks=with_correlation_hook()) as client:
             redeemed = await client.post(
                 f"{gateway_url}/v1/enrolments/redeem",
                 headers={"Authorization": f"Bearer {code}"},

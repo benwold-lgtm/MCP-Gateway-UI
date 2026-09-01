@@ -13,6 +13,7 @@ session id; session content (role, OIDC tokens) lives in the server-side store
 
 from __future__ import annotations
 
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -24,6 +25,7 @@ from .bootstrap import apply_first_run_bootstrap
 from .catalog_client import CatalogClient
 from .catalog_enrolment import gateway_resolver
 from .config import DEFAULT_SESSION_SECRET, load_settings
+from .correlation import CORRELATION_HEADER, use_request_id
 from .gateway_client import GatewayClient
 from .gateway_pool import TenantGatewayPool
 from .oidc import OIDCClient
@@ -171,6 +173,20 @@ def create_app() -> FastAPI:
             settings.audit_pseudonym_key.encode("utf-8") if settings.audit_pseudonym_key else None
         ),
     )
+
+    # ADR-0026: a human's action starts here, so the correlation id does too. Minted when
+    # the browser supplies none, bound for the whole downstream call so every outbound hop
+    # (the tenant gateway, another tenant's gateway through the relay pool, the catalog)
+    # carries it, returned to the browser, and recorded on this request's audit row. The
+    # gateway honours an inbound X-Request-Id, so one id spans console click → gateway →
+    # device rather than only the gateway's half of the journey.
+    @app.middleware("http")
+    async def correlate(request, call_next):
+        rid = request.headers.get(CORRELATION_HEADER) or str(uuid.uuid4())
+        with use_request_id(rid):
+            response = await call_next(request)
+        response.headers[CORRELATION_HEADER] = rid
+        return response
 
     # Signed-cookie session. same_site=lax + httponly; set COOKIE_SECURE=true behind TLS.
     app.add_middleware(
