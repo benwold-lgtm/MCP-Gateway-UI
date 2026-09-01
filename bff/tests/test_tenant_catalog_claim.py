@@ -609,3 +609,47 @@ def test_a_version_predating_4c_still_asks_the_tenant(console):
 
     assert resp.status_code == 201
     assert gateway.calls[0]["json"]["base_url"] == "https://sensor-01.local"
+
+
+# --- what the gateway will actually accept -------------------------------------------
+
+
+def test_an_openapi_claim_does_not_send_upstream_transport(console):
+    """The gateway refuses `upstream_transport` on an openapi registration, and refuses it on
+    the **presence of the key** rather than its value — so the catalog's own default of
+    "http" is rejected exactly as a wrong value would be.
+
+    Sending it unconditionally made every OpenAPI device type unclaimable, with a 400 naming
+    a field the tenant never supplied. Nothing caught it because the fake gateway here
+    accepts any body: this assertion is about what we SEND, which is the only half a test
+    with a stubbed upstream can own.
+    """
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert "upstream_transport" not in gateway.calls[0]["json"]
+
+
+def test_an_mcp_claim_still_sends_it(console):
+    """The direction that keeps the fix honest: mcp is the kind the field exists for, and
+    dropping it there would break passthrough claims instead."""
+    client, app = console
+    _login(client)
+    detail = copy.deepcopy(DEVICE_TYPE_DETAIL)
+    detail["versions"][0].update({"upstream_kind": "mcp", "upstream_transport": "http", "spec_path": None})
+    _attach_catalog(app, _FakeCatalog(detail=detail))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "mcp-01", "base_url": "https://mcp-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert gateway.calls[0]["json"]["upstream_transport"] == "http"
