@@ -108,6 +108,16 @@ function ClaimForm({
 
   const [hostname, setHostname] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  // ADR-0020 §4c: the type declares who supplies the address. `provider_fixed` means the
+  // provider curated it, so the field is not asked for at all rather than pre-filled and
+  // locked — a disabled input still looks like something the tenant chose, and the BFF
+  // refuses a tenant-supplied address on these types rather than ignoring it.
+  //
+  // Says nothing about the credential: everything below this stays exactly as it was. A
+  // host-fixed type is not a provider-operated service (§6); the tenant still brings their
+  // own key.
+  const hostIsFixed = current.host_source === "provider_fixed";
+  const fixedBaseUrl = current.fixed_base_url ?? null;
   // Pre-filled from the curated recommendation. Editable, and a tenant who changes it is
   // obeyed — it is a recommendation, not a ceiling (ADR-0020 §2).
   const [rateLimit, setRateLimit] = useState(
@@ -135,7 +145,10 @@ function ClaimForm({
     e.preventDefault();
     setError(null);
     setSubmitting(true);
-    const body: ClaimPayload = { hostname: hostname.trim(), base_url: baseUrl.trim() };
+    const body: ClaimPayload = { hostname: hostname.trim() };
+    // Omitted entirely for a host-fixed type — the BFF treats a supplied address as a
+    // disagreement about where the device is, not as noise to override.
+    if (!hostIsFixed) body.base_url = baseUrl.trim();
     if (rateLimit.trim()) body.rate_limit_rps = Number(rateLimit);
     if (expectedSpki.trim()) body.expected_tls_spki_sha256 = expectedSpki.trim();
     if (authKind === "api_key") {
@@ -157,8 +170,17 @@ function ClaimForm({
       <p style={{ margin: "0 0 12px", color: ui.inkSoft, fontSize: "0.9em" }}>
         Claiming <strong>{detail.name || detail.slug}</strong> v{current.version}. Its transport, upstream
         shape and fingerprint policy come from the curated type.{" "}
-        <strong>The address and credentials below are yours</strong> — your provider does not supply them and
-        never sees them.
+        {hostIsFixed ? (
+          <>
+            <strong>The credentials below are yours</strong> — your provider does not supply them and never
+            sees them. This type&apos;s address is part of the curated type.
+          </>
+        ) : (
+          <>
+            <strong>The address and credentials below are yours</strong> — your provider does not supply them
+            and never sees them.
+          </>
+        )}
       </p>
       <div
         style={{
@@ -185,21 +207,41 @@ function ClaimForm({
           How it appears in your fleet. Yours to choose — it need not be the appliance&apos;s DNS name.
         </span>
 
-        <label htmlFor="cc-base-url" style={{ color: ui.inkSoft, fontSize: 14 }}>
-          Address
-        </label>
-        <input
-          id="cc-base-url"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          required
-          placeholder="e.g. https://prism.example.internal:9440"
-          aria-describedby="cc-base-url-help"
-        />
+        {hostIsFixed ? (
+          <>
+            <span style={{ color: ui.inkSoft, fontSize: 14 }}>Address</span>
+            <span data-testid="cc-host-fixed" style={{ fontSize: 14 }}>
+              <code>{fixedBaseUrl}</code>
+            </span>
+          </>
+        ) : (
+          <>
+            <label htmlFor="cc-base-url" style={{ color: ui.inkSoft, fontSize: 14 }}>
+              Address
+            </label>
+            <input
+              id="cc-base-url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              required
+              placeholder="e.g. https://prism.example.internal:9440"
+              aria-describedby="cc-base-url-help"
+            />
+          </>
+        )}
         <span />
         <span id="cc-base-url-help" style={{ fontSize: "0.8em", color: ui.muted }}>
-          Scheme, host and port of <em>your</em> appliance. Reached from your own gateway, so a private
-          address is fine.
+          {hostIsFixed ? (
+            <>
+              Supplied by your provider as part of this device type. Your gateway still reaches it with{" "}
+              <em>your</em> credentials, and pins its certificate on first contact like any other device.
+            </>
+          ) : (
+            <>
+              Scheme, host and port of <em>your</em> appliance. Reached from your own gateway, so a private
+              address is fine.
+            </>
+          )}
         </span>
 
         <label htmlFor="cc-rate" style={{ color: ui.inkSoft, fontSize: 14 }}>

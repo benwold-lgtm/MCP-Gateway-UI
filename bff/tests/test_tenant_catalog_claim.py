@@ -30,6 +30,7 @@ os.environ.setdefault("UI_ADMIN_PASSWORD", "admin-pw")
 os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
 os.environ.setdefault("SESSION_SECRET", "test-secret")
 
+import copy  # noqa: E402
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -504,3 +505,107 @@ def test_the_tenants_rate_limit_wins_over_the_recommendation(console):
     )
 
     assert gateway.calls[0]["json"]["rate_limit_rps"] == 2
+
+
+# --- ADR-0020 §4c: who supplies the address ------------------------------------------
+
+
+def _host_fixed_detail(**over) -> dict:
+    """DEVICE_TYPE_DETAIL with §4c's declaration on its current version."""
+    detail = copy.deepcopy(DEVICE_TYPE_DETAIL)
+    version = detail["versions"][0]
+    version["host_source"] = "provider_fixed"
+    version["fixed_base_url"] = "https://svc.provider.example"
+    version.update(over)
+    return detail
+
+
+def test_a_host_fixed_type_registers_against_the_curated_address(console):
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_host_fixed_detail()))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "svc-01", "auth": {"api_key": "s3cr3t"}})
+
+    assert resp.status_code == 201, resp.text
+    assert gateway.calls[0]["json"]["base_url"] == "https://svc.provider.example"
+
+
+def test_the_tenant_still_supplies_the_credential_for_a_host_fixed_type(console):
+    """§4c's whole point. A host-fixed type is NOT a §6 provider-operated service: the
+    provider knows where it is and mints nothing, so the key is still the tenant's."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_host_fixed_detail()))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post("/api/catalog/t1/claim", json={"hostname": "svc-01", "auth": {"api_key": "s3cr3t"}})
+
+    assert gateway.calls[0]["json"]["auth"]["api_key"] == "s3cr3t"
+
+
+def test_a_tenant_supplied_address_is_refused_not_overridden(console):
+    """The opposite of what happens to `api_key_location`, and the difference is the point:
+    a guessed key position is noise the curator can correct, a different address is a
+    disagreement about where the device is. Overriding silently would leave a tenant
+    believing they had pointed the device somewhere they had not."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_host_fixed_detail()))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "svc-01", "base_url": "https://somewhere.else.example", "auth": {"api_key": "k"}},
+    )
+
+    assert resp.status_code == 400
+    assert "supplies its own address" in resp.json()["detail"]
+    assert gateway.calls == [], "nothing may be registered when the claim is refused"
+
+
+def test_a_spec_path_joins_against_the_curated_address(console):
+    """`spec_path` is relative to whatever base_url is in force. For a host-fixed type that
+    is the curated one — joining against the tenant's (absent) address would produce a
+    spec_url of the path alone."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_host_fixed_detail()))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    client.post("/api/catalog/t1/claim", json={"hostname": "svc-01", "auth": {"api_key": "k"}})
+
+    assert gateway.calls[0]["json"]["spec_url"] == "https://svc.provider.example/openapi.json"
+
+
+def test_a_type_that_declares_a_fixed_host_and_curated_none_fails_loudly(console):
+    """Unreachable through curation — refused at write time with a CHECK constraint behind
+    it — but reachable through a row predating either. It must not register a device with
+    no address."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog(detail=_host_fixed_detail(fixed_base_url=None)))
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "svc-01", "auth": {"api_key": "k"}})
+
+    assert resp.status_code == 502
+    assert gateway.calls == []
+
+
+def test_a_version_predating_4c_still_asks_the_tenant(console):
+    """Every version curated before §4c has no `host_source` at all. Absent must read as
+    'tenant', not as a missing declaration to fail on."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())  # the unmodified fixture: no host_source key
+    gateway = _attach_gateway(app, _FakeGateway(status=201))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert resp.status_code == 201
+    assert gateway.calls[0]["json"]["base_url"] == "https://sensor-01.local"

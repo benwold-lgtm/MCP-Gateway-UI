@@ -217,6 +217,36 @@ async def claim_device_type(type_id: str, request: Request) -> JSONResponse:
     hostname = body.get("hostname")
     base_url = body.get("base_url")
 
+    # ADR-0020 §4c: who supplies the address is a property of the TYPE, declared by the
+    # curator, and independent of who supplies the credential — a host-fixed type is not a §6
+    # provider-operated service, so the tenant still brings their own key below.
+    #
+    # A tenant-supplied address is REFUSED here rather than overridden, which is the opposite
+    # of what happens to `api_key_location` a few lines down, and the difference is the point.
+    # A guessed key position is noise the curator can correct; a different address is a
+    # disagreement about where the device *is*. Overriding it silently would leave a tenant
+    # believing they had pointed the device somewhere they had not — the same condition
+    # `_check_host_source` refuses on the curation side, where a `fixed_base_url` under
+    # tenant sourcing is rejected precisely because nothing would read it.
+    if current.get("host_source") == "provider_fixed":
+        if base_url:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "this device type supplies its own address (ADR-0020 §4c) — remove base_url "
+                    "rather than have it silently ignored"
+                ),
+            )
+        base_url = current.get("fixed_base_url")
+        if not base_url:
+            # Unreachable through curation, which refuses the pair at write time and has a
+            # CHECK constraint behind it. Reachable through a row that predates either, so it
+            # fails here loudly instead of registering a device with base_url=None.
+            raise HTTPException(
+                status_code=502,
+                detail="the catalog declares this type host-fixed but curated no address",
+            )
+
     merged: dict[str, Any] = {
         "hostname": hostname,
         "base_url": base_url,

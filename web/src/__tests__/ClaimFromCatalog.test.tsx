@@ -183,3 +183,68 @@ describe("curated product facts", () => {
     expect(screen.getByLabelText(/rate limit/i)).toHaveValue(null);
   });
 });
+
+// ADR-0020 §4c — who supplies the address is a property of the TYPE. Tested in both
+// directions: a version predating §4c has no `host_source` at all and must keep asking,
+// and asserting only the host-fixed direction would pass just as well if the feature were
+// wired nowhere.
+describe("who supplies the address (ADR-0020 §4c)", () => {
+  async function openForm(version: Record<string, unknown>) {
+    listAssigned.mockResolvedValue({ device_types: [TYPE] });
+    getDeviceType.mockResolvedValue({ ...TYPE, versions: [{ ...VERSION_API_KEY, ...version }] });
+    const user = userEvent.setup();
+    render(<ClaimFromCatalog onDone={vi.fn()} onCancel={vi.fn()} />);
+    await user.click(await screen.findByText(/acme-sensor-x1/));
+    await screen.findByLabelText(/api key/i);
+    return user;
+  }
+
+  const HOST_FIXED = {
+    host_source: "provider_fixed",
+    fixed_base_url: "https://svc.provider.example",
+  };
+
+  it("does not ask for an address the provider already fixed", async () => {
+    await openForm(HOST_FIXED);
+
+    // Absent, not disabled. A greyed-out input still reads as something the tenant chose
+    // and could change, and the BFF refuses a supplied address rather than ignoring it.
+    expect(screen.queryByLabelText(/address/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("cc-host-fixed")).toHaveTextContent("https://svc.provider.example");
+  });
+
+  it("omits base_url from the claim rather than sending an empty one", async () => {
+    const user = await openForm(HOST_FIXED);
+    await user.type(screen.getByLabelText(/name for this device/i), "svc-01");
+    await user.type(screen.getByLabelText(/api key/i), "s3cr3t");
+
+    await user.click(screen.getByRole("button", { name: /^claim$/i }));
+
+    await waitFor(() => expect(claim).toHaveBeenCalledTimes(1));
+    expect(claim.mock.calls[0][1]).not.toHaveProperty("base_url");
+  });
+
+  it("still asks for the credential — a fixed host is not a provider-operated service", async () => {
+    await openForm(HOST_FIXED);
+    expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+  });
+
+  it("stops promising the address is the tenant's when it is not", async () => {
+    await openForm(HOST_FIXED);
+    expect(screen.queryByText(/the address and credentials below are yours/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/the credentials below are yours/i)).toBeInTheDocument();
+  });
+
+  it("asks for the address when the type does not fix it", async () => {
+    await openForm({ host_source: "tenant" });
+    expect(screen.getByLabelText(/address/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("cc-host-fixed")).not.toBeInTheDocument();
+  });
+
+  it("asks for the address on a version curated before §4c existed", async () => {
+    // No `host_source` key at all — absent must read as "tenant", not as a missing
+    // declaration to fall over on.
+    await openForm({});
+    expect(screen.getByLabelText(/address/i)).toBeInTheDocument();
+  });
+});
