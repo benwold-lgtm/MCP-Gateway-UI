@@ -104,6 +104,10 @@ export type AuthConfig = {
   oidc_enabled: boolean;
   password_login: boolean;
   provider_enabled: boolean;
+  /** Whether this deployment takes part in a catalog estate — not whether the catalog is up.
+   * False on lite and plain single-tenant installs, which have no TENANT_ID and where every
+   * catalog route therefore fails closed. See the `/auth/config` docstring. */
+  catalog_enabled: boolean;
 };
 
 // The act-on-tenant grant, the elevated grant (`ActGrant`/`Elevation`/`ActGrantResponse`/

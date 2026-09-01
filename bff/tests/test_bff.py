@@ -465,7 +465,24 @@ def test_auth_config_reports_methods(app_client):
         # A plain tenant-stack BFF. `provider_enabled` false is what makes the SPA render
         # the tenant login rather than the provider one (ADR-0013 §2/§5).
         "provider_enabled": False,
+        # No TENANT_ID here, which is the lite / plain single-tenant shape: every catalog
+        # route fails closed, so the SPA must not offer "Claim from catalog" at all.
+        "catalog_enabled": False,
     }
+
+
+def test_catalog_is_offered_once_the_deployment_is_a_tenant(monkeypatch):
+    """The other half: a stack that IS part of an estate keeps the claim flow.
+
+    Deliberately keyed on TENANT_ID rather than on the catalog being reachable — an enrolled
+    tenant whose catalog is down should still see the button and get the named 503, because
+    that is an outage, not an unsupported arrangement. Gating on reachability would also
+    deadlock: the address is learned lazily on first use (ADR-0024 §10), so hiding the button
+    until it resolves means nothing ever asks.
+    """
+    monkeypatch.setenv("TENANT_ID", "mcp-t-0123456789abcdef")
+    with TestClient(create_app()) as c:
+        assert c.get("/auth/config").json()["catalog_enabled"] is True
 
 
 def test_oidc_config_enabled_when_rp_present(oidc_client):
