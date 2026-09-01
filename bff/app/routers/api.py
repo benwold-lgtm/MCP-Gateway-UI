@@ -252,9 +252,20 @@ async def claim_device_type(type_id: str, request: Request) -> JSONResponse:
         "base_url": base_url,
         "transport": current["transport"],
         "upstream_kind": current["upstream_kind"],
-        "upstream_transport": current["upstream_transport"],
         "auth_type": current["auth_kind"],
     }
+    # `upstream_transport` goes ONLY to an mcp device. The gateway's
+    # `registry/validation.py` refuses it on an openapi registration — and refuses it on the
+    # **presence of the key**, not on its value, so sending the catalog's own default of
+    # "http" is rejected exactly as a wrong value would be. Every version carries that
+    # default, so sending it unconditionally made every OpenAPI device type unclaimable with
+    # a 400 that names a field the tenant never supplied.
+    #
+    # Same shape as the two existing conditionals below it: the claim path merges only the
+    # curated fields that APPLY to this device's kind, rather than everything the version
+    # happens to hold.
+    if current["upstream_kind"] == "mcp":
+        merged["upstream_transport"] = current["upstream_transport"]
     if base_url and current.get("spec_path"):
         # Relative to the tenant's OWN base_url, never the curator's (schemas.py's
         # VersionFields.spec_path docstring, ADR-0020 §1) — joined here, at claim time,
