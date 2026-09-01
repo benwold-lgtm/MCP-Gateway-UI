@@ -352,6 +352,20 @@ export type DeviceTypeVersion = {
    *  claim form and constrains nothing, since a provider enforcing a limit on the tenant's
    *  own gateway would reach across the plane boundary §2 keeps. */
   recommended_rate_limit_rps?: number | null;
+  /** ADR-0020 §4c — who supplies the device's address. `"tenant"` (the default, and what
+   *  every version curated before §4c is) means the claim form asks for it. `"provider_fixed"`
+   *  means the curator supplied `fixed_base_url` and the form does not ask; the BFF refuses a
+   *  tenant-supplied address on such a type rather than ignoring it.
+   *
+   *  Says nothing about the credential — a host-fixed type is NOT a §6 provider-operated
+   *  service. The provider knows where it is; the tenant still brings their own key. */
+  host_source?: "tenant" | "provider_fixed";
+  fixed_base_url?: string | null;
+  /** ADR-0020 §4a — the provider's own snapshotted spec document, present instead of
+   *  `spec_path` and never alongside it. Text rather than a parsed object on purpose: §4b
+   *  recomputes a hash from these exact bytes. */
+  curated_document?: string | null;
+  curated_document_sha256?: string | null;
   created_at: string;
 };
 
@@ -384,7 +398,10 @@ export type Assignment = {
 // filled in server-side; the browser never sees or sends it.
 export type ClaimPayload = {
   hostname: string;
-  base_url: string;
+  /** Omitted for a `host_source: "provider_fixed"` type (ADR-0020 §4c) — the address is the
+   *  curated type's, and the BFF treats one sent anyway as a disagreement about where the
+   *  device is rather than as a value to silently override. */
+  base_url?: string;
   auth?: ApiKeyAuth | OAuth2Auth;
   rate_limit_rps?: number;
   expected_tls_spki_sha256?: string;
