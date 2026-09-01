@@ -15,6 +15,7 @@ from typing import Any, Optional
 import httpx
 
 from .config import Settings
+from .correlation import with_correlation_hook
 
 
 class GatewayClient:
@@ -30,6 +31,10 @@ class GatewayClient:
             base_url=settings.gateway_url,
             headers=headers,
             timeout=httpx.Timeout(10.0, read=30.0),
+            # ADR-0026: installed on the client, not per call, so no route can omit it —
+            # the gateway honours an inbound X-Request-Id, so this is the link that makes
+            # one id span the console click, the gateway's audit and the device's own log.
+            event_hooks=with_correlation_hook(),
         )
 
     def _with_prefix(self, path: str) -> str:

@@ -54,6 +54,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from .config import Settings
+from .correlation import with_correlation_hook
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class CatalogClient:
             base_url=settings.catalog_service_url or "http://catalog-not-configured.invalid",
             headers=headers,
             timeout=httpx.Timeout(10.0, read=30.0),
+            event_hooks=with_correlation_hook(),  # ADR-0026
         )
 
     @staticmethod
