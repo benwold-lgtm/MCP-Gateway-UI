@@ -49,12 +49,30 @@ async def auth_config(request: Request) -> dict:
     ``oidc_enabled`` by construction — the deployment decides the plane, and the browser
     only reads which deployment it reached. A UI that offered the operator the choice would
     be re-introducing at the front door the thing the startup check exists to forbid.
+
+    ``catalog_enabled`` answers "does this deployment take part in a catalog estate at all",
+    NOT "is the catalog reachable right now". The distinction is the one
+    `CatalogClient.configured` already draws: *a deployment with no catalog configured is a
+    supported arrangement, not a degraded one.* Lite and plain single-tenant installs have no
+    `TENANT_ID`, so `_tenant_id` fails every catalog route closed — offering them a "Claim from
+    catalog" button meant a home user's main onboarding screen answered with
+    `TENANT_ID not configured on this BFF`, a multi-tenancy error naming a variable their
+    edition does not have.
+
+    Keyed on `tenant_id` rather than on `catalog.configured`, for two reasons. It is the
+    condition that actually decides whether the flow can *ever* work here, rather than whether
+    it works this second — an enrolled tenant whose catalog is down should still see the
+    button and get the named 503, because that is a real outage rather than an unsupported
+    arrangement. And gating on `configured` would deadlock: the catalog address is learned
+    lazily on first use (ADR-0024 §10), so hiding the button until it resolves means nothing
+    ever asks, and it never resolves.
     """
     s = request.app.state.settings
     return {
         "oidc_enabled": request.app.state.oidc is not None,
         "password_login": bool(s.ui_admin_password or s.ui_viewer_password),
         "provider_enabled": request.app.state.provider_oidc is not None,
+        "catalog_enabled": bool(s.tenant_id) and not s.provider_oidc_enabled,
     }
 
 

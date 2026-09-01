@@ -171,7 +171,14 @@ export function App() {
             ) : (
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setForm({ mode: "create" })}>Register device</button>
-                <button onClick={() => setForm({ mode: "claim" })}>Claim from catalog</button>
+                {/* Only where a catalog estate exists. On lite and plain single-tenant there
+                    is no TENANT_ID, so this button used to hand a home user
+                    "TENANT_ID not configured on this BFF" from their main onboarding screen.
+                    Hidden rather than disabled: a disabled control says "not yet", and for
+                    these editions the honest answer is "not a thing here". */}
+                {config?.catalog_enabled && (
+                  <button onClick={() => setForm({ mode: "claim" })}>Claim from catalog</button>
+                )}
               </div>
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}

@@ -23,6 +23,10 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
           oidc_enabled: false,
           password_login: true,
           provider_enabled: false,
+          // Same reasoning one field down: a console that could not read its own config
+          // must not infer a catalog estate into existence either. False is also the safe
+          // direction — it withholds a button, where true would offer one that 503s.
+          catalog_enabled: false,
         }),
       );
   }, []);

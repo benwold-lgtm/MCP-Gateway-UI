@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 
-const { me } = vi.hoisted(() => ({ me: vi.fn() }));
+const { me, authConfig } = vi.hoisted(() => ({ me: vi.fn(), authConfig: vi.fn() }));
 
 // No active session → api.me() rejects; the app must fall back to the login screen.
 vi.mock("../api", () => ({
@@ -12,7 +12,7 @@ vi.mock("../api", () => ({
     overview: vi.fn().mockResolvedValue({ devices: [], counts: {} }),
     logout: vi.fn(),
     login: vi.fn(),
-    authConfig: vi.fn().mockResolvedValue({ oidc_enabled: false, password_login: true }),
+    authConfig,
     support: {
       requests: vi.fn().mockResolvedValue({ requests: [] }),
       grants: vi.fn().mockResolvedValue({ grants: [] }),
@@ -40,7 +40,11 @@ vi.mock("../api", () => ({
 
 import { App } from "../App";
 
+const CONFIG = { oidc_enabled: false, password_login: true, provider_enabled: false, catalog_enabled: false };
+
 describe("App", () => {
+  beforeEach(() => authConfig.mockResolvedValue(CONFIG));
+
   it("shows the login screen when there is no session", async () => {
     me.mockRejectedValue(new Error("401"));
     render(<App />);
@@ -132,5 +136,38 @@ describe("App", () => {
 
     await screen.findByRole("button", { name: /^devices$/i });
     expect(screen.queryByRole("button", { name: /^backup$/i })).not.toBeInTheDocument();
+  });
+  it("does not offer Claim from catalog on a lite / single-tenant stack", async () => {
+    // The lite edition has no TENANT_ID, so every catalog route fails closed. This button
+    // used to be rendered unconditionally, and a home user's first screen answered with
+    // "TENANT_ID not configured on this BFF" — a multi-tenancy error naming a variable
+    // their edition does not have.
+    me.mockResolvedValue({
+      kind: "password",
+      plane: "tenant",
+      subject: "local:admin",
+      role: "admin",
+      scopes: ["devices:read", "devices:write"],
+      provider_scopes: [],
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /register device/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /claim from catalog/i })).not.toBeInTheDocument();
+  });
+
+  it("offers Claim from catalog once the deployment is part of an estate", async () => {
+    authConfig.mockResolvedValue({ ...CONFIG, catalog_enabled: true });
+    me.mockResolvedValue({
+      kind: "password",
+      plane: "tenant",
+      subject: "local:admin",
+      role: "admin",
+      scopes: ["devices:read", "devices:write"],
+      provider_scopes: [],
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /claim from catalog/i })).toBeInTheDocument();
   });
 });
