@@ -31,6 +31,8 @@ os.environ.setdefault("UI_VIEWER_PASSWORD", "viewer-pw")
 os.environ.setdefault("SESSION_SECRET", "test-secret")
 
 import copy  # noqa: E402
+
+from tests.gateway_contract import ContractGateway  # noqa: E402
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -653,3 +655,95 @@ def test_an_mcp_claim_still_sends_it(console):
     )
 
     assert gateway.calls[0]["json"]["upstream_transport"] == "http"
+
+
+# --- against a gateway that refuses what the real one refuses (LR-50) ------------------
+#
+# Everything above this line runs against `_FakeGateway`, which returns 201 for any body. That
+# double is more permissive than any gateway that has ever run, and two 🔴 defects lived in the
+# gap: LR-48 (no OpenAPI type was claimable at all) and LR-49 (no credential-bearing type is
+# claimable on the posture ADR-0018 recommends). Both were found by deploying into a lab.
+#
+# These run the same claim path against `ContractGateway`, which enforces
+# `registry/validation.py`'s refusals. They are the ongoing coverage that would have caught
+# both at the moment they were written.
+
+
+def test_a_claim_survives_the_real_registration_rules(console):
+    """The regression test for LR-48. Against the permissive fake this passed while the
+    feature was completely broken in every deployment."""
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())
+    gateway = _attach_gateway(app, ContractGateway())
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert resp.status_code == 201, f"the gateway refused the claim: {gateway.refusals}"
+    assert gateway.refusals == []
+
+
+def test_an_mcp_claim_survives_them_too(console):
+    client, app = console
+    _login(client)
+    detail = copy.deepcopy(DEVICE_TYPE_DETAIL)
+    detail["versions"][0].update({"upstream_kind": "mcp", "upstream_transport": "http", "spec_path": None})
+    _attach_catalog(app, _FakeCatalog(detail=detail))
+    gateway = _attach_gateway(app, ContractGateway())
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "mcp-01", "base_url": "https://mcp-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert resp.status_code == 201, f"the gateway refused the claim: {gateway.refusals}"
+
+
+def test_the_contract_double_would_have_caught_lr48(console):
+    """Guards the guard. A double that quietly stopped enforcing would leave the two tests
+    above passing for the same reason the old fake did, so the refusal is asserted directly
+    against a body carrying the field the gateway forbids."""
+    from tests.gateway_contract import check_registration
+
+    assert check_registration({"upstream_kind": "openapi", "upstream_transport": "http"}) is not None
+    assert check_registration({"upstream_kind": "openapi"}) is None
+
+
+def test_a_credential_bearing_claim_is_refused_where_references_are_required(console):
+    """LR-49, pinned as the measured state rather than left to be rediscovered.
+
+    This is not the desired behaviour — it is what the deployment ADR-0018 §1 recommends
+    actually does today, and it will stay true until §2a's 2026-09-01 amendment becomes
+    applicable (blocked on a NETWORKED resolver). Pinning it means the day that changes, this
+    test fails and says so, instead of the limitation quietly outliving its cause.
+    """
+    client, app = console
+    _login(client)
+    _attach_catalog(app, _FakeCatalog())
+    gateway = _attach_gateway(app, ContractGateway(require_references=True))
+
+    resp = client.post(
+        "/api/catalog/t1/claim",
+        json={"hostname": "sensor-01", "base_url": "https://sensor-01.local", "auth": {"api_key": "k"}},
+    )
+
+    assert resp.status_code == 400
+    assert "by reference" in str(gateway.refusals)
+
+
+def test_an_auth_free_claim_still_works_where_references_are_required(console):
+    """The other half of the measured state, and the reason §4c could be proven in the lab at
+    all: with nothing inline to refuse, the gate does not apply."""
+    client, app = console
+    _login(client)
+    detail = copy.deepcopy(DEVICE_TYPE_DETAIL)
+    detail["versions"][0]["auth_kind"] = "none"
+    _attach_catalog(app, _FakeCatalog(detail=detail))
+    gateway = _attach_gateway(app, ContractGateway(require_references=True))
+
+    resp = client.post("/api/catalog/t1/claim", json={"hostname": "relay-01", "base_url": "https://relay.local"})
+
+    assert resp.status_code == 201, f"the gateway refused the claim: {gateway.refusals}"
