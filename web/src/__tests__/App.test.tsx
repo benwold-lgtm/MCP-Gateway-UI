@@ -5,10 +5,11 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 
 // `enrolments` is hoisted rather than left inline because the Support tab's visibility now
 // depends on its answer, so tests need to vary it.
-const { me, authConfig, enrolments } = vi.hoisted(() => ({
+const { me, authConfig, enrolments, upgrades } = vi.hoisted(() => ({
   me: vi.fn(),
   authConfig: vi.fn(),
   enrolments: vi.fn(),
+  upgrades: vi.fn(),
 }));
 
 // No active session → api.me() rejects; the app must fall back to the login screen.
@@ -32,7 +33,7 @@ vi.mock("../api", () => ({
       thisTenant: vi.fn().mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "https://gw.example" }),
     },
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
-    catalog: { upgrades: vi.fn().mockResolvedValue({ offers: [] }) },
+    catalog: { upgrades },
   },
   ApiError: class ApiError extends Error {
     constructor(
@@ -72,6 +73,8 @@ describe("App", () => {
     authConfig.mockResolvedValue(CONFIG);
     enrolments.mockReset();
     enrolments.mockResolvedValue({ enrolments: [] });
+    upgrades.mockReset();
+    upgrades.mockResolvedValue({ offers: [] });
   });
 
   it("shows the login screen when there is no session", async () => {
@@ -103,6 +106,26 @@ describe("App", () => {
 
     await screen.findByRole("button", { name: /^devices$/i });
     expect(screen.queryByRole("button", { name: /^support$/i })).not.toBeInTheDocument();
+  });
+
+  it("does not poll for catalog upgrades on a deployment with no catalog", async () => {
+    // `/api/catalog/upgrades` calls `_tenant_id`, so it 503s here — and `UpgradeOffers`
+    // swallows the error and renders nothing, which is why this was invisible rather than
+    // harmless: a request that cannot succeed, made on every load of the busiest screen.
+    authConfig.mockResolvedValue({ ...CONFIG, catalog_enabled: false });
+    me.mockResolvedValue(SUPPORT_ADMIN);
+    render(<App />);
+
+    await screen.findByRole("button", { name: /register device/i });
+    expect(upgrades).not.toHaveBeenCalled();
+  });
+
+  it("does poll for them where a catalog estate exists", async () => {
+    authConfig.mockResolvedValue({ ...CONFIG, catalog_enabled: true });
+    me.mockResolvedValue(SUPPORT_ADMIN);
+    render(<App />);
+
+    await waitFor(() => expect(upgrades).toHaveBeenCalled());
   });
 
   // --- Support on a deployment that has no provider -----------------------------------
