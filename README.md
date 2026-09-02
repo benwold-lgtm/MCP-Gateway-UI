@@ -133,7 +133,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 
 The BFF keeps its **own** hash-chained audit, on the gateway's F-57 model. It is not
 redundant with the gateway's: once provider federation ships
-([ADR-0012](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0012-federation-credential-model.md)),
+([ADR-0012](https://github.com/benwold-lgtm/SyncGate/blob/main/docs/adr/0012-federation-credential-model.md)),
 the gateway no longer sees the real human — it sees whatever credential the BFF presented.
 Today per-user OIDC relay hides that gap; federation ends it. Some events are also invisible
 to the gateway by construction: a **failed login** or a throttle lockout never reaches it.
@@ -155,13 +155,13 @@ wire to the device.
 
 That last part is why this is a requirement rather than tidiness. A device authenticates the
 *gateway*, not the person: one service account per device, permanently
-([ADR-0026](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0026-service-identity-per-device.md)).
+([ADR-0026](https://github.com/benwold-lgtm/SyncGate/blob/main/docs/adr/0026-service-identity-per-device.md)).
 So "which person caused this change on the appliance?" is answered by joining three logs — this
 console's audit, the gateway's audit, and the device's own — and the request id is the only
 value all three share.
 
 Three properties, per
-[ADR-0013](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md)
+[ADR-0013](https://github.com/benwold-lgtm/SyncGate/blob/main/docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md)
 §9/§10:
 
 - **Tamper-evident.** Each record commits to `sha256(seq, prev, payload)` and links to its
@@ -215,7 +215,7 @@ There are **two kinds of session**:
   shows the real user. The BFF does not re-authorize. For this to work the IdP must mint an
   access token whose audience the gateway accepts — set the matching `gateway.oidc` config
   on the gateway (issuer, audience, `group_roles`) per its
-  [ADR-0007](https://github.com/benwold-lgtm/MCP-Gateway/blob/main/docs/adr/0007-federated-identity-oidc-and-gateway-rbac.md).
+  [ADR-0007](https://github.com/benwold-lgtm/SyncGate/blob/main/docs/adr/0007-federated-identity-oidc-and-gateway-rbac.md).
 - **password** — the existing local **break-glass / bootstrap** login. It has no per-user
   token to pass through, so it proxies upstream with the BFF's own `GATEWAY_API_TOKEN` and
   the BFF enforces the admin/viewer distinction itself. That token should be a `console`-role
