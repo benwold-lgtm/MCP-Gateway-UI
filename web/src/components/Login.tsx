@@ -48,7 +48,7 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
 
   return (
     <div style={{ maxWidth: 320, margin: "10vh auto", display: "grid", gap: 12 }}>
-      <h1>Device MCP Gateway</h1>
+      <h1>SyncGate</h1>
 
       {showSso && (
         // A full-page navigation (not fetch) so the browser follows the IdP redirect; the

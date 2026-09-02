@@ -107,7 +107,7 @@ export function App() {
   return (
     <main style={{ maxWidth: 900, margin: "2rem auto", fontFamily: "system-ui, sans-serif" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h1>Device MCP Gateway</h1>
+        <h1>SyncGate</h1>
         <span>
           <span title={`${session.kind} session`}>{session.name || session.subject}</span>{" "}
           <button onClick={signOut}>Sign out</button>

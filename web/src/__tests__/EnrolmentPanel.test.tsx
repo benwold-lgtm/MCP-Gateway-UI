@@ -11,7 +11,7 @@
 //  * `last_used_at` is rendered **in words, including when it is null**. §10 chose revocation
 //    over expiry, which is only safe if a dormant relationship is visible — and "never used" is
 //    the value an empty column hides best.
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EnrolmentPanel } from "../components/EnrolmentPanel";
@@ -72,7 +72,7 @@ beforeEach(() => {
 describe("issuing an invitation", () => {
   it("sends the provider label and shows the code with its one-time warning", async () => {
     render(<EnrolmentPanel />);
-    await user.type(screen.getByLabelText("Provider name"), "Acme MSP");
+    await user.type(await screen.findByLabelText("Provider name"), "Acme MSP");
     await user.click(screen.getByRole("button", { name: /issue invitation/i }));
 
     await waitFor(() => expect(createInvitation).toHaveBeenCalledWith("Acme MSP"));
@@ -85,13 +85,13 @@ describe("issuing an invitation", () => {
     // The gateway refuses it too — an invitation nobody can attribute is one nobody can safely
     // hand over — but a disabled button says so at the point of the mistake.
     render(<EnrolmentPanel />);
-    expect(screen.getByRole("button", { name: /issue invitation/i })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /issue invitation/i })).toBeDisabled();
     expect(createInvitation).not.toHaveBeenCalled();
   });
 
   it("dismissing the code removes it from the screen", async () => {
     render(<EnrolmentPanel />);
-    await user.type(screen.getByLabelText("Provider name"), "Acme MSP");
+    await user.type(await screen.findByLabelText("Provider name"), "Acme MSP");
     await user.click(screen.getByRole("button", { name: /issue invitation/i }));
     await screen.findByText("inv_one-time-secret");
 
@@ -103,7 +103,7 @@ describe("issuing an invitation", () => {
     const { ApiError } = await import("../api");
     createInvitation.mockRejectedValue(new ApiError(400, "provider_label is required"));
     render(<EnrolmentPanel />);
-    await user.type(screen.getByLabelText("Provider name"), "Acme MSP");
+    await user.type(await screen.findByLabelText("Provider name"), "Acme MSP");
     await user.click(screen.getByRole("button", { name: /issue invitation/i }));
 
     expect(await screen.findByText(/provider_label is required/)).toBeInTheDocument();
@@ -232,7 +232,9 @@ describe("handover details", () => {
     // tenant — so an unset value is reported as unset.
     thisTenant.mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "" });
     render(<EnrolmentPanel />);
-    expect(await screen.findByText(/PUBLIC_GATEWAY_URL/)).toBeInTheDocument();
+    const list = (await screen.findByText("Tenant id")).closest("dl")!;
+    expect(within(list).getByText(/not configured/)).toBeInTheDocument();
+    expect(within(list).getByText("PUBLIC_GATEWAY_URL")).toBeInTheDocument();
   });
 
   it("does not break the rest of the panel when the lookup fails", async () => {
@@ -241,5 +243,66 @@ describe("handover details", () => {
     thisTenant.mockRejectedValue(new Error("nope"));
     render(<EnrolmentPanel />);
     expect(await screen.findByRole("heading", { name: /invite a provider/i })).toBeInTheDocument();
+  });
+});
+
+// --- a deployment with no provider ------------------------------------------------------------
+//
+// A Lite or single-tenant stack has no `TENANT_ID` and no `PUBLIC_GATEWAY_URL`, and cannot
+// complete this handshake: the provider console requires both alongside the code and will not
+// submit without them. Offering the form there mints a one-time credential that is spent on a
+// redemption which cannot succeed — and the operator finds out in somebody else's console.
+
+describe("a console that cannot complete the handshake", () => {
+  it("withholds the invitation form when neither setting is configured", async () => {
+    thisTenant.mockResolvedValue({ tenant_id: "", public_gateway_url: "" });
+    render(<EnrolmentPanel />);
+
+    expect(await screen.findByText(/not set up to work with a provider/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Provider name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /issue invitation/i })).not.toBeInTheDocument();
+  });
+
+  it("withholds it when only one of the two is missing", async () => {
+    // Either one missing is enough. The provider needs all three values, so a code issued
+    // with half the handover is exactly as unredeemable as one issued with none of it.
+    thisTenant.mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "" });
+    render(<EnrolmentPanel />);
+
+    expect(await screen.findByText(/not set up to work with a provider/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /issue invitation/i })).not.toBeInTheDocument();
+  });
+
+  it("names only the setting that is actually missing", async () => {
+    thisTenant.mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "" });
+    render(<EnrolmentPanel />);
+
+    const explanation = (await screen.findByText(/not set up to work with a provider/i)).closest("section")!;
+    expect(within(explanation).getByText("PUBLIC_GATEWAY_URL")).toBeInTheDocument();
+    expect(within(explanation).queryByText("TENANT_ID")).not.toBeInTheDocument();
+  });
+
+  it("still lists and can end an existing enrolment", async () => {
+    // §10 chose revocation over expiry. A relationship that already exists has to stay
+    // visible and endable from a console whose configuration has since been lost — otherwise
+    // withholding the form would take away the control and leave the access standing.
+    thisTenant.mockResolvedValue({ tenant_id: "", public_gateway_url: "" });
+    enrolments.mockResolvedValue({ enrolments: [ENROLMENT] });
+    render(<EnrolmentPanel />);
+
+    expect(await screen.findByText("Acme MSP")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /end enrolment/i }));
+    await user.click(screen.getByRole("button", { name: /^end enrolment$/i }));
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("e-1"));
+  });
+
+  it("offers the form when the lookup failed, rather than inferring an absence from an error", async () => {
+    // The cost of guessing wrong here is withholding a working control from a console that is
+    // configured perfectly well and merely could not reach its own BFF for a moment.
+    thisTenant.mockRejectedValue(new Error("nope"));
+    render(<EnrolmentPanel />);
+
+    expect(await screen.findByLabelText("Provider name")).toBeInTheDocument();
+    expect(screen.queryByText(/not set up to work with a provider/i)).not.toBeInTheDocument();
   });
 });

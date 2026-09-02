@@ -27,9 +27,31 @@ export type OAuth2Auth = {
 export type DevicePayload = {
   hostname?: string;
   base_url?: string;
-  spec_url?: string;
+  // `null` is distinct from absent, and the difference is load-bearing on a PUT: the gateway
+  // reads `data.get("spec_url", existing.spec_url)`, so omitting the key PRESERVES a stored
+  // spec URL. Switching a device to `upstream_kind: "mcp"` therefore has to send an explicit
+  // null — leaving it out carries the old value forward into a combination the gateway
+  // refuses ("spec_url does not apply to upstream_kind 'mcp'").
+  spec_url?: string | null;
+  // How CLIENTS reach this device through the gateway. Not `upstream_transport`, which is how
+  // the gateway reaches the device; see `upstream_kind` below.
   transport?: string;
+  // ADR-0009's discriminator. "openapi" = the gateway translates an OpenAPI document into
+  // tools; "mcp" = the upstream is already an MCP server and the gateway proxies it.
+  //
+  // There is deliberately NO `upstream_transport` here. It has one supported value for an mcp
+  // device ("http" — "sse" is recognised but refused as not-yet-built) and that value is the
+  // gateway's default, so a client never needs to send it. On an openapi device the gateway
+  // refuses the key on PRESENCE rather than on value, so sending even a correct-looking
+  // `upstream_transport: "http"` is a 400. Not modelling the field is what keeps that
+  // impossible to get wrong from here.
+  upstream_kind?: UpstreamKind;
   rate_limit_rps?: number;
+  // ADR-0015 §8's out-of-band pre-pin and the per-device policy override. REGISTRATION ONLY:
+  // the gateway's PUT handler parses neither key, so sending them on an update is accepted
+  // with a 200 and silently does nothing. The form only offers them on create for that reason.
+  expected_tls_spki_sha256?: string;
+  fingerprint_policy?: "warn" | "enforce";
   auth_type?: "none" | "api_key" | "oauth2";
   auth?: ApiKeyAuth | OAuth2Auth;
 };
