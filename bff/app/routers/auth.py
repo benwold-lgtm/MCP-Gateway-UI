@@ -50,6 +50,15 @@ async def auth_config(request: Request) -> dict:
     only reads which deployment it reached. A UI that offered the operator the choice would
     be re-introducing at the front door the thing the startup check exists to forbid.
 
+    ``tenancy_configured`` is the same question one step further back: does this deployment
+    have a tenant identity at all. It is deliberately NOT a second name for ``catalog_enabled``
+    — that one also excludes a provider console, and a caller reading it as "has a TENANT_ID"
+    would silently acquire that second meaning the day either definition moves. The console
+    uses it to decide whether the provider-relationship screens are relevant, and pairs it
+    with a live check rather than trusting it alone: the support routes relay straight to the
+    gateway and need no ``TENANT_ID``, so an enrolment can outlive the setting, and hiding the
+    screen on config alone would strand the only control that can end one.
+
     ``catalog_enabled`` answers "does this deployment take part in a catalog estate at all",
     NOT "is the catalog reachable right now". The distinction is the one
     `CatalogClient.configured` already draws: *a deployment with no catalog configured is a
@@ -73,6 +82,7 @@ async def auth_config(request: Request) -> dict:
         "password_login": bool(s.ui_admin_password or s.ui_viewer_password),
         "provider_enabled": request.app.state.provider_oidc is not None,
         "catalog_enabled": bool(s.tenant_id) and not s.provider_oidc_enabled,
+        "tenancy_configured": bool(s.tenant_id),
     }
 
 

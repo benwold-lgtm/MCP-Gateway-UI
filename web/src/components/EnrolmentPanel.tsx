@@ -4,6 +4,8 @@ import { api, ApiError } from "../api";
 import type { Enrolment, EnrolmentInvitation, IssuedInvitation } from "../types";
 import { health, ui } from "../tokens";
 
+type Handover = { tenant_id: string; public_gateway_url: string };
+
 /** This tenant's relationship with its provider (ADR-0024 §10) — the other half of the
  * handshake the provider console redeems.
  *
@@ -21,13 +23,81 @@ import { health, ui } from "../tokens";
  */
 export function EnrolmentPanel() {
   const [reload, setReload] = useState(0);
+  const [info, setInfo] = useState<Handover | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api.enrolment
+      .thisTenant()
+      .then(setInfo)
+      .catch(() => setFailed(true));
+  }, []);
+
+  // A deployment with no `TENANT_ID` or no `PUBLIC_GATEWAY_URL` — a Lite or single-tenant
+  // stack with no provider — cannot complete this handshake at all: the provider console
+  // requires the code AND both of these, and refuses to submit without them. Issuing an
+  // invitation there produces a one-time credential that is spent on a redemption which
+  // cannot succeed, and the operator learns why in somebody else's console.
+  //
+  // Only the ISSUE form is withheld. The lists below stay, unconditionally, because §10
+  // chose revocation over expiry: an enrolment that already exists has to remain visible and
+  // endable even from a console whose configuration has since been changed or lost. Hiding
+  // the whole panel would take away the control while leaving the relationship standing.
+  //
+  // A FAILED lookup is not treated as "unconfigured". We would be inferring an absence from
+  // a transport error, and the cost of guessing wrong is withholding a working control.
+  const unknown = !info && !failed;
+  // `!info` here is the failed lookup, per the note above: offer the form rather than infer
+  // an absence from a transport error.
+  const withhold = Boolean(info) && !(info!.tenant_id && info!.public_gateway_url);
+
   return (
     <div style={{ display: "grid", gap: 20, maxWidth: 720, marginTop: 20 }}>
-      <HandoverDetails />
-      <IssueInvitation onIssued={() => setReload((n) => n + 1)} />
+      {info && <HandoverDetails info={info} />}
+      {!unknown &&
+        (withhold && info ? (
+          <NoProviderHandshake info={info} />
+        ) : (
+          <IssueInvitation onIssued={() => setReload((n) => n + 1)} />
+        ))}
       <OutstandingInvitations reload={reload} />
       <LiveEnrolments />
     </div>
+  );
+}
+
+/** Why the invitation form is not offered, naming what to set rather than what is wrong.
+ *
+ * Phrased as a property of the deployment first and a setting second. Most readers of this
+ * are running a single-tenant or Lite stack on purpose and have no provider — for them
+ * nothing is broken, and an error-shaped message would send them looking for a fault. The
+ * settings are named after that, for the reader who does want the relationship.
+ */
+function NoProviderHandshake({ info }: { info: Handover }) {
+  const missing = [
+    info.tenant_id ? null : "TENANT_ID",
+    info.public_gateway_url ? null : "PUBLIC_GATEWAY_URL",
+  ].filter(Boolean) as string[];
+
+  return (
+    <section>
+      <h3 style={{ marginBottom: 4 }}>Invite a provider</h3>
+      <p style={{ margin: "0 0 8px", color: ui.inkSoft, fontSize: "0.9em" }}>
+        This deployment is not set up to work with a provider, so there is nothing to invite them to. That is
+        the normal state for a stack you administer yourself.
+      </p>
+      <p style={{ margin: 0, color: ui.muted, fontSize: "0.9em" }}>
+        To hand a provider access, set{" "}
+        {missing.map((m, i) => (
+          <span key={m}>
+            {i > 0 ? " and " : ""}
+            <code>{m}</code>
+          </span>
+        ))}{" "}
+        on this console and reload. A provider needs both alongside the invitation code, and cannot redeem one
+        without them.
+      </p>
+    </section>
   );
 }
 
@@ -44,19 +114,7 @@ export function EnrolmentPanel() {
  * be worse than showing nothing: it looks like an answer and fails at redemption, in the
  * provider's console, with an error naming neither this field nor this tenant.
  */
-function HandoverDetails() {
-  const [info, setInfo] = useState<{ tenant_id: string; public_gateway_url: string } | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    api.enrolment
-      .thisTenant()
-      .then(setInfo)
-      .catch(() => setFailed(true));
-  }, []);
-
-  if (failed || !info) return null;
-
+function HandoverDetails({ info }: { info: Handover }) {
   return (
     <section>
       <h3 style={{ marginBottom: 4 }}>What your provider needs</h3>

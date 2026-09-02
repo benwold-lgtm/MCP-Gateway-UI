@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 
-const { me, authConfig } = vi.hoisted(() => ({ me: vi.fn(), authConfig: vi.fn() }));
+// `enrolments` is hoisted rather than left inline because the Support tab's visibility now
+// depends on its answer, so tests need to vary it.
+const { me, authConfig, enrolments } = vi.hoisted(() => ({
+  me: vi.fn(),
+  authConfig: vi.fn(),
+  enrolments: vi.fn(),
+}));
 
 // No active session → api.me() rejects; the app must fall back to the login screen.
 vi.mock("../api", () => ({
@@ -22,7 +28,7 @@ vi.mock("../api", () => ({
     // this mock has to answer for both — the two are one authority, `support:administer`.
     enrolment: {
       invitations: vi.fn().mockResolvedValue({ invitations: [] }),
-      enrolments: vi.fn().mockResolvedValue({ enrolments: [] }),
+      enrolments,
       thisTenant: vi.fn().mockResolvedValue({ tenant_id: "t-1", public_gateway_url: "https://gw.example" }),
     },
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
@@ -40,10 +46,33 @@ vi.mock("../api", () => ({
 
 import { App } from "../App";
 
-const CONFIG = { oidc_enabled: false, password_login: true, provider_enabled: false, catalog_enabled: false };
+// A tenant deployment: it has a TENANT_ID, so the provider-relationship screens are relevant
+// whether or not a provider is enrolled yet. `catalog_enabled` stays false because most tests
+// here are not about the catalog — the two are separate questions, which is why the BFF
+// reports them separately.
+const CONFIG = {
+  oidc_enabled: false,
+  password_login: true,
+  provider_enabled: false,
+  catalog_enabled: false,
+  tenancy_configured: true,
+};
+
+const SUPPORT_ADMIN = {
+  kind: "password",
+  plane: "tenant",
+  subject: "local:admin",
+  role: "admin",
+  scopes: ["devices:read", "devices:write", "support:administer"],
+  provider_scopes: [],
+};
 
 describe("App", () => {
-  beforeEach(() => authConfig.mockResolvedValue(CONFIG));
+  beforeEach(() => {
+    authConfig.mockResolvedValue(CONFIG);
+    enrolments.mockReset();
+    enrolments.mockResolvedValue({ enrolments: [] });
+  });
 
   it("shows the login screen when there is no session", async () => {
     me.mockRejectedValue(new Error("401"));
@@ -52,14 +81,7 @@ describe("App", () => {
   });
 
   it("shows the Support nav item only for a session holding support:administer (ADR-0017 §7)", async () => {
-    me.mockResolvedValue({
-      kind: "password",
-      plane: "tenant",
-      subject: "local:admin",
-      role: "admin",
-      scopes: ["devices:read", "devices:write", "support:administer"],
-      provider_scopes: [],
-    });
+    me.mockResolvedValue(SUPPORT_ADMIN);
     const user = userEvent.setup();
     render(<App />);
 
@@ -81,6 +103,81 @@ describe("App", () => {
 
     await screen.findByRole("button", { name: /^devices$/i });
     expect(screen.queryByRole("button", { name: /^support$/i })).not.toBeInTheDocument();
+  });
+
+  // --- Support on a deployment that has no provider -----------------------------------
+  //
+  // Holding `support:administer` is not the same as having anything to administer. On a Lite
+  // or plain single-tenant stack every section of that tab is permanently empty, because a
+  // provider relationship is what fills all four and there is no provider. LR-22's rule one
+  // level up: an entry whose every panel answers "none" is worse than no entry.
+  //
+  // The gate cannot be config alone, and these tests pin why. The support routes relay
+  // straight to the gateway and need no TENANT_ID, so an enrolment can outlive the setting —
+  // and §10 chose revocation over expiry precisely on the promise that the tenant can always
+  // end one. Hiding the tab on config alone would break that promise.
+
+  it("hides Support on a deployment with no tenancy and no enrolment", async () => {
+    authConfig.mockResolvedValue({ ...CONFIG, tenancy_configured: false });
+    me.mockResolvedValue(SUPPORT_ADMIN);
+    render(<App />);
+
+    await screen.findByRole("button", { name: /^devices$/i });
+    await waitFor(() => expect(enrolments).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /^support$/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps Support when an enrolment exists, even with no tenancy configured", async () => {
+    // The stranding case. The console lost (or never had) its TENANT_ID, but a provider is
+    // still enrolled on the gateway behind it — and ending that relationship is the one
+    // control §10 guarantees. Withholding the tab here would leave the access standing with
+    // no way to revoke it from the product.
+    authConfig.mockResolvedValue({ ...CONFIG, tenancy_configured: false });
+    enrolments.mockResolvedValue({
+      enrolments: [
+        {
+          enrolment_id: "e-1",
+          provider_subject: "u-1",
+          provider_label: "Acme MSP",
+          approved_by: "admin",
+          approved_at: 1,
+          last_used_at: null,
+        },
+      ],
+    });
+    me.mockResolvedValue(SUPPORT_ADMIN);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /^support$/i })).toBeInTheDocument();
+  });
+
+  it("keeps Support when the enrolment lookup fails, rather than inferring an absence", async () => {
+    // Fails open. The cost of guessing wrong is withholding a revocation control from a
+    // console whose gateway was merely unreachable for a moment.
+    authConfig.mockResolvedValue({ ...CONFIG, tenancy_configured: false });
+    enrolments.mockRejectedValue(new Error("gateway down"));
+    me.mockResolvedValue(SUPPORT_ADMIN);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /^support$/i })).toBeInTheDocument();
+  });
+
+  it("does not ask about enrolments at all without support:administer", async () => {
+    // A viewer would get a 403 for its trouble, and the answer could not change what is
+    // rendered anyway.
+    authConfig.mockResolvedValue({ ...CONFIG, tenancy_configured: false });
+    me.mockResolvedValue({
+      kind: "password",
+      plane: "tenant",
+      subject: "local:viewer",
+      role: "viewer",
+      scopes: ["devices:read"],
+      provider_scopes: [],
+    });
+    render(<App />);
+
+    await screen.findByRole("button", { name: /^devices$/i });
+    expect(enrolments).not.toHaveBeenCalled();
   });
 
   // --- Backup on the tenant console (ADR-0011: the registry is the tenant's own data) ---

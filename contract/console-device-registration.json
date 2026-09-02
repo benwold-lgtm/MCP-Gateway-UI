@@ -1,0 +1,38 @@
+{
+  "_source_of_truth": "device_mcp_gateway/registry/validation.py",
+  "_why": [
+    "The exact bodies web/src/components/DeviceForm.tsx sends to POST /devices, held in one",
+    "file so the two planes cannot drift apart. The web suite asserts the form emits these;",
+    "the BFF suite relays these through ContractGateway, which enforces the gateway's real",
+    "refusals. Neither suite alone can prove the pair: the browser one has no gateway rules",
+    "and the Python one has no form. LR-48 lived in exactly that gap for three weeks -- a",
+    "registration body that no gateway would ever accept, green in both suites, because each",
+    "was asserted against its own double.",
+    "A case removed from here must be removed from both suites, which is the point: deleting",
+    "coverage has to be deliberate rather than a side effect of editing one language."
+  ],
+  "cases": {
+    "openapi-with-api-key": {
+      "_note": "The ordinary registration. Carries no upstream_transport: the gateway refuses that key on an openapi device on PRESENCE, so even the correct value is a 400.",
+      "payload": {
+        "hostname": "sensor-1",
+        "base_url": "http://sensor-1.local",
+        "upstream_kind": "openapi",
+        "transport": "sse",
+        "auth_type": "api_key",
+        "auth": { "api_key": "secret-key", "location": "header", "name": "X-API-Key" }
+      }
+    },
+    "mcp-server": {
+      "_note": "spec_url is an explicit null rather than absent. On a PUT the gateway reads data.get('spec_url', existing.spec_url), so omitting it preserves a stored OpenAPI document into a combination it then refuses.",
+      "payload": {
+        "hostname": "mcp-1",
+        "base_url": "http://mcp-1.local/mcp",
+        "upstream_kind": "mcp",
+        "spec_url": null,
+        "transport": "sse",
+        "auth_type": "none"
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
-# Device MCP Gateway — UI
+# SyncGate — UI
 
-A **separate, optional** management UI for the [Device MCP Gateway](../device-mcp-gateway).
+A **separate, optional** management UI for [SyncGate](../device-mcp-gateway).
 Deployed independently; the gateway has **no dependency** on it (it only added a small
 aggregate endpoint, `GET /admin/overview`). It covers device management (register/edit/
 remove, diagnostics, tool explorer, dead-letter queue), a monitoring view, and federated
@@ -51,14 +51,73 @@ make web-install && make web-dev        # http://localhost:5173
 
 Or build both as containers: `make up` (web on `:8080`, proxying to the BFF).
 
-## Lite / home deployment (Raspberry Pi, mini-PC)
+## SyncGate Lite (Raspberry Pi, mini-PC)
 
-To run this UI **together with** the gateway as a single low-power stack — embedded mode,
-local-only login, secrets generated on first boot, amd64 or arm64 — use the gateway repo's
-`docker-compose.lite.yml`. It builds the BFF and web images from this repo (kept side by
-side) or pulls the published `:lite` images.
+Lite is its **own product and its own repo** —
+[SyncGate-Lite](https://github.com/benwold-lgtm/SyncGate-Lite) — not a profile of this one.
+It composes the gateway with the BFF and web images built from this repo, in embedded mode
+with local-only login. It has no IdP, no provider plane and no tenant identity.
 
-Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gateway/docs/lite-deploy.md)**.
+This repo's images are the ones Lite runs, so a change here reaches Lite. What that means for
+the console is in **[Editions and what the console shows](#editions-and-what-the-console-shows)**
+below.
+
+## Editions and what the console shows
+
+One web image serves every edition. What differs is the **deployment**, and the console reads
+the deployment rather than being built per edition — so there is no Lite build of the SPA to
+keep in step, and no way for the two to disagree.
+
+| | Lite | Single-tenant | Tenant in an estate |
+|---|---|---|---|
+| `TENANT_ID` | unset | unset | set |
+| Login | password only | password or OIDC | OIDC |
+| Devices, Monitoring, Backup | yes | yes | yes |
+| Claim from catalog | no | no | yes |
+| **Support** | no | no | yes |
+
+`GET /auth/config` reports the two booleans this rests on — `catalog_enabled` and
+`tenancy_configured` — and they are separate fields on purpose. `catalog_enabled` also
+excludes a provider console; a caller reading it as "has a `TENANT_ID`" would silently pick
+up that second condition the day either definition moves.
+
+### Why Support is hidden rather than empty
+
+Every section of that tab — pending requests, live grants, standing consent, outstanding
+invitations, enrolled providers — is filled by one thing: a relationship with a provider.
+A deployment that has no provider has no way to acquire one either, since the handshake needs
+a tenant id and a reachable gateway address the console cannot supply. So the tab is not
+mostly empty on Lite; it is **permanently** empty, in all five sections, with no action
+available anywhere on it that could change that. It is hidden for the reason a rail entry
+whose every action answers 403 is hidden: an entry that can only ever say "none" costs a
+reader more than it tells them.
+
+**This is a supported arrangement, not a degraded one.** A stack you administer yourself has
+no provider by design — nothing is missing and nothing needs configuring.
+
+### Why config alone does not decide it
+
+The support routes relay straight to the gateway and require no `TENANT_ID` of their own, so
+an enrolment can outlive the setting: a console can lose (or never have had) its tenant id
+while a provider is still enrolled on the gateway behind it.
+
+ADR-0024 §10 chose **revocation over expiry** — an enrolment never lapses, and the tenant's
+ability to end it is the whole of their control over it. Hiding the tab on config alone would
+withdraw that control while leaving the provider's access standing, which is the one outcome
+§10's trade is not allowed to produce. So the console also asks: it consults the live
+enrolment list whenever the config says no, and shows the tab if anything is there.
+
+The check **fails open** in both directions. An unreachable gateway shows the tab, because
+withholding a revocation control on the strength of a transient error is the more expensive
+mistake. Only a session holding `support:administer` asks at all.
+
+### If you do want a provider
+
+Set `TENANT_ID` and `PUBLIC_GATEWAY_URL` on the console and reload. Both are needed — a
+provider redeems an invitation with the code, the tenant id and the gateway address together,
+and cannot redeem one without all three. Until both are set the console withholds the
+invitation form rather than minting a one-time code that would be spent on a redemption
+that cannot succeed. See [Enrolling a tenant](#enrolling-a-tenant-adr-0024-1011).
 
 ## Configuration (BFF env)
 
@@ -85,7 +144,7 @@ Canonical guide: **[../device-mcp-gateway/docs/lite-deploy.md](../device-mcp-gat
 | `PROVIDER_OIDC_REDIRECT_URL` | The provider callback, registered with the provider IdP (`…/auth/provider/callback`) |
 | `PROVIDER_GROUP_SCOPES` | JSON `{"group": "provider:scope"}`. **No fallback** — an unmapped group grants nothing. Only `provider:monitor` / `provider:admin` are mappable |
 | `PROVIDER_GROUPS_CLAIM` | Claim carrying provider-IdP group membership (default `groups`) |
-| `TENANT_ID` | Which tenant this deployment serves — consulted by the catalog claim flow (ADR-0020) to say which tenant's assignments/claims apply. Empty (the default) means no existing tenant-stack deployment needs a config change |
+| `TENANT_ID` | Which tenant this deployment serves — consulted by the catalog claim flow (ADR-0020) to say which tenant's assignments/claims apply. Empty (the default) means no existing tenant-stack deployment needs a config change. Also reported to the SPA as `tenancy_configured`, which is half of what decides whether the **Support** tab is shown — see [Editions and what the console shows](#editions-and-what-the-console-shows) |
 | `PROMETHEUS_URL` / `LOKI_URL` | Monitoring sources, proxied by the BFF for the Monitoring view (critical-metric tiles / recent logs). Empty = lean on central monitoring |
 | `GRAFANA_URL` | Optional link to central Grafana, surfaced in the Monitoring view |
 | `CORS_ORIGINS` | Only needed if the SPA is served from a different origin than the BFF |

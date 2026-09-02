@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { DevicePayload } from "../types";
+import type { DevicePayload, UpstreamKind } from "../types";
 import { health, ui } from "../tokens";
 
 // Register (POST) or edit (PUT) a device, including auth — so an *authenticated*
 // device can be onboarded from the UI. On edit, fields are pre-filled from the
 // gateway; credentials are never returned, so auth defaults to "(unchanged)", which
 // omits `auth` from the PUT and the gateway preserves the stored credentials.
+//
+// This form is the console's only route to `POST /devices`, so every field the gateway
+// accepts at registration and cannot be given later has to be reachable here. Two are:
+// `upstream_kind`, without which an MCP server can only be registered by hand against the
+// API and lands mislabelled as an OpenAPI device; and ADR-0015 §8's pre-pin, which closes
+// the TOFU window only if it is supplied in the same call that creates the device.
 type AuthChoice = "unchanged" | "none" | "api_key" | "oauth2";
+
+const SPKI_RE = /^[0-9a-f]{64}$/;
 
 export function DeviceForm({
   mode,
@@ -24,8 +32,13 @@ export function DeviceForm({
   const isEdit = mode === "edit";
   const [hostname, setHostname] = useState(editHostname ?? "");
   const [baseUrl, setBaseUrl] = useState("");
+  const [upstreamKind, setUpstreamKind] = useState<UpstreamKind>("openapi");
   const [specUrl, setSpecUrl] = useState("");
   const [rateLimit, setRateLimit] = useState("");
+  // Registration-only (see `DevicePayload`): the gateway's PUT parses neither, so offering
+  // them on an edit would be a control that reports success and changes nothing.
+  const [expectedSpki, setExpectedSpki] = useState("");
+  const [fingerprintPolicy, setFingerprintPolicy] = useState("");
   const [authType, setAuthType] = useState<AuthChoice>(isEdit ? "unchanged" : "none");
   // api_key
   const [apiKey, setApiKey] = useState("");
@@ -50,6 +63,9 @@ export function DeviceForm({
       .then((d) => {
         if (!active) return;
         setBaseUrl(d.base_url ?? "");
+        // A gateway older than ADR-0009 omits the field entirely; its schema default is
+        // "openapi", which is also the only thing such a gateway can be serving.
+        setUpstreamKind(d.upstream_kind === "mcp" ? "mcp" : "openapi");
         setSpecUrl(d.spec_url ?? "");
         setRateLimit(d.rate_limit_rps != null ? String(d.rate_limit_rps) : "");
       })
@@ -66,9 +82,27 @@ export function DeviceForm({
     const p: DevicePayload = {};
     if (!isEdit) p.hostname = hostname.trim();
     if (baseUrl.trim()) p.base_url = baseUrl.trim();
-    if (specUrl.trim()) p.spec_url = specUrl.trim();
+    p.upstream_kind = upstreamKind;
+    if (upstreamKind === "openapi") {
+      if (specUrl.trim()) p.spec_url = specUrl.trim();
+      // Same null-vs-absent rule, for the same reason: on an edit the field is pre-filled
+      // from the gateway, so an empty box means the operator cleared it. Omitting the key
+      // would carry the old value forward and leave a spec URL the form says is gone.
+      else if (isEdit) p.spec_url = null;
+    } else {
+      // Explicit null, not omission. On a PUT the gateway preserves a stored `spec_url` when
+      // the key is absent, so switching an existing OpenAPI device to mcp without this sends
+      // the old spec URL along with the new kind and is refused. Sending null on a create is
+      // equivalent to omitting it, so one rule covers both modes.
+      p.spec_url = null;
+    }
+    // `upstream_transport` is deliberately never sent — see `DevicePayload`.
     p.transport = "sse";
     if (rateLimit.trim()) p.rate_limit_rps = Number(rateLimit);
+    if (!isEdit) {
+      if (expectedSpki.trim()) p.expected_tls_spki_sha256 = expectedSpki.trim().toLowerCase();
+      if (fingerprintPolicy) p.fingerprint_policy = fingerprintPolicy as "warn" | "enforce";
+    }
     if (authType === "none") {
       p.auth_type = "none";
     } else if (authType === "api_key") {
@@ -102,6 +136,16 @@ export function DeviceForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    // Checked here as well as on the gateway, and the duplication is the point: a rejected
+    // digest is a rejected REGISTRATION, and the operator's next move is a retry that now
+    // collides with nothing — the device was never created. Catching it before the request
+    // keeps that round trip out of the common typo.
+    if (!isEdit && expectedSpki.trim() && !SPKI_RE.test(expectedSpki.trim().toLowerCase())) {
+      setError(
+        "Expected TLS key digest must be 64 hex characters — strip any colons and any 'sha256:' prefix.",
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = buildPayload();
@@ -148,23 +192,38 @@ export function DeviceForm({
             />
           </Field>
         )}
+        <Field label="Speaks" htmlFor="df-upstream-kind">
+          <select
+            id="df-upstream-kind"
+            value={upstreamKind}
+            onChange={(e) => setUpstreamKind(e.target.value as UpstreamKind)}
+          >
+            <option value="openapi">An HTTP API described by an OpenAPI document</option>
+            <option value="mcp">An MCP server</option>
+          </select>
+        </Field>
         <Field label="Base URL" htmlFor="df-base-url">
           <input
             id="df-base-url"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             required
-            placeholder="http://device.local"
+            placeholder={upstreamKind === "mcp" ? "http://server.local/mcp" : "http://device.local"}
           />
         </Field>
-        <Field label="Spec URL" htmlFor="df-spec-url">
-          <input
-            id="df-spec-url"
-            value={specUrl}
-            onChange={(e) => setSpecUrl(e.target.value)}
-            placeholder="(auto-discovered if blank)"
-          />
-        </Field>
+        {/* An MCP upstream publishes no OpenAPI document, and the gateway refuses the two
+            together — so the field is removed rather than disabled. A disabled input still
+            reads as "something I could fill in", which is the wrong thing to suggest. */}
+        {upstreamKind === "openapi" && (
+          <Field label="Spec URL" htmlFor="df-spec-url">
+            <input
+              id="df-spec-url"
+              value={specUrl}
+              onChange={(e) => setSpecUrl(e.target.value)}
+              placeholder="(auto-discovered if blank)"
+            />
+          </Field>
+        )}
         <Field label="Rate limit (rps)" htmlFor="df-rate">
           <input
             id="df-rate"
@@ -261,6 +320,45 @@ export function DeviceForm({
                 onChange={(e) => setScopes(e.target.value)}
                 placeholder="comma,separated"
               />
+            </Field>
+          </>
+        )}
+
+        {/* ADR-0015 §8. Create-only, because the gateway applies both fields in its POST
+            handler and its PUT handler parses neither — an edit that offered them would
+            return 200 and change nothing. Pre-pinning is also only meaningful here: supplied
+            at registration it closes the trust-on-first-use window outright, whereas the same
+            value set afterwards is a re-pin, which has its own approval flow on the device
+            detail screen. */}
+        {!isEdit && (
+          <>
+            <Field label="Pin TLS key" htmlFor="df-spki">
+              <div style={{ display: "grid", gap: 4 }}>
+                <input
+                  id="df-spki"
+                  value={expectedSpki}
+                  onChange={(e) => setExpectedSpki(e.target.value)}
+                  placeholder="(optional) 64-character hex SHA-256"
+                  aria-describedby="df-spki-help"
+                  spellCheck={false}
+                />
+                <span id="df-spki-help" style={{ fontSize: "0.8em", color: ui.muted }}>
+                  The device&apos;s public-key digest, obtained out of band. Supplying it here means the
+                  gateway never has to trust whatever key it happens to meet first. Only applies to an{" "}
+                  <code>https://</code> device, and cannot be set later.
+                </span>
+              </div>
+            </Field>
+            <Field label="On key change" htmlFor="df-fp-policy">
+              <select
+                id="df-fp-policy"
+                value={fingerprintPolicy}
+                onChange={(e) => setFingerprintPolicy(e.target.value)}
+              >
+                <option value="">(use the gateway default)</option>
+                <option value="warn">warn — keep dispatching, flag it</option>
+                <option value="enforce">enforce — stop dispatching until approved</option>
+              </select>
             </Field>
           </>
         )}

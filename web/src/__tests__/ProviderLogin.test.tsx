@@ -20,6 +20,7 @@ const CONFIG: AuthConfig = {
   oidc_enabled: false,
   password_login: true,
   provider_enabled: true,
+  tenancy_configured: false,
   catalog_enabled: false,
 };
 
