@@ -217,7 +217,12 @@ export function App() {
               </div>
             ))}
           {error && <p style={{ color: "crimson" }}>{error}</p>}
-          {canWrite && <UpgradeOffers />}
+          {/* Gated for the same reason as the claim button above, and it was missed there:
+              `/api/catalog/upgrades` calls `_tenant_id`, so on lite and plain single-tenant it
+              503s on every devices-view load. The component swallows the error and renders
+              nothing, which is why this was invisible rather than harmless — a request that
+              cannot succeed, made forever, on the console's busiest screen. */}
+          {canWrite && config?.catalog_enabled && <UpgradeOffers />}
           {selected && (
             <DeviceDetail
               hostname={selected}
