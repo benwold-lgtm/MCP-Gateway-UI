@@ -98,6 +98,48 @@ def check_registration(body: dict[str, Any], *, require_references: bool = False
     return None
 
 
+#: Fields the gateway refuses on an UPDATE, whatever their value. `expected_tls_spki_sha256`
+#: is trust rather than configuration: accepting it on a PUT would let a caller write the key
+#: an endpoint is presenting, so the probe that would have raised `key_changed` finds
+#: agreement instead — no verdict, no quarantine. Registration and the approve route are the
+#: only two ways in.
+_REGISTRATION_ONLY_FIELDS = ("expected_tls_spki_sha256",)
+
+
+def check_update(body: dict[str, Any]) -> Optional[str]:
+    """Return the gateway's refusal detail for a PUT body, or ``None`` if it would be accepted.
+
+    Mirrors `_apply_update`, and exists for the same reason `check_registration` does: the
+    console composes an update body too, and a permissive double proves nothing about what it
+    is *entitled to send*. This one arrived with the fix for the mirror-image defect — a PUT
+    that accepted `expected_tls_spki_sha256` and `fingerprint_policy` and silently discarded
+    both, answering 200 for an outcome that had not happened.
+
+    `fingerprint_policy` is deliberately NOT in the refused list: on an update it is honoured,
+    and an explicit ``None`` clears the override. Only its *vocabulary* is checked.
+    """
+    for field in _REGISTRATION_ONLY_FIELDS:
+        if body.get(field):
+            return (
+                f"{field} cannot be set by an update. Supply it when registering the device, or "
+                f"use POST /v1/devices/{{hostname}}/fingerprint/approve."
+            )
+    if "fingerprint_policy" in body and body["fingerprint_policy"]:
+        if str(body["fingerprint_policy"]).lower() not in ("warn", "enforce"):
+            return "fingerprint_policy must be 'warn' or 'enforce'"
+    # The upstream rules apply to a PUT as well; `declared` is what the caller actually sent.
+    kind = body.get("upstream_kind", "openapi")
+    if kind == "openapi":
+        for field in _MCP_ONLY_FIELDS:
+            if field in body:
+                return f"{field} applies only to upstream_kind 'mcp'; an OpenAPI device is reached over HTTP"
+    if kind == "mcp":
+        for field in _OPENAPI_ONLY_FIELDS:
+            if body.get(field):
+                return f"{field} does not apply to upstream_kind 'mcp'; a proxied MCP server has no OpenAPI document"
+    return None
+
+
 class ContractGateway:
     """Drop-in for the permissive `_FakeGateway`, with the refusals in place.
 
@@ -117,6 +159,11 @@ class ContractGateway:
         self.calls.append({"method": method, "path": path, "json": json})
         if method == "POST" and path.rstrip("/").endswith("/devices") and isinstance(json, dict):
             refusal = check_registration(json, require_references=self.require_references)
+            if refusal:
+                self.refusals.append(refusal)
+                return httpx.Response(400, json={"detail": refusal})
+        if method == "PUT" and "/devices/" in path and isinstance(json, dict):
+            refusal = check_update(json)
             if refusal:
                 self.refusals.append(refusal)
                 return httpx.Response(400, json={"detail": refusal})

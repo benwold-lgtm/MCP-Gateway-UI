@@ -49,6 +49,15 @@ vi.mock("../api", () => ({
 
 import { DeviceForm } from "../components/DeviceForm";
 
+const EDIT_DEVICE = {
+  hostname: "sensor-1",
+  base_url: "http://old.local",
+  spec_url: null,
+  upstream_kind: "openapi",
+  rate_limit_rps: null,
+  fingerprint_policy: null,
+};
+
 describe("DeviceForm", () => {
   beforeEach(() => {
     getDevice.mockReset();
@@ -210,20 +219,77 @@ describe("DeviceForm", () => {
     expect(registerDevice).not.toHaveBeenCalled();
   });
 
-  it("omits the pin fields entirely on an edit, because the gateway's PUT ignores them", async () => {
-    // Not a styling choice. `_apply_update` parses neither key: an edit that offered them
-    // would answer 200 and change nothing, which is worse than not offering them at all.
-    getDevice.mockResolvedValue({
-      hostname: "sensor-1",
-      base_url: "http://old.local",
-      spec_url: null,
-      upstream_kind: "openapi",
-      rate_limit_rps: null,
-    });
+  it("omits the pin on an edit, because the gateway refuses it there", async () => {
+    // Not a styling choice, and the reason strengthened: the PUT used to ignore this field
+    // and now returns a 400. Writing a key by edit would be the quiet way to launder one
+    // past the pin — the probe that would have raised `key_changed` finds agreement instead.
+    getDevice.mockResolvedValue(EDIT_DEVICE);
     render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
 
     await screen.findByDisplayValue("http://old.local");
     expect(screen.queryByLabelText("Pin TLS key")).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "On key change" })).not.toBeInTheDocument();
+  });
+
+  it("offers the policy on an edit, because that one IS settable", async () => {
+    // The asymmetry with the pin above is the whole point. Policy is not evidence, and
+    // while the gateway silently dropped it the only way to tighten a device to `enforce`
+    // was to delete it and register it again.
+    getDevice.mockResolvedValue(EDIT_DEVICE);
+    render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
+
+    await screen.findByDisplayValue("http://old.local");
+    expect(screen.getByRole("combobox", { name: "On key change" })).toBeInTheDocument();
+  });
+
+  it("pre-fills the stored policy rather than defaulting to inherit", async () => {
+    getDevice.mockResolvedValue({ ...EDIT_DEVICE, fingerprint_policy: "enforce" });
+    render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
+
+    await screen.findByDisplayValue("http://old.local");
+    expect(screen.getByRole("combobox", { name: "On key change" })).toHaveValue("enforce");
+  });
+
+  it("sends the policy when it is changed on an edit", async () => {
+    getDevice.mockResolvedValue(EDIT_DEVICE);
+    updateDevice.mockResolvedValue({});
+    render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
+
+    await screen.findByDisplayValue("http://old.local");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "On key change" }), "enforce");
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(updateDevice).toHaveBeenCalledTimes(1));
+    expect(updateDevice.mock.calls[0][1].fingerprint_policy).toBe("enforce");
+  });
+
+  it("sends an explicit null when the policy is cleared, so the override can be removed", async () => {
+    // The gateway keys on PRESENCE: omitting the field leaves the stored value alone. Without
+    // this, `enforce` is a setting you can apply and never take back — the same trap as a
+    // spec URL the form displays but cannot clear.
+    getDevice.mockResolvedValue({ ...EDIT_DEVICE, fingerprint_policy: "enforce" });
+    updateDevice.mockResolvedValue({});
+    render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
+
+    await screen.findByDisplayValue("http://old.local");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "On key change" }), "");
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(updateDevice).toHaveBeenCalledTimes(1));
+    expect(updateDevice.mock.calls[0][1]).toHaveProperty("fingerprint_policy", null);
+  });
+
+  it("says nothing about the policy on an edit that did not touch it", async () => {
+    // The mirror of the rule above. Sending it unconditionally would turn every rate-limit
+    // change into a statement about a field the operator never looked at.
+    getDevice.mockResolvedValue({ ...EDIT_DEVICE, fingerprint_policy: "enforce" });
+    updateDevice.mockResolvedValue({});
+    render(<DeviceForm mode="edit" hostname="sensor-1" onDone={vi.fn()} onCancel={vi.fn()} />);
+
+    const rate = await screen.findByLabelText("Rate limit (rps)");
+    await userEvent.type(rate, "7");
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(updateDevice).toHaveBeenCalledTimes(1));
+    expect(updateDevice.mock.calls[0][1]).not.toHaveProperty("fingerprint_policy");
   });
 });
