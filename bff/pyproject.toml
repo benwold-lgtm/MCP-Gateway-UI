@@ -1,6 +1,6 @@
 [project]
 name = "device-mcp-gateway-bff"
-version = "0.1.0"
+version = "0.2.0"
 description = "Backend-for-frontend for the Device MCP Gateway UI — holds the gateway credential, runs sessions, proxies to the gateway/Prometheus/Loki."
 requires-python = ">=3.12"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
