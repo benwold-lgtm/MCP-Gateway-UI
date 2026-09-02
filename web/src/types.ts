@@ -47,11 +47,16 @@ export type DevicePayload = {
   // impossible to get wrong from here.
   upstream_kind?: UpstreamKind;
   rate_limit_rps?: number;
-  // ADR-0015 §8's out-of-band pre-pin and the per-device policy override. REGISTRATION ONLY:
-  // the gateway's PUT handler parses neither key, so sending them on an update is accepted
-  // with a 200 and silently does nothing. The form only offers them on create for that reason.
+  // ADR-0015 §8's out-of-band pre-pin. REGISTRATION ONLY, and the gateway now REFUSES it on
+  // an update rather than ignoring it: writing a key here would be the quiet way to launder
+  // one past the pin, since the probe that would have raised `key_changed` finds agreement
+  // instead. Re-pinning goes through the approval flow.
   expected_tls_spki_sha256?: string;
-  fingerprint_policy?: "warn" | "enforce";
+  // The per-device policy override, settable on both paths. `null` is distinct from absent
+  // here too: the gateway keys on the PRESENCE of the field, so omitting it leaves the stored
+  // value alone while an explicit null clears the override and inherits the fleet default.
+  // Without that distinction, `enforce` would be a value you can set and never remove.
+  fingerprint_policy?: "warn" | "enforce" | null;
   auth_type?: "none" | "api_key" | "oauth2";
   auth?: ApiKeyAuth | OAuth2Auth;
 };

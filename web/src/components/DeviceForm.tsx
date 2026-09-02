@@ -39,6 +39,11 @@ export function DeviceForm({
   // them on an edit would be a control that reports success and changes nothing.
   const [expectedSpki, setExpectedSpki] = useState("");
   const [fingerprintPolicy, setFingerprintPolicy] = useState("");
+  // What the gateway reported, so an edit can tell "left alone" from "deliberately emptied".
+  // Sending the policy unconditionally would be wrong in the same way sending `spec_url`
+  // unconditionally is: it turns every unrelated edit into a statement about a field the
+  // operator never touched.
+  const [loadedPolicy, setLoadedPolicy] = useState("");
   const [authType, setAuthType] = useState<AuthChoice>(isEdit ? "unchanged" : "none");
   // api_key
   const [apiKey, setApiKey] = useState("");
@@ -67,6 +72,8 @@ export function DeviceForm({
         // "openapi", which is also the only thing such a gateway can be serving.
         setUpstreamKind(d.upstream_kind === "mcp" ? "mcp" : "openapi");
         setSpecUrl(d.spec_url ?? "");
+        setFingerprintPolicy(d.fingerprint_policy ?? "");
+        setLoadedPolicy(d.fingerprint_policy ?? "");
         setRateLimit(d.rate_limit_rps != null ? String(d.rate_limit_rps) : "");
       })
       .catch((err) => active && setError(err instanceof ApiError ? err.message : "Failed to load device"))
@@ -99,9 +106,20 @@ export function DeviceForm({
     // `upstream_transport` is deliberately never sent — see `DevicePayload`.
     p.transport = "sse";
     if (rateLimit.trim()) p.rate_limit_rps = Number(rateLimit);
+    // The pin stays create-only: the gateway now REFUSES it on an update rather than
+    // ignoring it, because writing a key here is the quiet version of laundering one past
+    // the pin. Re-pinning has its own approval flow on the device detail screen.
+    if (!isEdit && expectedSpki.trim()) {
+      p.expected_tls_spki_sha256 = expectedSpki.trim().toLowerCase();
+    }
+    // The policy is editable in both modes. Sent whenever it differs from what the gateway
+    // reported, INCLUDING when it has been emptied — the gateway reads an explicit null as
+    // "clear the override and inherit the fleet default", which is a different state from
+    // `warn` and the only way back out of a per-device setting.
     if (!isEdit) {
-      if (expectedSpki.trim()) p.expected_tls_spki_sha256 = expectedSpki.trim().toLowerCase();
       if (fingerprintPolicy) p.fingerprint_policy = fingerprintPolicy as "warn" | "enforce";
+    } else if (fingerprintPolicy !== loadedPolicy) {
+      p.fingerprint_policy = fingerprintPolicy ? (fingerprintPolicy as "warn" | "enforce") : null;
     }
     if (authType === "none") {
       p.auth_type = "none";
@@ -324,12 +342,13 @@ export function DeviceForm({
           </>
         )}
 
-        {/* ADR-0015 §8. Create-only, because the gateway applies both fields in its POST
-            handler and its PUT handler parses neither — an edit that offered them would
-            return 200 and change nothing. Pre-pinning is also only meaningful here: supplied
-            at registration it closes the trust-on-first-use window outright, whereas the same
-            value set afterwards is a re-pin, which has its own approval flow on the device
-            detail screen. */}
+        {/* ADR-0015 §8. Create-only, and now for a stronger reason than when it was written:
+            the gateway REFUSES this field on an update rather than ignoring it. Supplied at
+            registration the digest closes the trust-on-first-use window outright; the same
+            value set afterwards is a re-pin, and accepting one here would be the quiet way to
+            launder a new key past the pin — no `key_changed` verdict, no quarantine, no record
+            that a trust decision was made. Re-pinning has its own approval flow on the device
+            detail screen, which is loud and audited. */}
         {!isEdit && (
           <>
             <Field label="Pin TLS key" htmlFor="df-spki">
@@ -349,19 +368,26 @@ export function DeviceForm({
                 </span>
               </div>
             </Field>
-            <Field label="On key change" htmlFor="df-fp-policy">
-              <select
-                id="df-fp-policy"
-                value={fingerprintPolicy}
-                onChange={(e) => setFingerprintPolicy(e.target.value)}
-              >
-                <option value="">(use the gateway default)</option>
-                <option value="warn">warn — keep dispatching, flag it</option>
-                <option value="enforce">enforce — stop dispatching until approved</option>
-              </select>
-            </Field>
           </>
         )}
+
+        {/* Editable in BOTH modes, unlike the pin above. This is policy, not evidence: moving
+            a device from warn to enforce is an ordinary operation, and while the gateway was
+            silently dropping it on a PUT the only way to do it was to delete the device and
+            register it again — friction paid to *tighten* a control. Choosing the blank option
+            on an edit clears the override and inherits the fleet default, which is a real
+            state and not the same as `warn`. */}
+        <Field label="On key change" htmlFor="df-fp-policy">
+          <select
+            id="df-fp-policy"
+            value={fingerprintPolicy}
+            onChange={(e) => setFingerprintPolicy(e.target.value)}
+          >
+            <option value="">(use the gateway default)</option>
+            <option value="warn">warn — keep dispatching, flag it</option>
+            <option value="enforce">enforce — stop dispatching until approved</option>
+          </select>
+        </Field>
       </div>
 
       <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>

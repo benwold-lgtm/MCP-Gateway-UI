@@ -9,7 +9,8 @@
     "registration body that no gateway would ever accept, green in both suites, because each",
     "was asserted against its own double.",
     "A case removed from here must be removed from both suites, which is the point: deleting",
-    "coverage has to be deliberate rather than a side effect of editing one language."
+    "coverage has to be deliberate rather than a side effect of editing one language.",
+    "Update bodies live here too, under `update_cases`: the console composes a PUT as well, and the gateway refuses `expected_tls_spki_sha256` there while honouring `fingerprint_policy` -- opposite answers to two fields that sit side by side in the form."
   ],
   "cases": {
     "openapi-with-api-key": {
@@ -20,7 +21,11 @@
         "upstream_kind": "openapi",
         "transport": "sse",
         "auth_type": "api_key",
-        "auth": { "api_key": "secret-key", "location": "header", "name": "X-API-Key" }
+        "auth": {
+          "api_key": "secret-key",
+          "location": "header",
+          "name": "X-API-Key"
+        }
       }
     },
     "mcp-server": {
@@ -32,6 +37,38 @@
         "spec_url": null,
         "transport": "sse",
         "auth_type": "none"
+      }
+    }
+  },
+  "update_cases": {
+    "tighten-the-policy": {
+      "_note": "Policy is settable on an update. The pin is NOT, and must never appear in a PUT body.",
+      "payload": {
+        "base_url": "http://sensor-1.local",
+        "upstream_kind": "openapi",
+        "spec_url": null,
+        "transport": "sse",
+        "fingerprint_policy": "enforce"
+      }
+    },
+    "clear-the-policy": {
+      "_note": "An explicit null clears the override and inherits the fleet default. Absent would leave the stored value alone, so the two cannot be collapsed.",
+      "payload": {
+        "base_url": "http://sensor-1.local",
+        "upstream_kind": "openapi",
+        "spec_url": null,
+        "transport": "sse",
+        "fingerprint_policy": null
+      }
+    },
+    "an-ordinary-edit": {
+      "_note": "Says nothing about the policy, and nothing about the pin.",
+      "payload": {
+        "base_url": "http://sensor-1.local",
+        "upstream_kind": "openapi",
+        "spec_url": null,
+        "transport": "sse",
+        "rate_limit_rps": 7
       }
     }
   }
