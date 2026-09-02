@@ -27,6 +27,12 @@ export function Login({ onAuthed }: { onAuthed: (session: Session) => void }) {
           // must not infer a catalog estate into existence either. False is also the safe
           // direction — it withholds a button, where true would offer one that 503s.
           catalog_enabled: false,
+          // `tenancy_configured` is the one field where false is NOT automatically the safe
+          // direction: it feeds the Support tab, and Support carries the control that ends a
+          // provider's access. Reporting false here is still correct, because App treats it
+          // as "ask the gateway" rather than as "hide" — the live enrolment check is what
+          // keeps a console that could not read its own config from hiding a revocation.
+          tenancy_configured: false,
         }),
       );
   }, []);

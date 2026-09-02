@@ -130,6 +130,11 @@ export type AuthConfig = {
    * False on lite and plain single-tenant installs, which have no TENANT_ID and where every
    * catalog route therefore fails closed. See the `/auth/config` docstring. */
   catalog_enabled: boolean;
+  /** Whether this deployment has a tenant identity at all. Distinct from `catalog_enabled`,
+   * which also excludes a provider console — reading that one as "has a TENANT_ID" would pick
+   * up the second meaning silently the day either definition moves. Necessary but NOT
+   * sufficient for hiding the provider-relationship screens: see `App.tsx`. */
+  tenancy_configured: boolean;
 };
 
 // The act-on-tenant grant, the elevated grant (`ActGrant`/`Elevation`/`ActGrantResponse`/

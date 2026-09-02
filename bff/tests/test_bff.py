@@ -468,6 +468,11 @@ def test_auth_config_reports_methods(app_client):
         # No TENANT_ID here, which is the lite / plain single-tenant shape: every catalog
         # route fails closed, so the SPA must not offer "Claim from catalog" at all.
         "catalog_enabled": False,
+        # The same absence read one step further back, and reported separately on purpose: the
+        # console uses it to decide whether the provider-relationship screens are relevant at
+        # all, and reusing `catalog_enabled` for that would silently import its second
+        # condition (not a provider console) the day either definition moves.
+        "tenancy_configured": False,
     }
 
 
@@ -482,7 +487,9 @@ def test_catalog_is_offered_once_the_deployment_is_a_tenant(monkeypatch):
     """
     monkeypatch.setenv("TENANT_ID", "mcp-t-0123456789abcdef")
     with TestClient(create_app()) as c:
-        assert c.get("/auth/config").json()["catalog_enabled"] is True
+        body = c.get("/auth/config").json()
+        assert body["catalog_enabled"] is True
+        assert body["tenancy_configured"] is True
 
 
 def test_oidc_config_enabled_when_rp_present(oidc_client):

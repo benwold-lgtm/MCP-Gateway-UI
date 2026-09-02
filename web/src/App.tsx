@@ -42,12 +42,47 @@ export function App() {
   // from the tenant-vocabulary scopes above — a session can hold every device scope and
   // still not be trusted to decide who else may act on this fleet.
   const canAdministerSupport = session?.scopes.includes("support:administer") ?? false;
+  // Holding the scope is not the same as having anything to administer. On a Lite or plain
+  // single-tenant stack every section of that tab is permanently empty — no requests, no
+  // grants, no invitations, no enrolments — because a provider relationship is the thing that
+  // fills all four, and there is no provider. LR-22's rule applied one level up: a rail entry
+  // whose every action answers 403 is worse than no entry, and so is one whose every panel
+  // answers "none".
+  //
+  // Config alone cannot decide it. The support routes relay straight to the gateway and need
+  // no `TENANT_ID` of their own, so an enrolment can outlive the setting — and hiding the tab
+  // on config alone would take away the only control that can END one while leaving the
+  // provider's access standing. That is the trade ADR-0024 §10 explicitly refused when it
+  // chose revocation over expiry. So the live list is consulted whenever the config says no.
+  //
+  // Fails OPEN, in both directions: an unreachable gateway shows the tab rather than
+  // withholding a revocation control on the strength of a transient error.
+  const [supportRelevant, setSupportRelevant] = useState(false);
   // The registry is the tenant's own data (ADR-0011), so the tenant console offers backup
   // too — the routes were always mounted on both planes, only the screen was missing.
   // `backup:read` and not the role: a break-glass session's role *is* admin, and it is
   // precisely the session the routes refuse, so gating on the role would offer a screen
   // whose every button 403s. The gateway enforces either way; this only decides what to show.
   const canBackup = session?.scopes.includes("backup:read") ?? false;
+
+  useEffect(() => {
+    if (!canAdministerSupport) {
+      setSupportRelevant(false);
+      return;
+    }
+    if (config?.tenancy_configured) {
+      setSupportRelevant(true);
+      return;
+    }
+    let active = true;
+    api.enrolment
+      .enrolments()
+      .then(({ enrolments }) => active && setSupportRelevant(enrolments.length > 0))
+      .catch(() => active && setSupportRelevant(true));
+    return () => {
+      active = false;
+    };
+  }, [canAdministerSupport, config?.tenancy_configured]);
 
   // Provider sessions don't load the overview *here*. A provider session currently has no
   // path to any tenant's fleet at all (ADR-0017 slice 6 removed act-on-tenant; slice 7's
@@ -126,7 +161,7 @@ export function App() {
             Backup
           </button>
         )}
-        {canAdministerSupport && (
+        {canAdministerSupport && supportRelevant && (
           <button onClick={() => setView("support")} disabled={view === "support"}>
             Support
           </button>
@@ -135,7 +170,7 @@ export function App() {
 
       {view === "backup" ? (
         <BackupPanel />
-      ) : view === "support" ? (
+      ) : view === "support" && canAdministerSupport && supportRelevant ? (
         // Both halves of "this tenant's relationship with its provider" under one tab: the
         // support inbox and the enrolment that makes a provider able to raise a request at
         // all. `support:administer` is the single scope behind both, which is the grouping
