@@ -20,6 +20,13 @@ concurrency:
 jobs:
   image:
     runs-on: ubuntu-latest
+    # Well under GitHub's six-hour job ceiling, deliberately. v0.2.0's web build hit that
+    # ceiling and was cancelled at exactly 06:00:00 — after the BFF job had already pushed,
+    # so the release half-landed and `:lite` pointed at a new BFF and a two-month-old
+    # console. A six-hour burn that ends in a cancellation teaches nothing and costs a whole
+    # runner-day; a build that has not finished in twenty minutes is broken, not slow, and
+    # should say so while someone is still watching.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
